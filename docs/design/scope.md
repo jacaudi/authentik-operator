@@ -57,9 +57,30 @@ What adoption has to cover:
 4. **Adoption is reversible.** Deleting the CR must be able to release the
    objects rather than cascade-delete an install the operator did not create.
 
-Open: whether adoption is implicit (adopt anything matching by name) or
-explicit (`spec.adopt: true`, or an annotation on the target). Explicit is
-safer and is the likely answer, but it is not decided yet.
+### Decided: adoption is explicit, via `spec.adoption.enabled`
+
+```yaml
+spec:
+  adoption:
+    enabled: true   # default false
+```
+
+With `enabled` false — the default — a matching object the operator did not
+create is an **error**, not something to overwrite. Pointing an
+`AuthentikDeployment` at a live install therefore cannot silently reconfigure
+it; you have to say so.
+
+Provenance is tracked with two annotations rather than a second spec knob, so
+release-vs-delete on teardown needs no user input:
+
+| annotation | meaning | on teardown |
+|---|---|---|
+| `authentik.io/created-by` | the operator created this object | delete |
+| `authentik.io/adopted-by` | names the `AuthentikDeployment` that adopted it | release (drop ownerRef, leave the object) |
+
+The spec field was chosen over an annotation on the target because the decision
+belongs to whoever owns the CR, and it stays visible in one place in Git rather
+than on a live object the operator is about to take over.
 
 ## Known upstream defects this rewrite exists to fix
 

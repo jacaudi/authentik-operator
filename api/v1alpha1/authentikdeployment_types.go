@@ -24,16 +24,39 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+const (
+	// AnnotationCreatedBy marks an object this operator created itself, as
+	// opposed to one it adopted. Teardown deletes created objects and releases
+	// adopted ones.
+	AnnotationCreatedBy = "authentik.io/created-by"
+
+	// AnnotationAdoptedBy names the AuthentikDeployment that adopted a
+	// pre-existing object.
+	AnnotationAdoptedBy = "authentik.io/adopted-by"
+)
+
 // AuthentikDeploymentSpec defines the desired state of AuthentikDeployment
 type AuthentikDeploymentSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of AuthentikDeployment. Edit authentikdeployment_types.go to remove/update
+	// adoption controls whether this resource may take over pre-existing
+	// objects that it did not create.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Adoption AdoptionSpec `json:"adoption,omitzero"`
+}
+
+// AdoptionSpec governs takeover of pre-existing objects.
+//
+// Adoption is opt-in. With enabled false, a matching object the operator did
+// not create is an error rather than something to overwrite, so pointing an
+// AuthentikDeployment at a live install cannot silently reconfigure it.
+type AdoptionSpec struct {
+	// enabled permits this AuthentikDeployment to adopt pre-existing objects
+	// matching the names it manages. An adopted object gains an owner
+	// reference and the operator's labels; fields the spec does not set are
+	// left as they are, and on teardown the object is released rather than
+	// deleted.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // AuthentikDeploymentStatus defines the observed state of AuthentikDeployment.
