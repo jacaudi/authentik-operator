@@ -1,0 +1,8 @@
+## Append samples of your project ##
+resources:
+- v1alpha1_authentikdeployment.yaml
+- v1alpha1_authentikapplication.yaml
+- v1alpha1_authentikuser.yaml
+- v1alpha1_authentikgroup.yaml
+- v1alpha1_authentikoauthprovider.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
