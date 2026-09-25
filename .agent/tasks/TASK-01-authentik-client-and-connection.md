@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none (Navigator-only; project_management = none)
-- Status: In Progress (Phase 1 done; Phase 2 awaiting connection-model decision)
+- Status: Completed
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -35,7 +35,7 @@ with the token in Secret `authentik-operator-token` key `token`.
       (or managed name), certificates by name, property mappings by UUID or name.
       Never by display name alone (renames orphan CRs -- upstream defect).
 
-### Phase 2: connection model (DECISION REQUIRED)
+### Phase 2: connection model -- DECIDED: (b) with (a) as fallback (see scope.md)
 Options -- pick one and record it in `docs/design/scope.md`:
 - (a) Operator-level connection (URL, token secretRef, CA bundle) via flags/env,
       like JeffResc. Simplest; one Authentik per operator.
@@ -45,10 +45,15 @@ Options -- pick one and record it in `docs/design/scope.md`:
 - Recommendation: (b) with (a) as a default when `authentikRef` is omitted --
   dual-mode, so a Helm-installed Authentik (orac's case) needs no
   `AuthentikDeployment` managing its pods.
-- [ ] Token always from a Secret ref; never logged, never written to CR spec/status.
-- [ ] TLS: optional CA bundle (ConfigMap/Secret ref) and `insecureSkipVerify` only
+- [x] `spec.authentikRef` on all API kinds; `AuthentikDeployment.spec.mode`
+      (`Managed` | `ConnectOnly`, required) + `spec.connection`; operator default via
+      `--authentik-url` / `AUTHENTIK_URL`, `--authentik-token-file` / `AUTHENTIK_TOKEN`,
+      `--authentik-ca-file`. Resolver: `internal/connection`.
+- [x] Token always from a Secret ref; never logged, never written to CR spec/status.
+- [x] TLS: optional CA bundle (ConfigMap/Secret ref) and `insecureSkipVerify` only
       behind an explicit field; plain HTTP allowed only when the URL says http.
-- [ ] Health check endpoint used for readiness (JeffResc: 60s grace period).
+- [x] Health check: per-`AuthentikDeployment` `Connected` condition (users/me),
+      rather than operator readiness -- one operator may serve several Authentiks.
 
 ## Technical Decisions
 - Official client over hand-rolled HTTP: the API drifts every release
@@ -60,4 +65,4 @@ Options -- pick one and record it in `docs/design/scope.md`:
 ## Completion Checklist
 - [x] Unit tests with an httptest fake (pagination, 400 vs 404, retry, auth header, TLS/CA, rate limit)
 - [x] envtest suite still green; `go vet`, `make lint` clean
-- [ ] scope.md updated with the connection decision
+- [x] scope.md updated with the connection decision

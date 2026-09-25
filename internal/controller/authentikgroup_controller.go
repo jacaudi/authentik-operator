@@ -25,12 +25,15 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
+	"github.com/jacaudi/authentik-operator/internal/connection"
 )
 
 // AuthentikGroupReconciler reconciles a AuthentikGroup object
 type AuthentikGroupReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Connections resolves the Authentik client for spec.authentikRef.
+	Connections *connection.Resolver
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups,verbs=get;list;watch;create;update;patch;delete

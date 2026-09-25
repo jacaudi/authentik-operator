@@ -35,8 +35,34 @@ const (
 	AnnotationAdoptedBy = "authentik.io/adopted-by"
 )
 
+// DeploymentMode selects what an AuthentikDeployment manages.
+// +kubebuilder:validation:Enum=Managed;ConnectOnly
+type DeploymentMode string
+
+const (
+	// DeploymentModeManaged: the operator manages the Authentik workloads
+	// (Deployment, Service, Ingress, RBAC).
+	DeploymentModeManaged DeploymentMode = "Managed"
+	// DeploymentModeConnectOnly: the operator manages no workloads; the
+	// resource only supplies a connection (URL, token, CA) to an Authentik
+	// installed some other way, e.g. by Helm.
+	DeploymentModeConnectOnly DeploymentMode = "ConnectOnly"
+)
+
 // AuthentikDeploymentSpec defines the desired state of AuthentikDeployment
+// +kubebuilder:validation:XValidation:rule="self.mode != 'ConnectOnly' || has(self.connection)",message="connection is required when mode is ConnectOnly"
 type AuthentikDeploymentSpec struct {
+	// mode selects whether this resource manages the Authentik workloads
+	// (Managed) or only describes how to reach an existing Authentik
+	// (ConnectOnly). There is no default: managing workloads must be asked for.
+	// +required
+	Mode DeploymentMode `json:"mode"`
+
+	// connection describes how the operator reaches this Authentik's API.
+	// Required in ConnectOnly mode.
+	// +optional
+	Connection *ConnectionSpec `json:"connection,omitempty"`
+
 	// adoption controls whether this resource may take over pre-existing
 	// objects that it did not create.
 	// +optional
@@ -76,14 +102,25 @@ type AuthentikDeploymentStatus struct {
 	// - "Degraded": the resource failed to reach or maintain its desired state
 	//
 	// The status of each condition is one of True, False, or Unknown.
+	//
+	// "Connected" reports whether the Authentik API is reachable with the
+	// configured token.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// url is the Authentik base URL this resource resolved to.
+	// +optional
+	URL string `json:"url,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=".spec.mode"
+// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=".status.url"
+// +kubebuilder:printcolumn:name="Connected",type=string,JSONPath=".status.conditions[?(@.type=='Connected')].status"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // AuthentikDeployment is the Schema for the authentikdeployments API
 type AuthentikDeployment struct {

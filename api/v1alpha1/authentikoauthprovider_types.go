@@ -26,6 +26,12 @@ import (
 
 // AuthentikOAuthProviderSpec defines the desired state of AuthentikOAuthProvider
 type AuthentikOAuthProviderSpec struct {
+	// authentikRef names the AuthentikDeployment (same namespace) whose
+	// connection this object is reconciled against. When omitted, the
+	// operator's default connection is used.
+	// +optional
+	AuthentikRef *AuthentikRef `json:"authentikRef,omitempty"`
+
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// The following markers will use OpenAPI v3 schema to validate the value

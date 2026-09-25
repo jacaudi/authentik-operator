@@ -14,7 +14,20 @@ spec:
     singular: authentikdeployment
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Connected')].status
+      name: Connected
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: AuthentikDeployment is the Schema for the authentikdeployments
@@ -55,7 +68,115 @@ spec:
                       deleted.
                     type: boolean
                 type: object
+              connection:
+                description: |-
+                  connection describes how the operator reaches this Authentik's API.
+                  Required in ConnectOnly mode.
+                properties:
+                  caBundle:
+                    description: |-
+                      caBundle is an optional PEM CA bundle trusted in addition to the
+                      system roots when verifying Authentik's TLS certificate.
+                    properties:
+                      configMapKeyRef:
+                        description: |-
+                          configMapKeyRef selects a ConfigMap key holding the bundle
+                          (e.g. one populated by trust-manager).
+                        properties:
+                          key:
+                            default: ca.crt
+                            description: key within the ConfigMap.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: name of the ConfigMap.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      secretKeyRef:
+                        description: |-
+                          secretKeyRef selects a Secret key holding the bundle
+                          (e.g. ca.crt of a cert-manager Certificate).
+                        properties:
+                          key:
+                            default: token
+                            description: key within the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of configMapKeyRef or secretKeyRef must
+                        be set
+                      rule: has(self.configMapKeyRef) != has(self.secretKeyRef)
+                  insecureSkipVerify:
+                    description: |-
+                      insecureSkipVerify disables TLS certificate verification. Intended for
+                      testing only.
+                    type: boolean
+                  tokenSecretRef:
+                    description: |-
+                      tokenSecretRef selects the Secret key holding an Authentik API token.
+                      The Secret must be in the same namespace as the AuthentikDeployment.
+                      The token is never logged or copied into any status.
+                    properties:
+                      key:
+                        default: token
+                        description: key within the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      name:
+                        description: name of the Secret.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: |-
+                      url is the base URL of Authentik, e.g. https://authentik.example.com or
+                      http://authentik-server.authentik.svc.cluster.local. Plain HTTP is used
+                      only when the URL says http.
+                    maxLength: 2048
+                    pattern: ^https?://[^/?#@]+(/[^?#@]*)?$
+                    type: string
+                required:
+                - tokenSecretRef
+                - url
+                type: object
+                x-kubernetes-validations:
+                - message: caBundle and insecureSkipVerify are mutually exclusive
+                  rule: '!(has(self.insecureSkipVerify) && self.insecureSkipVerify
+                    && has(self.caBundle))'
+              mode:
+                description: |-
+                  mode selects whether this resource manages the Authentik workloads
+                  (Managed) or only describes how to reach an existing Authentik
+                  (ConnectOnly). There is no default: managing workloads must be asked for.
+                enum:
+                - Managed
+                - ConnectOnly
+                type: string
+            required:
+            - mode
             type: object
+            x-kubernetes-validations:
+            - message: connection is required when mode is ConnectOnly
+              rule: self.mode != 'ConnectOnly' || has(self.connection)
           status:
             description: status defines the observed state of AuthentikDeployment
             properties:
@@ -70,6 +191,9 @@ spec:
                   - "Degraded": the resource failed to reach or maintain its desired state
 
                   The status of each condition is one of True, False, or Unknown.
+
+                  "Connected" reports whether the Authentik API is reachable with the
+                  configured token.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -128,6 +252,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              url:
+                description: url is the Authentik base URL this resource resolved
+                  to.
+                type: string
             type: object
         required:
         - spec

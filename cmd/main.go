@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
+	"github.com/jacaudi/authentik-operator/internal/connection"
 	"github.com/jacaudi/authentik-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -62,6 +63,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var defaultConn connection.DefaultOptions
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -85,6 +87,15 @@ func main() {
 	opts := zap.Options{
 		Development: true,
 	}
+	flag.StringVar(&defaultConn.URL, "authentik-url", os.Getenv(connection.EnvURL),
+		"Default Authentik base URL for objects without spec.authentikRef (env "+connection.EnvURL+"). "+
+			"Empty disables the default connection.")
+	flag.StringVar(&defaultConn.TokenFile, "authentik-token-file", "",
+		"File holding the default connection's API token. If unset, the "+connection.EnvToken+" env var is used.")
+	flag.StringVar(&defaultConn.CAFile, "authentik-ca-file", "",
+		"Optional PEM CA bundle for the default connection, trusted in addition to system roots.")
+	flag.BoolVar(&defaultConn.InsecureSkipVerify, "authentik-insecure-skip-verify", false,
+		"Disable TLS verification for the default connection. Testing only.")
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
@@ -182,37 +193,54 @@ func main() {
 		os.Exit(1)
 	}
 
+	defaultCfg, err := connection.DefaultConfig(defaultConn, os.Getenv)
+	if err != nil {
+		setupLog.Error(err, "Invalid default Authentik connection")
+		os.Exit(1)
+	}
+	if defaultCfg != nil {
+		setupLog.Info("Configured default Authentik connection", "url", defaultCfg.URL)
+	} else {
+		setupLog.Info("No default Authentik connection; objects must set spec.authentikRef")
+	}
+	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg}
+
 	if err := (&controller.AuthentikDeploymentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Connections: connections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikdeployment")
 		os.Exit(1)
 	}
 	if err := (&controller.AuthentikApplicationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Connections: connections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikapplication")
 		os.Exit(1)
 	}
 	if err := (&controller.AuthentikUserReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Connections: connections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikuser")
 		os.Exit(1)
 	}
 	if err := (&controller.AuthentikGroupReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Connections: connections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikgroup")
 		os.Exit(1)
 	}
 	if err := (&controller.AuthentikOAuthProviderReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Connections: connections,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikoauthprovider")
 		os.Exit(1)

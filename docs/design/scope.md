@@ -82,6 +82,58 @@ The spec field was chosen over an annotation on the target because the decision
 belongs to whoever owns the CR, and it stays visible in one place in Git rather
 than on a live object the operator is about to take over.
 
+## Decided: connection model (TASK-01)
+
+API objects (`AuthentikApplication`, `AuthentikOAuthProvider`, `AuthentikUser`,
+`AuthentikGroup`) name the Authentik they belong to with an optional
+`spec.authentikRef.name`: an `AuthentikDeployment` in the **same namespace**.
+Cross-namespace references are not supported, because the referenced
+deployment carries an API token and referencing it grants its privileges.
+
+`AuthentikDeployment.spec.mode` is required (no default, so managing
+workloads is always asked for explicitly):
+
+| mode | manages | connection |
+|---|---|---|
+| `ConnectOnly` | nothing; supplies URL, token and CA for an Authentik installed elsewhere (e.g. Helm) | `spec.connection` required |
+| `Managed` | the Authentik workloads (not implemented yet) | `spec.connection` optional; derived later |
+
+```yaml
+spec:
+  mode: ConnectOnly
+  connection:
+    url: https://authentik.example.com        # http only if the URL says so
+    tokenSecretRef: {name: authentik-operator-token, key: token}
+    caBundle:                                 # optional; exactly one source
+      configMapKeyRef: {name: trust-bundle, key: ca.crt}
+    insecureSkipVerify: false                 # mutually exclusive with caBundle
+```
+
+When `authentikRef` is omitted, the operator-level **default connection** is
+used, configured by flags / environment (compatible with JeffResc):
+
+| flag | env | notes |
+|---|---|---|
+| `--authentik-url` | `AUTHENTIK_URL` | empty disables the default |
+| `--authentik-token-file` | `AUTHENTIK_TOKEN` | token from a mounted Secret file, else the env var (set via `valueFrom.secretKeyRef`); never a flag value; read at startup |
+| `--authentik-ca-file` | | optional PEM bundle |
+| `--authentik-insecure-skip-verify` | | testing only |
+
+With neither a ref nor a default, an object is not reconciled and says so in
+its status (reason `NoConnection`).
+
+Token handling: always read from a Secret (or a file/env populated from one),
+never logged, never written to a spec or status. Secrets are read through the
+uncached API reader; the `AuthentikDeployment` controller watches only Secret
+and ConfigMap *metadata* to pick up token/CA rotation, and clients are rebuilt
+only when URL, token, CA or TLS mode change.
+
+The `AuthentikDeployment` controller reports reachability in the `Connected`
+condition (checked via `GET /api/v3/core/users/me/`, every 5 minutes when
+healthy, 30 seconds when not) and the resolved base URL in `status.url`.
+Operator readiness does not depend on any Authentik being reachable, since
+one operator may serve several.
+
 ## Known upstream defects this rewrite exists to fix
 
 From `docs/refactor/authentik-operator-code-map.md` §9, condensed:
