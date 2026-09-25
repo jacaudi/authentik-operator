@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none (Navigator-only; project_management = none)
-- Status: Planned
+- Status: In Progress (Phase 1 done; Phase 2 awaiting connection-model decision)
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -19,13 +19,19 @@ with the token in Secret `authentik-operator-token` key `token`.
 
 ## Implementation Plan
 ### Phase 1: client
-- [ ] `internal/authentik/` wrapping the official generated client
+- [x] `internal/authentik/` wrapping the official generated client
       `goauthentik.io/api/v3` (JeffResc uses it; pins track Authentik releases).
-      Pin to the Authentik version under test; record the pairing in docs.
-- [ ] Pagination on every list call.
-- [ ] Typed errors: NotFound only on 404 (the Rust original mapped 400 to NotFound).
-- [ ] Retry with backoff on 429/5xx; client-side rate limit (parity: 10 rps, burst 20).
-- [ ] Lookups by stable identifier: flows by slug, scope mappings by `scope_name`
+      Pinned: `goauthentik.io/api/v3 v3.2026080.3` <-> Authentik 2026.8.3.
+- [x] Pagination on every list call (`ListAll` follows `pagination.next`).
+- [x] Typed errors: NotFound only on 404 (the Rust original mapped 400 to NotFound).
+      `APIError` carries status + truncated body; `IsNotFound`, `IsConflict`, `StatusCode`.
+- [x] Retry with backoff on 429/5xx; client-side rate limit (parity: 10 rps, burst 20).
+      3 retries, jittered exponential backoff, honours `Retry-After`. 5xx and transport
+      errors are retried only for idempotent methods (never replay a POST that may
+      have applied); 429 is retried for any method. 30s per-attempt timeout.
+- [x] Lookups by stable identifier (`FlowBySlug`, `ScopeMappingByScopeName`,
+      `ScopeMappingByManaged`, `CertificateByName`, `PropertyMappingByName`,
+      `PropertyMappingByUUID`; exact match required, >1 match is `ErrAmbiguous`): flows by slug, scope mappings by `scope_name`
       (or managed name), certificates by name, property mappings by UUID or name.
       Never by display name alone (renames orphan CRs -- upstream defect).
 
@@ -52,6 +58,6 @@ Options -- pick one and record it in `docs/design/scope.md`:
 - Blocks: TASK-02, TASK-03, TASK-04, TASK-05, TASK-08.
 
 ## Completion Checklist
-- [ ] Unit tests with an httptest fake (pagination, 400 vs 404, retry, auth header)
-- [ ] envtest suite still green; `go vet`, `make lint` clean
+- [x] Unit tests with an httptest fake (pagination, 400 vs 404, retry, auth header, TLS/CA, rate limit)
+- [x] envtest suite still green; `go vet`, `make lint` clean
 - [ ] scope.md updated with the connection decision
