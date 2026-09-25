@@ -20,18 +20,15 @@ import (
 	"context"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/connection"
@@ -46,12 +43,13 @@ const (
 	reasonConnectionFailed = "ConnectionFailed"
 	reasonNotImplemented   = "ManagedModeNotImplemented"
 
-	// Field indexes used to map Secret / ConfigMap events to deployments.
-	indexConnectionSecrets    = ".spec.connection.secrets"
-	indexConnectionConfigMaps = ".spec.connection.configMaps"
-
 	healthyRecheck   = 5 * time.Minute
 	unhealthyRecheck = 30 * time.Second
+	// pingTimeout bounds one health check, retries included, so an
+	// unreachable Authentik cannot monopolise a worker.
+	pingTimeout = 15 * time.Second
+
+	maxConcurrentReconciles = 4
 )
 
 // AuthentikDeploymentReconciler reconciles a AuthentikDeployment object
@@ -64,8 +62,8 @@ type AuthentikDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get
 
 // Reconcile verifies the connection an AuthentikDeployment describes and
 // reports it in the Connected condition. Managing Authentik workloads
@@ -107,7 +105,9 @@ func (r *AuthentikDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.
 			break
 		}
 		status.URL = resolved.Client.BaseURL()
-		user, err := resolved.Client.Ping(ctx)
+		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		user, err := resolved.Client.Ping(pingCtx)
+		cancel()
 		if err != nil {
 			log.Info("Could not connect to Authentik", "url", status.URL, "error", err.Error())
 			cond.Status = metav1.ConditionFalse
@@ -134,67 +134,16 @@ func (r *AuthentikDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Secrets and ConfigMaps are deliberately not watched: a watch needs
+// cluster-wide list/watch on Secrets (RBAC has no metadata-only verb). Token
+// and CA rotation still take effect immediately for API objects, which
+// re-read the Secret on every reconcile; the Connected condition catches up
+// on the next periodic recheck.
 func (r *AuthentikDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	ctx := context.Background()
-	idx := mgr.GetFieldIndexer()
-	if err := idx.IndexField(ctx, &authentikiov1alpha1.AuthentikDeployment{}, indexConnectionSecrets,
-		func(o client.Object) []string {
-			return connectionSecretNames(o.(*authentikiov1alpha1.AuthentikDeployment))
-		}); err != nil {
-		return err
-	}
-	if err := idx.IndexField(ctx, &authentikiov1alpha1.AuthentikDeployment{}, indexConnectionConfigMaps,
-		func(o client.Object) []string {
-			return connectionConfigMapNames(o.(*authentikiov1alpha1.AuthentikDeployment))
-		}); err != nil {
-		return err
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikDeployment{}).
-		// Metadata-only watches: react to token / CA changes without caching
-		// Secret contents cluster-wide.
-		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapBy(indexConnectionSecrets))).
-		WatchesMetadata(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapBy(indexConnectionConfigMaps))).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Named("authentikdeployment").
 		Complete(r)
-}
-
-func (r *AuthentikDeploymentReconciler) mapBy(index string) handler.MapFunc {
-	return func(ctx context.Context, o client.Object) []reconcile.Request {
-		var list authentikiov1alpha1.AuthentikDeploymentList
-		if err := r.List(ctx, &list, client.InNamespace(o.GetNamespace()),
-			client.MatchingFields{index: o.GetName()}); err != nil {
-			logf.FromContext(ctx).Error(err, "Failed to list AuthentikDeployments for watched object",
-				"object", client.ObjectKeyFromObject(o))
-			return nil
-		}
-		reqs := make([]reconcile.Request, 0, len(list.Items))
-		for i := range list.Items {
-			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: list.Items[i].Namespace, Name: list.Items[i].Name,
-			}})
-		}
-		return reqs
-	}
-}
-
-func connectionSecretNames(d *authentikiov1alpha1.AuthentikDeployment) []string {
-	c := d.Spec.Connection
-	if c == nil {
-		return nil
-	}
-	names := []string{c.TokenSecretRef.Name}
-	if c.CABundle != nil && c.CABundle.SecretKeyRef != nil && c.CABundle.SecretKeyRef.Name != c.TokenSecretRef.Name {
-		names = append(names, c.CABundle.SecretKeyRef.Name)
-	}
-	return names
-}
-
-func connectionConfigMapNames(d *authentikiov1alpha1.AuthentikDeployment) []string {
-	c := d.Spec.Connection
-	if c == nil || c.CABundle == nil || c.CABundle.ConfigMapKeyRef == nil {
-		return nil
-	}
-	return []string{c.CABundle.ConfigMapKeyRef.Name}
 }

@@ -308,6 +308,81 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
+func TestRedirectsNotFollowed(t *testing.T) {
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			leaked.Store(true)
+		}
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(other.Close)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/steal", http.StatusFound)
+	})
+	_, err := c.PropertyMappingByUUID(context.Background(), "x")
+	if leaked.Load() {
+		t.Fatal("token was sent to the redirect target")
+	}
+	if StatusCode(err) != http.StatusFound {
+		t.Fatalf("err = %v, want 302 APIError", err)
+	}
+}
+
+func TestErrorBodyOnlyFor400(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("internal secret page"))
+	})
+	_, err := c.PropertyMappingByUUID(context.Background(), "x")
+	if StatusCode(err) != 403 || strings.Contains(err.Error(), "secret page") {
+		t.Fatalf("403 body surfaced in error: %v", err)
+	}
+}
+
+func TestConflictVsValidation(t *testing.T) {
+	dup := &APIError{StatusCode: 400, Body: `{"slug":["flow with this slug already exists."]}`}
+	bad := &APIError{StatusCode: 400, Body: `{"name":["This field is required."]}`}
+	if !IsConflict(dup) || IsValidation(dup) {
+		t.Error("duplicate slug not classified as conflict")
+	}
+	if IsConflict(bad) || !IsValidation(bad) {
+		t.Error("plain validation error classified as conflict")
+	}
+	if !IsConflict(&APIError{StatusCode: 409}) {
+		t.Error("409 not a conflict")
+	}
+}
+
+func TestConfigRedactsToken(t *testing.T) {
+	cfg := Config{URL: "https://ak", Token: testToken}
+	for _, s := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg), fmt.Sprint(&cfg)} {
+		if strings.Contains(s, testToken) {
+			t.Fatalf("token leaked: %s", s)
+		}
+	}
+}
+
+func TestBackoffLargeAttemptDoesNotPanic(t *testing.T) {
+	rt := &retryTransport{}
+	for _, a := range []int{0, 5, 35, 64, 1000} {
+		if d := rt.backoff(a, nil); d <= 0 || d > maxBackoff {
+			t.Fatalf("attempt %d: backoff %v", a, d)
+		}
+	}
+}
+
+func TestListAllStopsOnNonAdvancingNext(t *testing.T) {
+	calls := 0
+	items, err := ListAll(func(page int32) ([]int, api.Pagination, *http.Response, error) {
+		calls++
+		return []int{int(page)}, api.Pagination{Next: float32(page)}, nil, nil
+	})
+	if err != nil || calls != 1 || len(items) != 1 {
+		t.Fatalf("calls=%d items=%v err=%v", calls, items, err)
+	}
+}
+
 func TestTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
 	t.Cleanup(srv.Close)

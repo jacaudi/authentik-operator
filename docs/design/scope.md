@@ -123,16 +123,35 @@ With neither a ref nor a default, an object is not reconciled and says so in
 its status (reason `NoConnection`).
 
 Token handling: always read from a Secret (or a file/env populated from one),
-never logged, never written to a spec or status. Secrets are read through the
-uncached API reader; the `AuthentikDeployment` controller watches only Secret
-and ConfigMap *metadata* to pick up token/CA rotation, and clients are rebuilt
-only when URL, token, CA or TLS mode change.
+never logged, never written to a spec or status (`authentik.Config` redacts
+the token in `%v`/`%+v`/`%#v`). The HTTP client never follows redirects: the
+bearer header is added in the transport, so a followed redirect would hand the
+token to whatever host the redirect names. Error bodies are surfaced in
+conditions only for 400 (field validation), so a user-chosen URL cannot be
+used to read arbitrary responses back through status.
+
+RBAC: the operator has cluster-wide **get** on Secrets and ConfigMaps and
+nothing more -- no list, no watch, no cache. Secrets are fetched by name
+through the uncached API reader on every resolve, so token/CA rotation takes
+effect immediately for API objects; the `Connected` condition catches up on
+its next periodic recheck. A Forbidden read is reported as condition reason
+`Forbidden`. Narrowing further to per-namespace opt-in (a get-only ClusterRole
+bound by namespace owners with a RoleBinding) is an open follow-up.
+
+Trust boundary: the operator reads the Secret named in `tokenSecretRef` with
+its own privileges and sends its value to `connection.url`. Anyone who can
+create or update an `AuthentikDeployment` in a namespace can therefore read
+any Secret in that namespace. Grant `AuthentikDeployment` write only to
+principals who already hold Secret read there. (Requiring an opt-in label on
+referenced Secrets is an open follow-up.) Operators should also restrict the
+operator's egress with a NetworkPolicy, since connection URLs are user input.
 
 The `AuthentikDeployment` controller reports reachability in the `Connected`
-condition (checked via `GET /api/v3/core/users/me/`, every 5 minutes when
-healthy, 30 seconds when not) and the resolved base URL in `status.url`.
-Operator readiness does not depend on any Authentik being reachable, since
-one operator may serve several.
+condition (checked via `GET /api/v3/core/users/me/` with a 15s overall
+deadline, every 5 minutes when healthy, 30 seconds when not) and the resolved
+base URL in `status.url`. Operator readiness does not depend on any Authentik
+being reachable, since one operator may serve several. `spec.mode` is
+immutable.
 
 ## Known upstream defects this rewrite exists to fix
 

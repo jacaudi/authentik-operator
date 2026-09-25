@@ -137,7 +137,10 @@ func (t *retryTransport) backoff(attempt int, resp *http.Response) time.Duration
 	if base <= 0 {
 		base = defaultBaseBackoff
 	}
-	d := min(base<<attempt, maxBackoff)
+	d := maxBackoff
+	if attempt < 16 {
+		d = min(base<<attempt, maxBackoff)
+	}
 	// Full jitter in [d/2, d).
 	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
 }

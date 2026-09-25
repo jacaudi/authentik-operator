@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -156,13 +157,20 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		Expect(cond.Reason).To(Equal("ManagedModeNotImplemented"))
 	})
 
-	It("maps token Secrets to the deployments that reference them", func() {
-		d := connectOnly("mapped", "shared-token")
-		d.Spec.Connection.CABundle = &authentikiov1alpha1.CABundleSource{
-			SecretKeyRef: &authentikiov1alpha1.SecretKeyRef{Name: "ca-secret"},
-		}
-		Expect(connectionSecretNames(d)).To(ConsistOf("shared-token", "ca-secret"))
-		Expect(connectionConfigMapNames(d)).To(BeEmpty())
+	It("reports ConnectionFailed within the ping timeout for an unresponsive Authentik", func() {
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		}))
+		DeferCleanup(hang.Close)
+		create(tokenSecret("ak-token-hang", "good-token"))
+		d := connectOnly("connect-hang", "ak-token-hang")
+		d.Spec.Connection.URL = hang.URL
+		create(d)
+
+		start := time.Now()
+		_, cond, _ := reconcileAndGetCondition("connect-hang")
+		Expect(time.Since(start)).To(BeNumerically("<", pingTimeout+5*time.Second))
+		Expect(cond.Reason).To(Equal("ConnectionFailed"))
 	})
 
 	Context("admission validation", func() {
@@ -190,7 +198,7 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		It("rejects a CA bundle with both sources set", func() {
 			d := connectOnly("invalid-ca", "x")
 			d.Spec.Connection.CABundle = &authentikiov1alpha1.CABundleSource{
-				SecretKeyRef:    &authentikiov1alpha1.SecretKeyRef{Name: "a"},
+				SecretKeyRef:    &authentikiov1alpha1.CASecretKeyRef{Name: "a"},
 				ConfigMapKeyRef: &authentikiov1alpha1.ConfigMapKeyRef{Name: "b"},
 			}
 			Expect(k8sClient.Create(ctx, d)).To(MatchError(ContainSubstring("exactly one of")))
@@ -200,9 +208,28 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 			d := connectOnly("invalid-insecure", "x")
 			d.Spec.Connection.InsecureSkipVerify = true
 			d.Spec.Connection.CABundle = &authentikiov1alpha1.CABundleSource{
-				SecretKeyRef: &authentikiov1alpha1.SecretKeyRef{Name: "a"},
+				SecretKeyRef: &authentikiov1alpha1.CASecretKeyRef{Name: "a"},
 			}
 			Expect(k8sClient.Create(ctx, d)).To(MatchError(ContainSubstring("mutually exclusive")))
+		})
+
+		It("defaults the CA Secret key to ca.crt and the token key to token", func() {
+			d := connectOnly("defaults", "tok")
+			d.Spec.Connection.CABundle = &authentikiov1alpha1.CABundleSource{
+				SecretKeyRef: &authentikiov1alpha1.CASecretKeyRef{Name: "ca"},
+			}
+			create(d)
+			var got authentikiov1alpha1.AuthentikDeployment
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(d), &got)).To(Succeed())
+			Expect(got.Spec.Connection.TokenSecretRef.Key).To(Equal("token"))
+			Expect(got.Spec.Connection.CABundle.SecretKeyRef.Key).To(Equal("ca.crt"))
+		})
+
+		It("rejects changing mode", func() {
+			d := connectOnly("immutable-mode", "tok")
+			create(d)
+			d.Spec.Mode = authentikiov1alpha1.DeploymentModeManaged
+			Expect(k8sClient.Update(ctx, d)).To(MatchError(ContainSubstring("mode is immutable")))
 		})
 	})
 })

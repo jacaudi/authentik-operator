@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 var (
@@ -45,9 +46,13 @@ type APIError struct {
 	Body string
 }
 
+// Error includes the response body only for 400 (Authentik's field-level
+// validation messages). Other bodies are kept in Body but not surfaced, so
+// error strings that end up in status conditions cannot be used to read
+// arbitrary responses from a user-chosen URL.
 func (e *APIError) Error() string {
 	msg := fmt.Sprintf("authentik: %s %s: %d %s", e.Method, e.Path, e.StatusCode, http.StatusText(e.StatusCode))
-	if e.Body != "" {
+	if e.Body != "" && e.StatusCode == http.StatusBadRequest {
 		msg += ": " + e.Body
 	}
 	return msg
@@ -61,12 +66,26 @@ func (e *APIError) Is(target error) bool {
 // IsNotFound reports whether err denotes a missing object.
 func IsNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
 
-// IsConflict reports whether err is a 409 or a 400 (Authentik reports unique
-// constraint violations such as a duplicate slug as 400).
+// IsConflict reports whether err is a 409, or a 400 whose body reports a
+// uniqueness violation (Authentik reports a duplicate slug as 400). Other
+// 400s are validation errors: see IsValidation. Never treat a plain 400 as
+// "exists" -- that would adopt or overwrite on a bad-field error.
 func IsConflict(err error) bool {
 	apiErr, ok := errors.AsType[*APIError](err)
-	return ok &&
-		(apiErr.StatusCode == http.StatusConflict || apiErr.StatusCode == http.StatusBadRequest)
+	if !ok {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusConflict {
+		return true
+	}
+	body := strings.ToLower(apiErr.Body)
+	return apiErr.StatusCode == http.StatusBadRequest &&
+		(strings.Contains(body, "already exists") || strings.Contains(body, "unique"))
+}
+
+// IsValidation reports whether err is a 400 that is not a uniqueness conflict.
+func IsValidation(err error) bool {
+	return StatusCode(err) == http.StatusBadRequest && !IsConflict(err)
 }
 
 // StatusCode returns the HTTP status of err, or 0 if it is not an APIError.

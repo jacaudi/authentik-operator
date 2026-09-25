@@ -103,7 +103,7 @@ spec:
                           (e.g. ca.crt of a cert-manager Certificate).
                         properties:
                           key:
-                            default: token
+                            default: ca.crt
                             description: key within the Secret.
                             maxLength: 253
                             minLength: 1
@@ -131,6 +131,10 @@ spec:
                       tokenSecretRef selects the Secret key holding an Authentik API token.
                       The Secret must be in the same namespace as the AuthentikDeployment.
                       The token is never logged or copied into any status.
+
+                      Note: the operator reads this Secret with its own privileges and sends
+                      its value to url. Being able to create an AuthentikDeployment in a
+                      namespace therefore amounts to being able to read Secrets there.
                     properties:
                       key:
                         default: token
@@ -167,10 +171,14 @@ spec:
                   mode selects whether this resource manages the Authentik workloads
                   (Managed) or only describes how to reach an existing Authentik
                   (ConnectOnly). There is no default: managing workloads must be asked for.
+                  Immutable: switching would orphan or adopt workloads implicitly.
                 enum:
                 - Managed
                 - ConnectOnly
                 type: string
+                x-kubernetes-validations:
+                - message: mode is immutable
+                  rule: self == oldSelf
             required:
             - mode
             type: object

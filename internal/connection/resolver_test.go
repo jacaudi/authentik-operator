@@ -24,12 +24,15 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/authentik"
@@ -134,6 +137,38 @@ func TestForRef(t *testing.T) {
 	// Same namespace only: the name is looked up in the object's namespace.
 	if _, err := r.ForRef(ctx, "other", ref("ok")); Reason(err) != ReasonDeploymentNotFound {
 		t.Errorf("cross-namespace lookup resolved: %v", err)
+	}
+}
+
+func TestForbiddenAndCAKeyDefault(t *testing.T) {
+	scheme := newScheme(t)
+	withCA := conn("tok")
+	withCA.CABundle = &authentikiov1alpha1.CABundleSource{
+		SecretKeyRef: &authentikiov1alpha1.CASecretKeyRef{Name: "ca"},
+	}
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		deployment("ca-default", withCA),
+		secret("tok", map[string]string{tokenKey: "x"}),
+		secret("ca", map[string]string{"ca.crt": "not a pem"}),
+		deployment("forbidden", conn("locked")),
+	).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key.Name == "locked" {
+				return apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, key.Name, errors.New("rbac"))
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
+	r := &Resolver{Reader: reader}
+	ctx := context.Background()
+
+	// Empty key in code falls back to ca.crt (not token); the PEM is then
+	// rejected by the client, proving the right key was read.
+	if _, err := r.ForRef(ctx, ns, ref("ca-default")); Reason(err) != ReasonInvalidConfig {
+		t.Fatalf("ca default key: reason %q err %v", Reason(err), err)
+	}
+	if _, err := r.ForRef(ctx, ns, ref("forbidden")); Reason(err) != ReasonForbidden {
+		t.Fatalf("forbidden: reason %q err %v", Reason(err), err)
 	}
 }
 

@@ -81,6 +81,15 @@ type Config struct {
 	baseBackoff time.Duration
 }
 
+// String redacts the token so a Config can never leak it via %v / %+v.
+func (c Config) String() string {
+	return fmt.Sprintf("authentik.Config{URL:%q, Token:<redacted>, CABundle:%d bytes, InsecureSkipVerify:%t}",
+		c.URL, len(c.CABundle), c.InsecureSkipVerify)
+}
+
+// GoString redacts the token for %#v.
+func (c Config) GoString() string { return c.String() }
+
 // Client is a configured Authentik API client.
 type Client struct {
 	api     *api.APIClient
@@ -134,7 +143,13 @@ func New(cfg Config) (*Client, error) {
 
 	apiCfg := api.NewConfiguration()
 	apiCfg.Servers = api.ServerConfigurations{{URL: base + apiPath}}
-	apiCfg.HTTPClient = &http.Client{Transport: rt}
+	apiCfg.HTTPClient = &http.Client{
+		Transport: rt,
+		// Never follow redirects: the auth header is added inside the
+		// transport, so a followed redirect would carry the token to
+		// whatever host the redirect names. The API never redirects.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	apiCfg.UserAgent = "authentik-operator"
 	if cfg.UserAgent != "" {
 		apiCfg.UserAgent = cfg.UserAgent

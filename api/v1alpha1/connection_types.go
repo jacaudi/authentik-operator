@@ -46,6 +46,10 @@ type ConnectionSpec struct {
 	// tokenSecretRef selects the Secret key holding an Authentik API token.
 	// The Secret must be in the same namespace as the AuthentikDeployment.
 	// The token is never logged or copied into any status.
+	//
+	// Note: the operator reads this Secret with its own privileges and sends
+	// its value to url. Being able to create an AuthentikDeployment in a
+	// namespace therefore amounts to being able to read Secrets there.
 	// +required
 	TokenSecretRef SecretKeyRef `json:"tokenSecretRef"`
 
@@ -70,6 +74,24 @@ type SecretKeyRef struct {
 
 	// key within the Secret.
 	// +kubebuilder:default=token
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
+// CASecretKeyRef selects a CA bundle key of a Secret in the referring
+// object's namespace. Separate from SecretKeyRef so the key defaults to
+// ca.crt rather than token.
+type CASecretKeyRef struct {
+	// name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +required
+	Name string `json:"name"`
+
+	// key within the Secret.
+	// +kubebuilder:default=ca.crt
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +optional
@@ -103,5 +125,5 @@ type CABundleSource struct {
 	// secretKeyRef selects a Secret key holding the bundle
 	// (e.g. ca.crt of a cert-manager Certificate).
 	// +optional
-	SecretKeyRef *SecretKeyRef `json:"secretKeyRef,omitempty"`
+	SecretKeyRef *CASecretKeyRef `json:"secretKeyRef,omitempty"`
 }

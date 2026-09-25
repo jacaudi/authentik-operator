@@ -50,6 +50,7 @@ const (
 	ReasonSecretNotFound          = "SecretNotFound"
 	ReasonSecretKeyMissing        = "SecretKeyMissing"
 	ReasonCABundleNotFound        = "CABundleNotFound"
+	ReasonForbidden               = "Forbidden"
 	ReasonInvalidConfig           = "InvalidConfig"
 )
 
@@ -78,7 +79,8 @@ func Reason(err error) string {
 // Resolver builds (and caches) Authentik clients for API objects.
 type Resolver struct {
 	// Reader reads AuthentikDeployments, Secrets and ConfigMaps. Use the
-	// manager's API reader so that Secrets are not cached cluster-wide.
+	// manager's API reader: Secrets are fetched by name on demand and never
+	// listed, watched or cached.
 	Reader client.Reader
 	// Default is the operator-level connection; nil when not configured.
 	Default *authentik.Config
@@ -121,14 +123,7 @@ func (r *Resolver) ForRef(ctx context.Context, namespace string, ref *authentiki
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
 	var d authentikiov1alpha1.AuthentikDeployment
 	if err := r.Reader.Get(ctx, key, &d); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &Error{
-				Reason:  ReasonDeploymentNotFound,
-				Message: fmt.Sprintf("AuthentikDeployment %s not found", key),
-				Err:     err,
-			}
-		}
-		return nil, fmt.Errorf("get AuthentikDeployment %s: %w", key, err)
+		return nil, readError("AuthentikDeployment", key.Namespace, key.Name, ReasonDeploymentNotFound, err)
 	}
 	return r.ForDeployment(ctx, &d)
 }
@@ -165,7 +160,8 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 		}
 	}
 
-	token, err := r.secretValue(ctx, d.Namespace, conn.TokenSecretRef, "token", ReasonSecretNotFound)
+	token, err := r.secretValue(ctx, d.Namespace, conn.TokenSecretRef.Name, conn.TokenSecretRef.Key,
+		"token", ReasonSecretNotFound, ReasonSecretKeyMissing)
 	if err != nil {
 		return authentik.Config{}, err
 	}
@@ -184,7 +180,8 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 	if ca := conn.CABundle; ca != nil {
 		switch {
 		case ca.SecretKeyRef != nil:
-			cfg.CABundle, err = r.secretValue(ctx, d.Namespace, *ca.SecretKeyRef, "ca.crt", ReasonCABundleNotFound)
+			cfg.CABundle, err = r.secretValue(ctx, d.Namespace, ca.SecretKeyRef.Name, ca.SecretKeyRef.Key,
+				"ca.crt", ReasonCABundleNotFound, ReasonCABundleNotFound)
 		case ca.ConfigMapKeyRef != nil:
 			cfg.CABundle, err = r.configMapValue(ctx, d.Namespace, *ca.ConfigMapKeyRef)
 		}
@@ -195,31 +192,45 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 	return cfg, nil
 }
 
-func (r *Resolver) secretValue(ctx context.Context, namespace string, ref authentikiov1alpha1.SecretKeyRef,
-	defaultKey, notFoundReason string) ([]byte, error) {
-	k := ref.Key
-	if k == "" {
-		k = defaultKey
+func (r *Resolver) secretValue(ctx context.Context, namespace, name, key, defaultKey,
+	notFoundReason, keyMissingReason string) ([]byte, error) {
+	if key == "" {
+		key = defaultKey
 	}
 	var s corev1.Secret
-	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &s); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &Error{
-				Reason:  notFoundReason,
-				Message: fmt.Sprintf("Secret %s/%s not found", namespace, ref.Name),
-				Err:     err,
-			}
-		}
-		return nil, fmt.Errorf("get Secret %s/%s: %w", namespace, ref.Name, err)
+	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &s); err != nil {
+		return nil, readError("Secret", namespace, name, notFoundReason, err)
 	}
-	v, ok := s.Data[k]
+	v, ok := s.Data[key]
 	if !ok {
 		return nil, &Error{
-			Reason:  ReasonSecretKeyMissing,
-			Message: fmt.Sprintf("Secret %s/%s has no key %q", namespace, ref.Name, k),
+			Reason:  keyMissingReason,
+			Message: fmt.Sprintf("Secret %s/%s has no key %q", namespace, name, key),
 		}
 	}
 	return v, nil
+}
+
+// readError maps a failed Get to a condition-bearing *Error where the cause
+// is actionable by the user (missing object, operator not granted access).
+func readError(kind, namespace, name, notFoundReason string, err error) error {
+	switch {
+	case apierrors.IsNotFound(err):
+		return &Error{
+			Reason:  notFoundReason,
+			Message: fmt.Sprintf("%s %s/%s not found", kind, namespace, name),
+			Err:     err,
+		}
+	case apierrors.IsForbidden(err):
+		return &Error{
+			Reason: ReasonForbidden,
+			Message: fmt.Sprintf("operator is not permitted to get %s %s/%s; grant its ServiceAccount "+
+				"get on this resource in namespace %s", kind, namespace, name, namespace),
+			Err: err,
+		}
+	default:
+		return fmt.Errorf("get %s %s/%s: %w", kind, namespace, name, err)
+	}
 }
 
 func (r *Resolver) configMapValue(ctx context.Context, namespace string, ref authentikiov1alpha1.ConfigMapKeyRef) ([]byte, error) {
@@ -229,14 +240,7 @@ func (r *Resolver) configMapValue(ctx context.Context, namespace string, ref aut
 	}
 	var cm corev1.ConfigMap
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &cm); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &Error{
-				Reason:  ReasonCABundleNotFound,
-				Message: fmt.Sprintf("ConfigMap %s/%s not found", namespace, ref.Name),
-				Err:     err,
-			}
-		}
-		return nil, fmt.Errorf("get ConfigMap %s/%s: %w", namespace, ref.Name, err)
+		return nil, readError("ConfigMap", namespace, ref.Name, ReasonCABundleNotFound, err)
 	}
 	if v, ok := cm.Data[k]; ok {
 		return []byte(v), nil

@@ -91,7 +91,8 @@ func main() {
 		"Default Authentik base URL for objects without spec.authentikRef (env "+connection.EnvURL+"). "+
 			"Empty disables the default connection.")
 	flag.StringVar(&defaultConn.TokenFile, "authentik-token-file", "",
-		"File holding the default connection's API token. If unset, the "+connection.EnvToken+" env var is used.")
+		"File holding the default connection's API token. If unset, the "+connection.EnvToken+" env var is used. "+
+			"Read once at startup: rotating the default token requires a restart.")
 	flag.StringVar(&defaultConn.CAFile, "authentik-ca-file", "",
 		"Optional PEM CA bundle for the default connection, trusted in addition to system roots.")
 	flag.BoolVar(&defaultConn.InsecureSkipVerify, "authentik-insecure-skip-verify", false,
