@@ -40,6 +40,23 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikApplication
             properties:
+              authentikRef:
+                description: |-
+                  authentikRef names the AuthentikDeployment (same namespace) whose
+                  connection this object is reconciled against. When omitted, the
+                  operator's default connection is used.
+                properties:
+                  name:
+                    description: |-
+                      name of an AuthentikDeployment in the same namespace. Cross-namespace
+                      references are deliberately not supported: the referenced deployment
+                      carries an API token, and referencing it grants its privileges.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               foo:
                 description: foo is an example field of AuthentikApplication. Edit
                   authentikapplication_types.go to remove/update

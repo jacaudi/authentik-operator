@@ -82,6 +82,77 @@ The spec field was chosen over an annotation on the target because the decision
 belongs to whoever owns the CR, and it stays visible in one place in Git rather
 than on a live object the operator is about to take over.
 
+## Decided: connection model (TASK-01)
+
+API objects (`AuthentikApplication`, `AuthentikOAuthProvider`, `AuthentikUser`,
+`AuthentikGroup`) name the Authentik they belong to with an optional
+`spec.authentikRef.name`: an `AuthentikDeployment` in the **same namespace**.
+Cross-namespace references are not supported, because the referenced
+deployment carries an API token and referencing it grants its privileges.
+
+`AuthentikDeployment.spec.mode` is required (no default, so managing
+workloads is always asked for explicitly):
+
+| mode | manages | connection |
+|---|---|---|
+| `ConnectOnly` | nothing; supplies URL, token and CA for an Authentik installed elsewhere (e.g. Helm) | `spec.connection` required |
+| `Managed` | the Authentik workloads (not implemented yet) | `spec.connection` optional; derived later |
+
+```yaml
+spec:
+  mode: ConnectOnly
+  connection:
+    url: https://authentik.example.com        # http only if the URL says so
+    tokenSecretRef: {name: authentik-operator-token, key: token}
+    caBundle:                                 # optional; exactly one source
+      configMapKeyRef: {name: trust-bundle, key: ca.crt}
+    insecureSkipVerify: false                 # mutually exclusive with caBundle
+```
+
+When `authentikRef` is omitted, the operator-level **default connection** is
+used, configured by flags / environment (compatible with JeffResc):
+
+| flag | env | notes |
+|---|---|---|
+| `--authentik-url` | `AUTHENTIK_URL` | empty disables the default |
+| `--authentik-token-file` | `AUTHENTIK_TOKEN` | token from a mounted Secret file, else the env var (set via `valueFrom.secretKeyRef`); never a flag value; read at startup |
+| `--authentik-ca-file` | | optional PEM bundle |
+| `--authentik-insecure-skip-verify` | | testing only |
+
+With neither a ref nor a default, an object is not reconciled and says so in
+its status (reason `NoConnection`).
+
+Token handling: always read from a Secret (or a file/env populated from one),
+never logged, never written to a spec or status (`authentik.Config` redacts
+the token in `%v`/`%+v`/`%#v`). The HTTP client never follows redirects: the
+bearer header is added in the transport, so a followed redirect would hand the
+token to whatever host the redirect names. Error bodies are surfaced in
+conditions only for 400 (field validation), so a user-chosen URL cannot be
+used to read arbitrary responses back through status.
+
+RBAC: the operator has cluster-wide **get** on Secrets and ConfigMaps and
+nothing more -- no list, no watch, no cache. Secrets are fetched by name
+through the uncached API reader on every resolve, so token/CA rotation takes
+effect immediately for API objects; the `Connected` condition catches up on
+its next periodic recheck. A Forbidden read is reported as condition reason
+`Forbidden`. Narrowing further to per-namespace opt-in (a get-only ClusterRole
+bound by namespace owners with a RoleBinding) is an open follow-up.
+
+Trust boundary: the operator reads the Secret named in `tokenSecretRef` with
+its own privileges and sends its value to `connection.url`. Anyone who can
+create or update an `AuthentikDeployment` in a namespace can therefore read
+any Secret in that namespace. Grant `AuthentikDeployment` write only to
+principals who already hold Secret read there. (Requiring an opt-in label on
+referenced Secrets is an open follow-up.) Operators should also restrict the
+operator's egress with a NetworkPolicy, since connection URLs are user input.
+
+The `AuthentikDeployment` controller reports reachability in the `Connected`
+condition (checked via `GET /api/v3/core/users/me/` with a 15s overall
+deadline, every 5 minutes when healthy, 30 seconds when not) and the resolved
+base URL in `status.url`. Operator readiness does not depend on any Authentik
+being reachable, since one operator may serve several. `spec.mode` is
+immutable.
+
 ## Known upstream defects this rewrite exists to fix
 
 From `docs/refactor/authentik-operator-code-map.md` §9, condensed:
