@@ -139,12 +139,23 @@ its next periodic recheck. A Forbidden read is reported as condition reason
 bound by namespace owners with a RoleBinding) is an open follow-up.
 
 Trust boundary: the operator reads the Secret named in `tokenSecretRef` with
-its own privileges and sends its value to `connection.url`. Anyone who can
-create or update an `AuthentikDeployment` in a namespace can therefore read
-any Secret in that namespace. Grant `AuthentikDeployment` write only to
-principals who already hold Secret read there. (Requiring an opt-in label on
-referenced Secrets is an open follow-up.) Operators should also restrict the
-operator's egress with a NetworkPolicy, since connection URLs are user input.
+its own privileges and sends its value to `connection.url`. To stop an
+`AuthentikDeployment` author from using that to exfiltrate arbitrary Secrets
+in the namespace, **every referenced Secret (token and CA bundle) must carry
+the label `authentik.io/connection: "true"`**. Unlabeled Secrets are refused
+(condition reason `SecretNotOptedIn`) before any key is read or any request
+is sent. Only someone who can write the Secret can opt it in. For
+cert-manager CA Secrets, set the label via the Certificate's
+`spec.secretTemplate.labels`. The operator-level default connection
+(file/env) is unaffected.
+
+The label is enforced by the operator, not the API server: it defends
+against misuse *of* the operator, not against a compromised operator or a
+leaked ServiceAccount token, which still hold cluster-wide Secret `get`.
+Per-namespace RBAC (enforced by the API server) is the defence for that and
+is deferred to TASK-04, where the operator first needs Secret *write*. See
+the RBAC notes in TASK-04. Operators should also restrict the operator's
+egress with a NetworkPolicy, since connection URLs are user input.
 
 The `AuthentikDeployment` controller reports reachability in the `Connected`
 condition (checked via `GET /api/v3/core/users/me/` with a 15s overall

@@ -1,7 +1,8 @@
 # Connect-only: point the operator at an Authentik installed some other way
 # (e.g. the Helm chart). Manages no workloads. The token Secret must exist in
-# the same namespace, e.g.:
+# the same namespace and be opted in with the authentik.io/connection label:
 #   kubectl create secret generic authentik-operator-token --from-literal=token=<api token>
+#   kubectl label secret authentik-operator-token authentik.io/connection=true
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikDeployment
 metadata:

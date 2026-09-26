@@ -50,6 +50,70 @@ JeffResc semantics to match (`internal/template/secret.go`):
       atomically.
 - [ ] Validation: template must parse (admission webhook, TASK-06) and render.
 
+## Security and RBAC (findings from the TASK-01 review)
+
+Writing credential Secrets is the first time the operator needs Secret
+**write**. Today (post TASK-01) it holds only cluster-wide `get` on Secrets,
+plus a required opt-in label (`authentik.io/connection: "true"`) on any
+Secret an `AuthentikDeployment` references. Adding cluster-wide
+create/update/delete changes the blast radius from "read a Secret whose name
+you know" to "overwrite or plant any Secret in any namespace", which enables
+things like replacing a TLS key or an ExternalSecrets source. Decide RBAC
+here, not later.
+
+Two separate threats, two separate controls:
+
+| threat | control | enforced by |
+|---|---|---|
+| a user misuses the operator (confused deputy): makes it read or overwrite a Secret they can't touch themselves | opt-in label / ownership checks in the operator | operator code |
+| the operator itself is compromised, or its SA token leaks | least-privilege RBAC (per-namespace Roles) | API server |
+
+The label does not cover the second row: an attacker holding the SA token
+talks to the API directly.
+
+How Crossplane handles this (for comparison; verify details against current
+Crossplane docs):
+- Credentials live on a `ProviderConfig`. It was historically cluster-scoped
+  (admin-only); v2 adds a namespaced `ProviderConfig` alongside
+  `ClusterProviderConfig`. Tenants reference it by name
+  (`providerConfigRef`), so the credential-bearing object is admin-owned.
+  There is no opt-in label on Secrets.
+- Providers are granted broad, cluster-wide Secret access by the RBAC
+  manager, largely to write connection details
+  (`writeConnectionSecretToRef`, the direct analogue of this task).
+  Per-namespace RBAC is not the default there either.
+- Takeaway: the "admin-owned connection object referenced by tenants"
+  pattern (a cluster-scoped `ClusterAuthentikConnection`) is the structural
+  alternative to the label. It would reopen scope.md's "all kinds
+  namespaced" decision, so consider it only if untrusted tenants become a
+  requirement.
+
+Decisions to make in this task:
+- [ ] **Write scope.** The operator writes Secrets only in the CR's own
+      namespace (already JeffResc semantics). Keep that invariant and test it.
+- [ ] **Never overwrite a foreign Secret.** Before updating an existing Secret
+      at the target name, require it to be controller-owned by this CR (or
+      carry `authentik.io/created-by`). Otherwise fail with a condition rather
+      than take it over, which matches the opt-in adoption principle. This
+      closes the "point `secret.name` at another app's Secret" deputy attack.
+- [ ] **Verbs.** create/update/patch/delete on Secrets. Owner references mean
+      GC handles deletion, so check whether `delete` is needed at all (it is,
+      for the rename-deletes-old-Secret behaviour).
+- [ ] **Per-namespace RBAC as an install option.** Ship an alternative
+      kustomize overlay / Helm value that replaces the ClusterRole Secret rules
+      with a ClusterRole bound per namespace via RoleBinding (namespace owners
+      opt in). Keep cluster-wide as the default (simple homelab installs), and
+      document the trade-off. The resolver already maps Forbidden to condition
+      reason `Forbidden`; do the same for writes.
+- [ ] **No cache for Secrets.** Keep using the API reader for Secret reads.
+      If the controller needs to react to its own Secrets being edited or
+      deleted, watch them with a label selector (`cache.Options.ByObject`) on
+      `app.kubernetes.io/managed-by=authentik-operator` instead of cluster-wide.
+      Note: this still needs list/watch RBAC on Secrets. Weigh against
+      periodic requeue.
+- [ ] **Secret contents never in logs, events or status** (clientSecret
+      especially); status may hold clientId only.
+
 ## Dependencies
 - Requires: TASK-02, TASK-03
 - Blocks: TASK-08, TASK-09
