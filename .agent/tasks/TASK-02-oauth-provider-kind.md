@@ -54,18 +54,38 @@ client never calls `SetGrantTypes`.
       Created / Updated / Deleted / ProviderMissing / Orphaned / DeletionFailed
 
 ### Behaviour notes
-- Identity is `status.providerPk`. A pre-existing provider with the same name
-  is a `Conflict`, never taken over (adoption: TASK-05). Known gap: if the
-  status write after a successful create fails, the next reconcile sees the
-  provider as a conflict; TASK-05 adoption is the recovery path.
-- Drift is repaired with PATCH containing only differing fields; unmanaged
-  fields (client secret, JWT federation, unset optional fields) are untouched.
+- Identity is `status.providerPk` **plus** `status.clientId`. Before any PATCH
+  or DELETE the provider's client ID must match `status.clientId`; a pk that
+  now names another provider (connection switched to another Authentik, DB
+  restore, client ID changed in the UI) is a `Conflict` and is never modified
+  or deleted.
+- Client ID: `spec.clientId` if pinned, else derived `k8s-<metadata.uid>`
+  (public, not a secret). Because only this resource sends that ID, a create
+  whose outcome was lost (timeout, undecodable response, failed status write)
+  is recovered on the next reconcile instead of becoming a Conflict.
+- A pre-existing provider with the same name and any other client ID is a
+  `Conflict`, never taken over (adoption: TASK-05).
+- Drift is repaired with PATCH containing only differing fields. Every managed
+  field has a default (incl. `refreshTokenThreshold: seconds=0`,
+  `logoutMethod: backchannel`), so removing a field from spec resets it.
+  Unmanaged fields (client secret, JWT federation) are untouched.
+- The finalizer is added/removed with a metadata-only patch, so explicit empty
+  lists (`scopes: []`) are not re-defaulted.
 - A provider deleted out of band is recreated (new client secret) with a
   Warning event.
 - Finalizer `authentik.io/finalizer` deletes only providers this resource
-  created. If the connection is permanently gone at deletion time
-  (AuthentikDeployment / token Secret / default connection missing), the
-  provider is orphaned with a Warning event instead of blocking deletion.
+  created (client ID re-checked). If the connection's objects are gone at
+  deletion time (namespace teardown deletes the token Secret first), the last
+  client the operator built for that connection is used. Only with no cached
+  client (operator restarted) is the provider orphaned, with a Warning event.
+  Fixable problems (no default connection, Forbidden, Authentik down) block
+  deletion and are reported in the Ready condition plus a `DeletionBlocked`
+  event.
+- Follow-up: an `AuthentikDeployment` finalizer that waits for dependent API
+  objects would make teardown deletion survive operator restarts too.
+- Known limitation: a leftover provider (orphaned, or from a deleted and
+  re-created CR with a new UID) blocks a new CR of the same name with
+  `Conflict` until TASK-05 adoption or manual cleanup.
 - Fake Authentik for tests: `internal/authentik/fakeauthentik`.
 
 ## Technical Decisions

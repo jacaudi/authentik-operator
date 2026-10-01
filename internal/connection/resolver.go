@@ -144,6 +144,27 @@ func (r *Resolver) ForDeployment(ctx context.Context, d *authentikiov1alpha1.Aut
 	return &Resolved{Client: c, Source: key.String()}, nil
 }
 
+// LastKnown returns the most recently built client for an object's
+// connection without reading any Secrets. Finalizers use it when the
+// connection can no longer be resolved -- typically during namespace
+// deletion, when the token Secret is removed before the objects that use it
+// -- so cleanup can still reach Authentik. The cache is in memory only, so
+// this does not survive an operator restart.
+func (r *Resolver) LastKnown(namespace string, ref *authentikiov1alpha1.AuthentikRef) (*Resolved, bool) {
+	key, source := defaultKey, "default"
+	if ref != nil {
+		key = types.NamespacedName{Namespace: namespace, Name: ref.Name}.String()
+		source = key
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.clients[key]
+	if !ok {
+		return nil, false
+	}
+	return &Resolved{Client: c.client, Source: source}, true
+}
+
 // Forget drops the cached client of a deleted AuthentikDeployment.
 func (r *Resolver) Forget(key types.NamespacedName) {
 	r.mu.Lock()

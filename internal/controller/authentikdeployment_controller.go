@@ -74,7 +74,9 @@ func (r *AuthentikDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.
 	var d authentikiov1alpha1.AuthentikDeployment
 	if err := r.Get(ctx, req.NamespacedName, &d); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.Connections.Forget(req.NamespacedName)
+			// The cached client is deliberately kept: finalizers of API
+			// objects that used this deployment may still need it to clean
+			// up in Authentik (see Resolver.LastKnown).
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err

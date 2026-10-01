@@ -90,10 +90,19 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	if !p.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.finalize(ctx, &p)
+		orig := p.Status.DeepCopy()
+		err := r.finalize(ctx, &p)
+		if err != nil {
+			// Deletion is blocked; say why on the object.
+			return ctrl.Result{}, errors.Join(err, r.patchStatus(ctx, &p, orig))
+		}
+		return ctrl.Result{}, nil
 	}
+	// Patch only metadata.finalizers: a full Update would re-serialize the
+	// spec and turn an explicit empty list (scopes: []) back into its default.
+	base := p.DeepCopy()
 	if controllerutil.AddFinalizer(&p, FinalizerName) {
-		if err := r.Update(ctx, &p); err != nil {
+		if err := r.Patch(ctx, &p, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -135,6 +144,15 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 	if pk := p.Status.ProviderPK; pk != 0 {
 		got, err = c.GetOAuth2Provider(ctx, pk)
 		switch {
+		case err == nil && got.GetClientId() != p.Status.ClientID:
+			// The pk now names a different provider: the connection was
+			// pointed at another Authentik, a database was restored, or the
+			// client ID was changed outside the operator. Never modify it.
+			r.setReady(p, metav1.ConditionFalse, reasonConflict, fmt.Sprintf(
+				"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
+					"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
+				pk, got.GetClientId(), p.Status.ClientID))
+			return retryLater, nil
 		case authentik.IsNotFound(err):
 			log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
 			r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
@@ -150,6 +168,12 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 	if got == nil {
 		existing, err := c.FindOAuth2ProviderByName(ctx, want.Name)
 		switch {
+		case err == nil && p.Spec.ClientID == "" && existing.GetClientId() == derivedClientID(p):
+			// Ours: a previous create succeeded but its outcome was lost.
+			log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
+			p.Status.ProviderPK = existing.Pk
+			p.Status.ClientID = existing.GetClientId()
+			got = existing
 		case err == nil || errors.Is(err, authentik.ErrAmbiguous):
 			msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
 				"this resource; adopting existing providers is not supported yet", want.Name)
@@ -161,7 +185,9 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 		case !authentik.IsNotFound(err):
 			return r.authentikError(p, err)
 		}
+	}
 
+	if got == nil {
 		created, err := c.CreateOAuth2Provider(ctx, *want)
 		if err != nil {
 			return r.writeError(p, err)
@@ -190,9 +216,15 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 }
 
 // finalize deletes the provider this resource created, then releases the
-// finalizer. If the connection is gone for good (the namespace is being torn
-// down, or the AuthentikDeployment / token Secret was deleted first), the
-// provider is orphaned rather than blocking deletion forever.
+// finalizer.
+//
+// If the connection can no longer be resolved because its pieces were
+// deleted (typical during namespace deletion: the token Secret goes first),
+// the last client built for it is used. Only if there is none (e.g. after an
+// operator restart) is the provider orphaned, with a Warning event, rather
+// than blocking deletion forever. Fixable problems (missing default
+// connection, Forbidden, Authentik unreachable) block deletion and are
+// reported on the object.
 func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider) error {
 	if !controllerutil.ContainsFinalizer(p, FinalizerName) {
 		return nil
@@ -201,33 +233,75 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context, p *auth
 
 	if pk := p.Status.ProviderPK; pk != 0 {
 		resolved, err := r.Connections.ForRef(ctx, p.Namespace, p.Spec.AuthentikRef)
+		if err != nil && connectionGone(err) {
+			if last, ok := r.Connections.LastKnown(p.Namespace, p.Spec.AuthentikRef); ok {
+				resolved, err = last, nil
+			}
+		}
 		switch {
 		case err == nil:
-			if err := resolved.Client.DeleteOAuth2Provider(ctx, pk); err != nil {
-				r.event(p, corev1.EventTypeWarning, "DeletionFailed", "Delete", "Could not delete OAuth2 provider pk %d: %v", pk, err)
+			if err := r.deleteOwnedProvider(ctx, resolved.Client, p, pk); err != nil {
+				if r.setReady(p, metav1.ConditionFalse, "DeletionFailed", err.Error()) {
+					r.event(p, corev1.EventTypeWarning, "DeletionFailed", "Delete",
+						"Could not delete OAuth2 provider pk %d: %v", pk, err)
+				}
 				return err
 			}
-			log.Info("Deleted OAuth2 provider", "pk", pk)
-			r.event(p, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted OAuth2 provider pk %d", pk)
 		case connectionGone(err):
 			log.Info("Could not reach Authentik to delete OAuth2 provider; leaving it in place", "pk", pk, "reason", err.Error())
 			r.event(p, corev1.EventTypeWarning, "Orphaned", "Delete",
 				"OAuth2 provider pk %d left in Authentik: %v", pk, err)
 		default:
+			reason := connection.Reason(err)
+			if reason == "" {
+				reason = reasonAuthentikError
+			}
+			if r.setReady(p, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
+				r.event(p, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
+					"Cannot delete OAuth2 provider pk %d yet: %v", pk, err)
+			}
 			return err
 		}
 	}
 
+	base := p.DeepCopy()
 	controllerutil.RemoveFinalizer(p, FinalizerName)
-	return client.IgnoreNotFound(r.Update(ctx, p))
+	return client.IgnoreNotFound(r.Patch(ctx, p, client.MergeFrom(base)))
 }
 
-// connectionGone reports connection errors that cannot resolve themselves
-// while the resource is being deleted.
+// deleteOwnedProvider deletes pk only if it is still the provider this
+// resource created (same client ID); a pk reused by another provider is left
+// alone.
+func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) error {
+	log := logf.FromContext(ctx)
+	got, err := c.GetOAuth2Provider(ctx, pk)
+	switch {
+	case authentik.IsNotFound(err):
+		return nil
+	case err != nil:
+		return err
+	case got.GetClientId() != p.Status.ClientID:
+		log.Info("OAuth2 provider pk no longer belongs to this resource; not deleting it", "pk", pk)
+		r.event(p, corev1.EventTypeWarning, "NotDeleted", "Delete",
+			"OAuth2 provider pk %d has a different client ID than this resource created; left in place", pk)
+		return nil
+	}
+	if err := c.DeleteOAuth2Provider(ctx, pk); err != nil {
+		return err
+	}
+	log.Info("Deleted OAuth2 provider", "pk", pk)
+	r.event(p, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted OAuth2 provider pk %d", pk)
+	return nil
+}
+
+// connectionGone reports connection errors caused by the connection's
+// objects having been deleted. A missing operator default (NoConnection) is
+// a fixable misconfiguration, not "gone".
 func connectionGone(err error) bool {
 	switch connection.Reason(err) {
-	case connection.ReasonDeploymentNotFound, connection.ReasonNoConnection,
-		connection.ReasonConnectionNotConfigured, connection.ReasonSecretNotFound:
+	case connection.ReasonDeploymentNotFound, connection.ReasonConnectionNotConfigured,
+		connection.ReasonSecretNotFound:
 		return true
 	}
 	return false
@@ -242,8 +316,9 @@ func (r *AuthentikOAuthProviderReconciler) writeError(p *authentikiov1alpha1.Aut
 		r.setReady(p, metav1.ConditionFalse, reasonConflict, err.Error())
 		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
 	case authentik.IsValidation(err):
-		r.setReady(p, metav1.ConditionFalse, reasonInvalidSpec, err.Error())
-		r.event(p, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the provider: %v", err)
+		if r.setReady(p, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
+			r.event(p, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the provider: %v", err)
+		}
 		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
 	default:
 		return r.authentikError(p, err)
@@ -255,9 +330,11 @@ func (r *AuthentikOAuthProviderReconciler) authentikError(p *authentikiov1alpha1
 	return ctrl.Result{}, err
 }
 
+// setReady records the Ready condition and reports whether it changed, so
+// Warning events can be emitted once per change instead of on every retry.
 func (r *AuthentikOAuthProviderReconciler) setReady(p *authentikiov1alpha1.AuthentikOAuthProvider,
-	status metav1.ConditionStatus, reason, msg string) {
-	meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
+	status metav1.ConditionStatus, reason, msg string) bool {
+	return meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
 		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: p.Generation,
 	})
 }

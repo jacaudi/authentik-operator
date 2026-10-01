@@ -51,6 +51,8 @@ const (
 
 const (
 	fieldName   = "name"
+	fieldAuthz  = "authorization_flow"
+	fieldInval  = "invalidation_flow"
 	fieldDetail = "detail"
 	notFound    = "Not found."
 )
@@ -67,17 +69,21 @@ type Server struct {
 	*httptest.Server
 	Token string
 
-	mu        sync.Mutex
-	flows     []map[string]any
-	scopes    []map[string]any
-	mappings  []map[string]any
-	certs     []map[string]any
-	providers map[int32]map[string]any
-	nextPK    int32
-	requests  []Request
-	// FailNext, when set, makes the next request matching the method
-	// return this status (once).
-	failNext map[string]int
+	mu             sync.Mutex
+	flows          []map[string]any
+	scopes         []map[string]any
+	mappings       []map[string]any
+	certs          []map[string]any
+	providers      map[int32]map[string]any
+	nextPK         int32
+	requests       []Request
+	failNext       map[string]failure
+	loseNextCreate bool
+}
+
+type failure struct {
+	status int
+	body   map[string]any
 }
 
 // New starts a fake Authentik seeded with the default flows, scopes and
@@ -87,7 +93,7 @@ func New(token string) *Server {
 		Token:     token,
 		providers: map[int32]map[string]any{},
 		nextPK:    1,
-		failNext:  map[string]int{},
+		failNext:  map[string]failure{},
 	}
 	s.flows = []map[string]any{
 		flow(FlowAuthorizationPK, "default-provider-authorization-implicit-consent"),
@@ -145,7 +151,7 @@ func (s *Server) SeedProvider(name string) int32 {
 	pk := s.nextPK
 	s.nextPK++
 	s.providers[pk] = s.completeProvider(pk, map[string]any{
-		fieldName: name, "authorization_flow": FlowAuthorizationPK, "invalidation_flow": FlowInvalidationPK,
+		fieldName: name, fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
 		"redirect_uris": []any{},
 	})
 	return pk
@@ -158,11 +164,33 @@ func (s *Server) DeleteProvider(pk int32) {
 	delete(s.providers, pk)
 }
 
-// FailNext makes the next request with this method fail with status.
+// FailNext makes the next request with this method fail with status and a
+// generic body.
 func (s *Server) FailNext(method string, status int) {
+	s.FailNextWith(method, status, map[string]any{fieldDetail: "injected failure"})
+}
+
+// FailNextWith makes the next request with this method fail with status and
+// body, e.g. a realistic DRF validation error.
+func (s *Server) FailNextWith(method string, status int, body map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failNext[method] = status
+	s.failNext[method] = failure{status: status, body: body}
+}
+
+// LoseNextCreate makes the next provider create succeed server-side but
+// answer 504, as if the response were lost (proxy timeout).
+func (s *Server) LoseNextCreate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loseNextCreate = true
+}
+
+// ProviderCount returns the number of stored providers.
+func (s *Server) ProviderCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.providers)
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
@@ -178,9 +206,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Body: body})
-	if status, ok := s.failNext[r.Method]; ok {
+	if f, ok := s.failNext[r.Method]; ok {
 		delete(s.failNext, r.Method)
-		writeJSON(w, status, map[string]any{fieldDetail: "injected failure"})
+		writeJSON(w, f.status, f.body)
 		return
 	}
 
@@ -228,8 +256,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			writeJSON(w, 200, p)
 		case http.MethodPatch:
-			if name, ok := body[fieldName].(string); ok && s.nameTaken(name, int32(pk)) {
-				writeJSON(w, 400, map[string]any{fieldName: []string{"provider with this name already exists."}})
+			if errs := s.validate(body, int32(pk)); len(errs) > 0 {
+				writeJSON(w, 400, errs)
 				return
 			}
 			maps.Copy(p, body)
@@ -247,7 +275,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createProvider(w http.ResponseWriter, body map[string]any) {
 	missing := map[string]any{}
-	for _, f := range []string{fieldName, "authorization_flow", "invalidation_flow", "redirect_uris"} {
+	for _, f := range []string{fieldName, fieldAuthz, fieldInval, "redirect_uris"} {
 		if _, ok := body[f]; !ok {
 			missing[f] = []string{"This field is required."}
 		}
@@ -256,15 +284,62 @@ func (s *Server) createProvider(w http.ResponseWriter, body map[string]any) {
 		writeJSON(w, 400, missing)
 		return
 	}
-	if s.nameTaken(body[fieldName].(string), 0) {
-		writeJSON(w, 400, map[string]any{fieldName: []string{"provider with this name already exists."}})
+	if errs := s.validate(body, 0); len(errs) > 0 {
+		writeJSON(w, 400, errs)
 		return
 	}
 	pk := s.nextPK
 	s.nextPK++
 	p := s.completeProvider(pk, body)
 	s.providers[pk] = p
+	if s.loseNextCreate {
+		s.loseNextCreate = false
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: "upstream timed out"})
+		return
+	}
 	writeJSON(w, 201, p)
+}
+
+// validate mimics the server-side checks the operator depends on: unique
+// name and client_id, and references to objects that exist.
+func (s *Server) validate(body map[string]any, self int32) map[string]any {
+	errs := map[string]any{}
+	if name, ok := body[fieldName].(string); ok && s.nameTaken(name, self) {
+		errs[fieldName] = []string{"provider with this name already exists."}
+	}
+	if id, ok := body["client_id"].(string); ok {
+		for pk, p := range s.providers {
+			if pk != self && p["client_id"] == id {
+				errs["client_id"] = []string{"provider with this client id already exists."}
+			}
+		}
+	}
+	exists := func(items []map[string]any, pk any) bool {
+		for _, it := range items {
+			if it["pk"] == pk {
+				return true
+			}
+		}
+		return false
+	}
+	for _, f := range []string{fieldAuthz, fieldInval, "authentication_flow"} {
+		if v, ok := body[f]; ok && v != nil && !exists(s.flows, v) {
+			errs[f] = []string{fmt.Sprintf("Invalid pk %q - object does not exist.", v)}
+		}
+	}
+	for _, f := range []string{"signing_key", "encryption_key"} {
+		if v, ok := body[f]; ok && v != nil && !exists(s.certs, v) {
+			errs[f] = []string{fmt.Sprintf("Invalid pk %q - object does not exist.", v)}
+		}
+	}
+	if ms, ok := body["property_mappings"].([]any); ok {
+		for _, m := range ms {
+			if !exists(s.scopes, m) && !exists(s.mappings, m) {
+				errs["property_mappings"] = []string{fmt.Sprintf("Invalid pk %q - object does not exist.", m)}
+			}
+		}
+	}
+	return errs
 }
 
 func (s *Server) nameTaken(name string, except int32) bool {

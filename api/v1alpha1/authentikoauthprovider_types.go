@@ -21,8 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// Durations use Authentik's own format, e.g. "minutes=5" or "hours=1;minutes=30".
-// The pattern is kept in one place for the validity fields below.
+// Durations use Authentik's own format, e.g. "minutes=5", "hours=1;minutes=30"
+// or "hours=1.5" (units weeks..microseconds, fractional values allowed).
 
 // OAuthClientType is an OAuth2 client type.
 // +kubebuilder:validation:Enum=confidential;public
@@ -77,7 +77,7 @@ type RedirectURI struct {
 // References to other Authentik objects use stable identifiers -- flows by
 // slug, scopes by scope_name, certificates and property mappings by name (or
 // property mappings by UUID) -- never by display name alone.
-// +kubebuilder:validation:XValidation:rule="!has(self.logoutMethod) || has(self.logoutUri)",message="logoutMethod requires logoutUri"
+// +kubebuilder:validation:XValidation:rule="!has(self.logoutMethod) || self.logoutMethod != 'frontchannel' || has(self.logoutUri)",message="logoutMethod frontchannel requires logoutUri"
 type AuthentikOAuthProviderSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
@@ -142,33 +142,37 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	GrantTypes []OAuthGrantType `json:"grantTypes,omitempty"`
 
-	// clientId pins the client ID. When omitted, Authentik generates one,
-	// which is reported in status.clientId and never written back to spec.
+	// clientId pins the client ID. When omitted, the operator uses a client
+	// ID derived from this resource's UID ("k8s-<uid>"), reported in
+	// status.clientId and never written back to spec. Client IDs are not
+	// secret; the derived one lets the operator recognise its own provider
+	// if a create's outcome was lost.
 	// +kubebuilder:validation:MaxLength=255
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
 	// accessCodeValidity, e.g. "minutes=1".
 	// +kubebuilder:default="minutes=1"
-	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$`
+	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	AccessCodeValidity string `json:"accessCodeValidity,omitempty"`
 
 	// accessTokenValidity, e.g. "minutes=5".
 	// +kubebuilder:default="minutes=5"
-	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$`
+	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	AccessTokenValidity string `json:"accessTokenValidity,omitempty"`
 
 	// refreshTokenValidity, e.g. "days=30".
 	// +kubebuilder:default="days=30"
-	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$`
+	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	RefreshTokenValidity string `json:"refreshTokenValidity,omitempty"`
 
 	// refreshTokenThreshold: a refresh token valid for less than this is
-	// renewed on refresh. Optional; Authentik's default applies when unset.
-	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$`
+	// renewed on refresh; "seconds=0" renews on every refresh.
+	// +kubebuilder:default="seconds=0"
+	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	RefreshTokenThreshold string `json:"refreshTokenThreshold,omitempty"`
 
@@ -199,11 +203,14 @@ type AuthentikOAuthProviderSpec struct {
 	EncryptionKey string `json:"encryptionKey,omitempty"`
 
 	// logoutUri is notified on logout. Optional.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	LogoutURI string `json:"logoutUri,omitempty"`
 
-	// logoutMethod is backchannel or frontchannel. Requires logoutUri.
+	// logoutMethod is backchannel (server-to-server) or frontchannel
+	// (browser iframes; requires logoutUri).
+	// +kubebuilder:default=backchannel
 	// +optional
 	LogoutMethod OAuthLogoutMethod `json:"logoutMethod,omitempty"`
 }

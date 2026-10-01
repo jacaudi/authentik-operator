@@ -51,7 +51,7 @@ func fakeAuthentik(token string) *httptest.Server {
 			return
 		}
 		user := map[string]any{
-			"pk": 1, "username": "akadmin", "name": "admin", "is_active": true, "is_superuser": true,
+			"pk": 1, "username": "akadmin", jsonName: "admin", "is_active": true, "is_superuser": true,
 			"is_current": true, "groups": []any{}, "roles": []any{}, "avatar": "", "uid": "u",
 			"settings": map[string]any{}, "system_permissions": []string{},
 		}

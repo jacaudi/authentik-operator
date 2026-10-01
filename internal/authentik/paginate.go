@@ -38,6 +38,13 @@ func ListAll[T any](fetch PageFunc[T]) ([]T, error) {
 	for page := int32(1); ; {
 		items, p, resp, err := fetch(page)
 		if err := Check(resp, err); err != nil {
+			// A 404 from a collection endpoint means the URL is wrong (or the
+			// Authentik version lacks the endpoint), not that an object is
+			// absent; do not let it read as ErrNotFound.
+			if IsNotFound(err) {
+				return nil, fmt.Errorf("authentik: list endpoint returned 404 "+
+					"(wrong URL or unsupported Authentik version): %v", err)
+			}
 			return nil, err
 		}
 		all = append(all, items...)

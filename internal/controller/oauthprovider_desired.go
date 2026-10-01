@@ -58,6 +58,22 @@ func asReferenceError(err error) error {
 	}
 }
 
+// derivedClientID is the client ID used when spec.clientId is unset. Being
+// derived from the resource UID, only this resource would ever send it, which
+// lets the reconciler recognise its own provider when the outcome of a create
+// was lost (timeout, undecodable response, failed status write).
+func derivedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
+	return "k8s-" + string(p.UID)
+}
+
+// expectedClientID is the client ID the provider should have.
+func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
+	if p.Spec.ClientID != "" {
+		return p.Spec.ClientID
+	}
+	return derivedClientID(p)
+}
+
 // providerName is the provider's name in Authentik.
 func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	if p.Spec.Name != "" {
@@ -161,16 +177,12 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 		req.GrantTypes = append(req.GrantTypes, api.GrantTypeEnum(g))
 	}
 	slices.Sort(req.GrantTypes)
-	if s.ClientID != "" {
-		req.SetClientId(s.ClientID)
-	}
+	req.SetClientId(expectedClientID(p))
 
 	req.SetAccessCodeValidity(orDefault(s.AccessCodeValidity, "minutes=1"))
 	req.SetAccessTokenValidity(orDefault(s.AccessTokenValidity, "minutes=5"))
 	req.SetRefreshTokenValidity(orDefault(s.RefreshTokenValidity, "days=30"))
-	if s.RefreshTokenThreshold != "" {
-		req.SetRefreshTokenThreshold(s.RefreshTokenThreshold)
-	}
+	req.SetRefreshTokenThreshold(orDefault(s.RefreshTokenThreshold, "seconds=0"))
 	req.SetSubMode(api.SubModeEnum(orDefault(string(s.SubMode), "hashed_user_id")))
 	req.SetIssuerMode(api.IssuerModeEnum(orDefault(string(s.IssuerMode), "per_provider")))
 	includeClaims := true
@@ -195,16 +207,15 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	}
 
 	req.SetLogoutUri(s.LogoutURI)
-	if s.LogoutMethod != "" {
-		req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
-	}
+	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(orDefault(string(s.LogoutMethod), "backchannel")))
 	return req, nil
 }
 
 // oauth2ProviderPatch compares desired with actual field by field and
 // returns a patch containing only the differing fields, plus their names.
-// Fields the spec does not manage (client secret, JWT federation, and
-// optional fields left unset) are never touched.
+// Fields the spec does not manage (client secret, JWT federation) are never
+// touched; every managed field has a default, so removing it from the spec
+// resets it.
 func oauth2ProviderPatch(want *api.OAuth2ProviderRequest, got *api.OAuth2Provider) (api.PatchedOAuth2ProviderRequest, []string) {
 	var (
 		patch   api.PatchedOAuth2ProviderRequest
@@ -240,7 +251,7 @@ func oauth2ProviderPatch(want *api.OAuth2ProviderRequest, got *api.OAuth2Provide
 		patch.GrantTypes = want.GrantTypes
 		mark("grantTypes")
 	}
-	if want.ClientId != nil && want.GetClientId() != got.GetClientId() {
+	if want.GetClientId() != got.GetClientId() {
 		patch.SetClientId(want.GetClientId())
 		mark("clientId")
 	}
@@ -256,7 +267,7 @@ func oauth2ProviderPatch(want *api.OAuth2ProviderRequest, got *api.OAuth2Provide
 		patch.SetRefreshTokenValidity(want.GetRefreshTokenValidity())
 		mark("refreshTokenValidity")
 	}
-	if want.RefreshTokenThreshold != nil && want.GetRefreshTokenThreshold() != got.GetRefreshTokenThreshold() {
+	if want.GetRefreshTokenThreshold() != got.GetRefreshTokenThreshold() {
 		patch.SetRefreshTokenThreshold(want.GetRefreshTokenThreshold())
 		mark("refreshTokenThreshold")
 	}
@@ -280,7 +291,7 @@ func oauth2ProviderPatch(want *api.OAuth2ProviderRequest, got *api.OAuth2Provide
 		patch.SetLogoutUri(want.GetLogoutUri())
 		mark("logoutUri")
 	}
-	if want.LogoutMethod != nil && want.GetLogoutMethod() != got.GetLogoutMethod() {
+	if want.GetLogoutMethod() != got.GetLogoutMethod() {
 		patch.SetLogoutMethod(want.GetLogoutMethod())
 		mark("logoutMethod")
 	}

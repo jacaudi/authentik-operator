@@ -57,12 +57,12 @@ spec:
               accessCodeValidity:
                 default: minutes=1
                 description: accessCodeValidity, e.g. "minutes=1".
-                pattern: ^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               accessTokenValidity:
                 default: minutes=5
                 description: accessTokenValidity, e.g. "minutes=5".
-                pattern: ^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               authenticationFlow:
                 description: |-
@@ -93,8 +93,11 @@ spec:
                 type: string
               clientId:
                 description: |-
-                  clientId pins the client ID. When omitted, Authentik generates one,
-                  which is reported in status.clientId and never written back to spec.
+                  clientId pins the client ID. When omitted, the operator uses a client
+                  ID derived from this resource's UID ("k8s-<uid>"), reported in
+                  status.clientId and never written back to spec. Client IDs are not
+                  secret; the derived one lets the operator recognise its own provider
+                  if a create's outcome was lost.
                 maxLength: 255
                 type: string
               clientType:
@@ -151,8 +154,10 @@ spec:
                 - per_provider
                 type: string
               logoutMethod:
-                description: logoutMethod is backchannel or frontchannel. Requires
-                  logoutUri.
+                default: backchannel
+                description: |-
+                  logoutMethod is backchannel (server-to-server) or frontchannel
+                  (browser iframes; requires logoutUri).
                 enum:
                 - backchannel
                 - frontchannel
@@ -160,6 +165,7 @@ spec:
               logoutUri:
                 description: logoutUri is notified on logout. Optional.
                 maxLength: 2048
+                minLength: 1
                 type: string
               name:
                 description: name of the provider in Authentik. Defaults to metadata.name.
@@ -209,15 +215,16 @@ spec:
                 type: array
                 x-kubernetes-list-type: atomic
               refreshTokenThreshold:
+                default: seconds=0
                 description: |-
                   refreshTokenThreshold: a refresh token valid for less than this is
-                  renewed on refresh. Optional; Authentik's default applies when unset.
-                pattern: ^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$
+                  renewed on refresh; "seconds=0" renews on every refresh.
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               refreshTokenValidity:
                 default: days=30
                 description: refreshTokenValidity, e.g. "days=30".
-                pattern: ^((weeks|days|hours|minutes|seconds)=[0-9]+;)*(weeks|days|hours|minutes|seconds)=[0-9]+$
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               scopes:
                 default:
@@ -256,8 +263,9 @@ spec:
             - redirectUris
             type: object
             x-kubernetes-validations:
-            - message: logoutMethod requires logoutUri
-              rule: '!has(self.logoutMethod) || has(self.logoutUri)'
+            - message: logoutMethod frontchannel requires logoutUri
+              rule: '!has(self.logoutMethod) || self.logoutMethod != ''frontchannel''
+                || has(self.logoutUri)'
           status:
             description: status defines the observed state of AuthentikOAuthProvider
             properties:
