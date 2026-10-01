@@ -1,3 +1,6 @@
+# An OAuth2/OIDC provider. Only the flows and redirect URIs are required;
+# everything else shows its default. Uses the operator's default connection
+# unless authentikRef names an AuthentikDeployment in this namespace.
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikOAuthProvider
 metadata:
@@ -6,4 +9,16 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: authentikoauthprovider-sample
 spec:
-  # TODO(user): Add fields here
+  # authentikRef:
+  #   name: authentikdeployment-sample
+  authorizationFlow: default-provider-authorization-implicit-consent
+  invalidationFlow: default-provider-invalidation-flow
+  redirectUris:
+    - url: https://grafana.example.com/login/generic_oauth
+  # Defaults, shown for reference:
+  # scopes: [openid, profile, email]
+  # grantTypes: [authorization_code, refresh_token]
+  # clientType: confidential
+  # subMode: hashed_user_id
+  # issuerMode: per_provider
+  # signingKey: authentik Self-signed Certificate
