@@ -66,7 +66,14 @@ func deployment(name string, conn *authentikiov1alpha1.ConnectionSpec) *authenti
 	}
 }
 
+// secret returns an opted-in (labeled) Secret.
 func secret(name string, data map[string]string) *corev1.Secret {
+	s := unlabeledSecret(name, data)
+	s.Labels = map[string]string{authentikiov1alpha1.LabelConnection: authentikiov1alpha1.LabelConnectionValue}
+	return s
+}
+
+func unlabeledSecret(name string, data map[string]string) *corev1.Secret {
 	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Data: map[string][]byte{}}
 	for k, v := range data {
 		s.Data[k] = []byte(v)
@@ -102,7 +109,21 @@ func TestForRef(t *testing.T) {
 	withCA.CABundle = &authentikiov1alpha1.CABundleSource{
 		ConfigMapKeyRef: &authentikiov1alpha1.ConfigMapKeyRef{Name: "no-such-cm"},
 	}
-	objs = append(objs, deployment("missing-ca", withCA))
+	unlabeledCA := conn("tok")
+	unlabeledCA.CABundle = &authentikiov1alpha1.CABundleSource{
+		SecretKeyRef: &authentikiov1alpha1.CASecretKeyRef{Name: "plain-ca"},
+	}
+	wrongValue := secret("wrong-label", map[string]string{tokenKey: "x"})
+	wrongValue.Labels[authentikiov1alpha1.LabelConnection] = "yes"
+	objs = append(objs,
+		deployment("missing-ca", withCA),
+		deployment("unlabeled", conn("plain")),
+		unlabeledSecret("plain", map[string]string{tokenKey: "stolen"}),
+		deployment("unlabeled-ca", unlabeledCA),
+		unlabeledSecret("plain-ca", map[string]string{"ca.crt": "x"}),
+		deployment("wrong-label", conn("wrong-label")),
+		wrongValue,
+	)
 	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 
 	var seen []authentik.Config
@@ -127,6 +148,9 @@ func TestForRef(t *testing.T) {
 		"missing-key":    ReasonSecretKeyMissing,
 		"empty-token":    ReasonSecretKeyMissing,
 		"missing-ca":     ReasonCABundleNotFound,
+		"unlabeled":      ReasonSecretNotOptedIn,
+		"unlabeled-ca":   ReasonSecretNotOptedIn,
+		"wrong-label":    ReasonSecretNotOptedIn,
 	} {
 		_, err := r.ForRef(ctx, ns, ref(name))
 		if got := Reason(err); got != wantReason {

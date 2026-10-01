@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -98,7 +99,12 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 
 	tokenSecret := func(name, token string) *corev1.Secret {
 		return &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name, Namespace: namespace,
+				Labels: map[string]string{
+					authentikiov1alpha1.LabelConnection: authentikiov1alpha1.LabelConnectionValue,
+				},
+			},
 			StringData: map[string]string{"token": token},
 		}
 	}
@@ -135,6 +141,27 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		Expect(cond.Message).To(ContainSubstring("403"))
 		Expect(cond.Message).NotTo(ContainSubstring("wrong-token"))
 		Expect(res.RequeueAfter).To(Equal(unhealthyRecheck))
+	})
+
+	It("refuses a token Secret that is not opted in, without contacting Authentik", func() {
+		var hits atomic.Int32
+		spy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		DeferCleanup(spy.Close)
+		s := tokenSecret("ak-token-unlabeled", "some-other-apps-secret")
+		s.Labels = nil
+		create(s)
+		d := connectOnly("connect-unlabeled", "ak-token-unlabeled")
+		d.Spec.Connection.URL = spy.URL
+		create(d)
+
+		_, cond, _ := reconcileAndGetCondition("connect-unlabeled")
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(connection.ReasonSecretNotOptedIn))
+		Expect(cond.Message).To(ContainSubstring(authentikiov1alpha1.LabelConnection))
+		Expect(hits.Load()).To(BeZero())
 	})
 
 	It("reports SecretNotFound when the token Secret is missing", func() {

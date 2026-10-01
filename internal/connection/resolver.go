@@ -51,6 +51,7 @@ const (
 	ReasonSecretKeyMissing        = "SecretKeyMissing"
 	ReasonCABundleNotFound        = "CABundleNotFound"
 	ReasonForbidden               = "Forbidden"
+	ReasonSecretNotOptedIn        = "SecretNotOptedIn"
 	ReasonInvalidConfig           = "InvalidConfig"
 )
 
@@ -200,6 +201,15 @@ func (r *Resolver) secretValue(ctx context.Context, namespace, name, key, defaul
 	var s corev1.Secret
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &s); err != nil {
 		return nil, readError("Secret", namespace, name, notFoundReason, err)
+	}
+	// Opt-in check before touching any data, so an unlabeled Secret reveals
+	// nothing about its keys.
+	if s.Labels[authentikiov1alpha1.LabelConnection] != authentikiov1alpha1.LabelConnectionValue {
+		return nil, &Error{
+			Reason: ReasonSecretNotOptedIn,
+			Message: fmt.Sprintf("Secret %s/%s is not labeled %s=%s; label it to allow the operator to use it",
+				namespace, name, authentikiov1alpha1.LabelConnection, authentikiov1alpha1.LabelConnectionValue),
+		}
 	}
 	v, ok := s.Data[key]
 	if !ok {

@@ -16,6 +16,17 @@ limitations under the License.
 
 package v1alpha1
 
+const (
+	// LabelConnection must be set to LabelConnectionValue on every Secret an
+	// AuthentikDeployment references (token and CA bundle). The operator
+	// refuses unlabeled Secrets, so creating an AuthentikDeployment cannot be
+	// used to make the operator read, and send elsewhere, an arbitrary Secret
+	// in its namespace: someone with write access to the Secret has to opt it in.
+	LabelConnection = "authentik.io/connection"
+	// LabelConnectionValue is the required value of LabelConnection.
+	LabelConnectionValue = "true"
+)
+
 // AuthentikRef names the AuthentikDeployment whose connection an Authentik
 // API object (application, provider, user, group) is reconciled against.
 //
@@ -47,9 +58,10 @@ type ConnectionSpec struct {
 	// The Secret must be in the same namespace as the AuthentikDeployment.
 	// The token is never logged or copied into any status.
 	//
-	// Note: the operator reads this Secret with its own privileges and sends
-	// its value to url. Being able to create an AuthentikDeployment in a
-	// namespace therefore amounts to being able to read Secrets there.
+	// The Secret must carry the label authentik.io/connection: "true"; the
+	// operator refuses unlabeled Secrets. It reads the Secret with its own
+	// privileges and sends the value to url, so the label is what stops an
+	// AuthentikDeployment author from exfiltrating arbitrary Secrets.
 	// +required
 	TokenSecretRef SecretKeyRef `json:"tokenSecretRef"`
 
@@ -123,7 +135,9 @@ type CABundleSource struct {
 	ConfigMapKeyRef *ConfigMapKeyRef `json:"configMapKeyRef,omitempty"`
 
 	// secretKeyRef selects a Secret key holding the bundle
-	// (e.g. ca.crt of a cert-manager Certificate).
+	// (e.g. ca.crt of a cert-manager Certificate). The Secret must carry the
+	// label authentik.io/connection: "true" (for cert-manager, set it via
+	// the Certificate's spec.secretTemplate.labels).
 	// +optional
 	SecretKeyRef *CASecretKeyRef `json:"secretKeyRef,omitempty"`
 }
