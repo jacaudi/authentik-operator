@@ -29,5 +29,16 @@ real server.
 - Requires: TASK-01..TASK-05
 - Blocks: TASK-07 release gate, TASK-09
 
+## Notes from TASK-02 review
+- Besides "login works", assert that a second reconcile of every kind issues
+  **no writes** against each tested Authentik version (2026.2 and >= 2026.8).
+  A field a version omits or normalizes differently (e.g. `grant_types`,
+  `refresh_token_threshold`, `redirect_uri_type`, duration strings) would
+  otherwise cause a PATCH and an `Updated` event every resync while Ready
+  stays True.
+- Verify the generated client decodes 2026.2 responses (required-property
+  checks, enum values); a decode failure on create is recovered by the
+  derived client ID, but on reads it would block reconciliation.
+
 ## Completion Checklist
 - [ ] CI matrix green on both Authentik versions

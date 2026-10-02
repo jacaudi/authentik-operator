@@ -242,6 +242,7 @@ func main() {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		Connections: connections,
+		Recorder:    mgr.GetEventRecorder("authentikoauthprovider"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikoauthprovider")
 		os.Exit(1)
