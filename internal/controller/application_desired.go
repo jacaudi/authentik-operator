@@ -45,9 +45,7 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 	req.SetMetaLaunchUrl(s.MetaLaunchURL)
 	req.SetMetaDescription(s.MetaDescription)
 	req.SetMetaPublisher(s.MetaPublisher)
-	if s.MetaIcon != "" {
-		req.SetMetaIcon(s.MetaIcon)
-	}
+	req.SetMetaIcon(s.MetaIcon)
 	openInNewTab := true
 	if s.OpenInNewTab != nil {
 		openInNewTab = *s.OpenInNewTab
@@ -62,9 +60,8 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 }
 
 // applicationPatch returns a patch with only the fields that differ, plus
-// their names. The slug is immutable and never patched. metaIcon is managed
-// only when set, since Authentik may store icons as uploaded files whose
-// read-back form differs from what was sent.
+// their names. The slug is immutable and never patched. Every managed field
+// has a default, so removing it from the spec resets it.
 func applicationPatch(want *api.ApplicationRequest, got *api.Application) (api.PatchedApplicationRequest, []string) {
 	var (
 		patch   api.PatchedApplicationRequest
@@ -100,7 +97,7 @@ func applicationPatch(want *api.ApplicationRequest, got *api.Application) (api.P
 		patch.SetMetaPublisher(want.GetMetaPublisher())
 		mark("metaPublisher")
 	}
-	if want.MetaIcon != nil && want.GetMetaIcon() != got.GetMetaIcon() {
+	if want.GetMetaIcon() != got.GetMetaIcon() {
 		patch.SetMetaIcon(want.GetMetaIcon())
 		mark("metaIcon")
 	}

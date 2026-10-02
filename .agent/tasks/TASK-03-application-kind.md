@@ -28,25 +28,41 @@ name.
 - [x] Status: `applicationUid`, `slug`, `providerPk`, `observedGeneration`, Ready
 
 ### Phase 2: behaviour
-- [x] Slug is **immutable** (CEL) until TASK-05 adds deletionPolicy; changing
-      it would mean delete-and-recreate, breaking /application/o/<slug>/ URLs.
+- [x] Effective slug is **immutable** (root CEL transition rule) until TASK-05
+      adds deletionPolicy; changing it would mean delete-and-recreate,
+      breaking /application/o/<slug>/ URLs.
 - [x] Watch referenced provider (field index on spec.providerRef.name).
 
 ### Behaviour notes
 - Identity: `status.applicationUid` (Authentik UUID) + `status.slug`; the pk
   is re-checked before every PATCH/DELETE, so an application replaced out of
   band (same slug, new pk) is a Conflict and is never modified or deleted.
-- Lists use `superuser_full_list=true`; without it Authentik hides
-  applications the token's user has no policy access to.
-- A pre-existing application with the same slug is a Conflict, except one
-  that already holds this resource's provider: a provider belongs to at most
-  one application, so that is our own create whose outcome was lost.
-  Known gap: a lost create of an application **without** a provider becomes
-  a Conflict (no ownership marker available); TASK-05 adoption recovers it.
+  The uid is kept until a replacement exists, so a transient 404 cannot lose
+  track of the application (or let the finalizer skip deletion).
+- Lookups use retrieve-by-slug, not the list endpoint: the list filters by
+  the token user's policy access, and `superuser_full_list` is only honoured
+  for superusers.
+- A pre-existing application with the same slug is a Conflict -- including
+  one created by another AuthentikApplication with the same slug/provider.
+  The only exception is `status.pendingCreate`: the slug is persisted there
+  before every create and cleared on success or a definite 4xx, so the next
+  reconcile can recover its own create whose outcome was lost (timeout,
+  failed status write), with or without a provider.
 - A provider already attached to another application is a Conflict
-  ("application with this provider already exists").
+  ("application with this provider already exists"). A 400 saying the
+  provider pk does not exist (provider being recreated) is reported as
+  ProviderNotReady, not InvalidSpec.
+- `authentikRef` is immutable on applications and providers (switching would
+  leave the old object behind in the old Authentik).
+- Effective slug (spec.slug or metadata.name) is immutable; spelling out the
+  default later is allowed.
+- Every managed field has a default (incl. metaIcon ""), so removing it from
+  the spec resets it.
 - Finalizer and connection-loss handling as for providers (last-known client
   fallback; fixable errors block deletion and are reported).
+- Follow-ups: delete-then-check race in deleteOwnedApplication (GET pk, then
+  DELETE by slug) is narrow and accepted; status.providerPk is not refreshed
+  while waiting on the provider.
 
 ## Dependencies
 - Requires: TASK-01, TASK-02

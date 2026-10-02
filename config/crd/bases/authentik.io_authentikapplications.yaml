@@ -142,7 +142,8 @@ spec:
               slug:
                 description: |-
                   slug is the application's identifier in Authentik URLs
-                  (/application/o/<slug>/). Defaults to metadata.name. Immutable.
+                  (/application/o/<slug>/). Defaults to metadata.name. The effective
+                  slug is immutable (setting it to metadata.name later is allowed).
                 maxLength: 50
                 pattern: ^[-a-zA-Z0-9_]+$
                 type: string
@@ -150,10 +151,9 @@ spec:
             - name
             type: object
             x-kubernetes-validations:
-            - message: slug is immutable (it is the application's identity in Authentik
-                URLs)
-              rule: has(self.slug) == has(oldSelf.slug) && (!has(self.slug) || self.slug
-                == oldSelf.slug)
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
           status:
             description: status defines the observed state of AuthentikApplication
             properties:
@@ -229,6 +229,13 @@ spec:
                   to Authentik.
                 format: int64
                 type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the slug while a create is in flight. It lets the
+                  next reconcile recognise its own application if the create's outcome
+                  was lost (timeout, failed status write) without trusting anything
+                  another resource could also claim.
+                type: string
               providerPk:
                 description: providerPk is the primary key of the provider currently
                   assigned.
@@ -245,6 +252,10 @@ spec:
         - message: metadata.name is not a valid slug (letters, digits, - and _; max
             50); set spec.slug
           rule: has(self.spec.slug) || self.metadata.name.matches('^[-a-zA-Z0-9_]{1,50}$')
+        - message: slug is immutable (it is the application's identity in Authentik
+            URLs)
+          rule: '(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug)
+            ? oldSelf.spec.slug : oldSelf.metadata.name)'
     served: true
     storage: true
     subresources:

@@ -48,7 +48,7 @@ type ProviderRef struct {
 type PolicyEngineMode string
 
 // AuthentikApplicationSpec defines the desired state of AuthentikApplication
-// +kubebuilder:validation:XValidation:rule="has(self.slug) == has(oldSelf.slug) && (!has(self.slug) || self.slug == oldSelf.slug)",message="slug is immutable (it is the application's identity in Authentik URLs)"
+// +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 type AuthentikApplicationSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
@@ -64,7 +64,8 @@ type AuthentikApplicationSpec struct {
 	Name string `json:"name"`
 
 	// slug is the application's identifier in Authentik URLs
-	// (/application/o/<slug>/). Defaults to metadata.name. Immutable.
+	// (/application/o/<slug>/). Defaults to metadata.name. The effective
+	// slug is immutable (setting it to metadata.name later is allowed).
 	// +kubebuilder:validation:Pattern=`^[-a-zA-Z0-9_]+$`
 	// +kubebuilder:validation:MaxLength=50
 	// +optional
@@ -136,6 +137,13 @@ type AuthentikApplicationStatus struct {
 	// +optional
 	Slug string `json:"slug,omitempty"`
 
+	// pendingCreate holds the slug while a create is in flight. It lets the
+	// next reconcile recognise its own application if the create's outcome
+	// was lost (timeout, failed status write) without trusting anything
+	// another resource could also claim.
+	// +optional
+	PendingCreate string `json:"pendingCreate,omitempty"`
+
 	// providerPk is the primary key of the provider currently assigned.
 	// +optional
 	ProviderPK int32 `json:"providerPk,omitempty"`
@@ -148,6 +156,7 @@ type AuthentikApplicationStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:validation:XValidation:rule="has(self.spec.slug) || self.metadata.name.matches('^[-a-zA-Z0-9_]{1,50}$')",message="metadata.name is not a valid slug (letters, digits, - and _; max 50); set spec.slug"
+// +kubebuilder:validation:XValidation:rule="(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug) ? oldSelf.spec.slug : oldSelf.metadata.name)",message="slug is immutable (it is the application's identity in Authentik URLs)"
 // +kubebuilder:printcolumn:name="Slug",type=string,JSONPath=".status.slug"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1

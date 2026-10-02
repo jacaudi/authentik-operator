@@ -263,6 +263,9 @@ spec:
             - redirectUris
             type: object
             x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
             - message: logoutMethod frontchannel requires logoutUri
               rule: '!has(self.logoutMethod) || self.logoutMethod != ''frontchannel''
                 || has(self.logoutUri)'

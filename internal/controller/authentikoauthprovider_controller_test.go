@@ -589,6 +589,14 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			p.Spec.RefreshTokenThreshold = "milliseconds=500"
 			create(p)
 		})
+		It("rejects changing authentikRef", func() {
+			p := newProvider("immutable-ref")
+			p.Spec.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: "one"}
+			create(p)
+			cur := get(p)
+			cur.Spec.AuthentikRef = nil
+			Expect(k8sClient.Update(ctx, cur)).To(MatchError(ContainSubstring("authentikRef is immutable")))
+		})
 		It("rejects an unknown grant type", func() {
 			p := newProvider("invalid-grant")
 			p.Spec.GrantTypes = []authentikiov1alpha1.OAuthGrantType{"magic"}

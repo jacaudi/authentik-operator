@@ -222,7 +222,18 @@ func (s *Server) LoseNextApplicationCreate() {
 func (s *Server) DeleteProvider(pk int32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deleteProviderLocked(pk)
+}
+
+// deleteProviderLocked deletes a provider and, like Authentik's SET_NULL,
+// detaches it from any application.
+func (s *Server) deleteProviderLocked(pk int32) {
 	delete(s.providers, pk)
+	for _, a := range s.apps {
+		if a["provider"] == float64(pk) {
+			a["provider"] = nil
+		}
+	}
 }
 
 // FailNext makes the next request with this method fail with status and a
@@ -336,7 +347,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 			maps.Copy(p, body)
 			writeJSON(w, 200, p)
 		case http.MethodDelete:
-			delete(s.providers, int32(pk))
+			s.deleteProviderLocked(int32(pk))
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -448,6 +459,10 @@ func (s *Server) handleApplications(w http.ResponseWriter, r *http.Request, path
 				return
 			}
 			maps.Copy(a, body)
+			if newSlug, _ := a[fieldSlug].(string); newSlug != slug {
+				delete(s.apps, slug)
+				s.apps[newSlug] = a
+			}
 			writeJSON(w, 200, a)
 		case http.MethodDelete:
 			delete(s.apps, slug)
@@ -489,6 +504,9 @@ func (s *Server) createApplication(w http.ResponseWriter, body map[string]any) {
 // and may belong to at most one application (OneToOne).
 func (s *Server) validateApplication(body map[string]any, self string) map[string]any {
 	errs := map[string]any{}
+	if name, ok := body[fieldName].(string); ok && name == "" {
+		errs[fieldName] = []string{"This field may not be blank."}
+	}
 	if slug, ok := body[fieldSlug].(string); ok && slug != self {
 		if _, taken := s.apps[slug]; taken {
 			errs[fieldSlug] = []string{"application with this slug already exists."}
@@ -512,7 +530,7 @@ func (s *Server) completeApplication(in map[string]any) map[string]any {
 	s.nextApp++
 	a := map[string]any{
 		"group": "", "policy_engine_mode": "any", "meta_launch_url": "", "meta_description": "",
-		"meta_publisher": "", "meta_icon": nil, "open_in_new_tab": false, "meta_hide": false,
+		"meta_publisher": "", "meta_icon": "", "open_in_new_tab": false, "meta_hide": false,
 		"provider": nil, "backchannel_providers": []any{},
 	}
 	maps.Copy(a, in)

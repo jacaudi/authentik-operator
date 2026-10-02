@@ -77,6 +77,7 @@ type RedirectURI struct {
 // References to other Authentik objects use stable identifiers -- flows by
 // slug, scopes by scope_name, certificates and property mappings by name (or
 // property mappings by UUID) -- never by display name alone.
+// +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.logoutMethod) || self.logoutMethod != 'frontchannel' || has(self.logoutUri)",message="logoutMethod frontchannel requires logoutUri"
 type AuthentikOAuthProviderSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose

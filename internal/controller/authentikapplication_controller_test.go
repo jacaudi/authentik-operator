@@ -259,6 +259,140 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(fake.Requests(true)).To(BeEmpty())
 	})
 
+	It("never lets a second resource with the same slug and provider take the application over", func() {
+		readyProvider("prov-dup")
+		owner := newApp("app-dup", "prov-dup")
+		create(owner)
+		_, err := reconcileApp(owner)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(owner).Status).To(Equal(metav1.ConditionTrue))
+
+		intruder := newApp("other-dup", "prov-dup")
+		intruder.Spec.Slug = "app-dup"
+		intruder.Spec.Name = "Different"
+		create(intruder)
+		writes := len(fake.Requests(true))
+		_, err = reconcileApp(intruder)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(intruder).Reason).To(Equal(reasonConflict))
+		Expect(get(intruder).Status.ApplicationUID).To(BeEmpty())
+		Expect(fake.Requests(true)).To(HaveLen(writes))
+		Expect(fake.Application("app-dup")["name"]).To(Equal("App app-dup"))
+
+		Expect(k8sClient.Delete(ctx, get(intruder))).To(Succeed())
+		_, err = reconcileApp(intruder)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Application("app-dup")).NotTo(BeNil())
+	})
+
+	It("survives a transient 404 on retrieve without losing track of its application", func() {
+		a := newApp("app-404", "")
+		create(a)
+		_, err := reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		uid := get(a).Status.ApplicationUID
+
+		fake.FailNext(http.MethodGet, http.StatusNotFound)
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(a).Status.ApplicationUID).To(Equal(uid))
+		Expect(fake.ApplicationCount()).To(Equal(1))
+
+		Expect(k8sClient.Delete(ctx, get(a))).To(Succeed())
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Application("app-404")).To(BeNil())
+	})
+
+	It("recovers a lost create of an application without a provider", func() {
+		a := newApp("app-lost-plain", "")
+		create(a)
+		fake.LoseNextApplicationCreate()
+
+		_, err := reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+		Expect(get(a).Status.PendingCreate).To(Equal("app-lost-plain"))
+
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(a).Status.PendingCreate).To(BeEmpty())
+		Expect(get(a).Status.ApplicationUID).To(Equal(fake.Application("app-lost-plain")["pk"]))
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("Recovered")))
+	})
+
+	It("clears the pending marker when a create is definitively rejected", func() {
+		a := newApp("app-rejected", "")
+		create(a)
+		fake.FailNextWith(http.MethodPost, http.StatusBadRequest, map[string]any{"name": []string{"bad"}})
+		_, err := reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(get(a).Status.PendingCreate).To(BeEmpty())
+		Expect(ready(a).Reason).To(Equal(reasonInvalidSpec))
+	})
+
+	It("clears metaIcon when removed from spec", func() {
+		a := newApp("app-icon", "")
+		a.Spec.MetaIcon = "https://cdn.example.com/icon.png"
+		create(a)
+		_, err := reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Application("app-icon")["meta_icon"]).To(Equal("https://cdn.example.com/icon.png"))
+
+		cur := get(a)
+		cur.Spec.MetaIcon = ""
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Application("app-icon")["meta_icon"]).To(Equal(""))
+	})
+
+	It("re-points to a provider recreated with a new pk, waiting meanwhile", func() {
+		oldPK := readyProvider("prov-recreated")
+		a := newApp("app-repoint", "prov-recreated")
+		create(a)
+		_, err := reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+
+		fake.DeleteProvider(oldPK) // detaches it from the application
+		_, err = reconcileApp(a)   // provider resource still reports the stale pk
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Reason).To(Equal(reasonProviderNotReady))
+		Expect(drainEvents(recorder)).NotTo(ContainElement(ContainSubstring(reasonInvalidSpec)))
+
+		p := &authentikiov1alpha1.AuthentikOAuthProvider{ObjectMeta: metav1.ObjectMeta{Name: "prov-recreated", Namespace: namespace}}
+		_, err = providers.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
+		Expect(p.Status.ProviderPK).NotTo(Equal(oldPK))
+
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
+		Expect(fake.Application("app-repoint")["provider"]).To(BeEquivalentTo(p.Status.ProviderPK))
+	})
+
+	It("waits without writing when the provider resource is deleted", func() {
+		readyProvider("prov-gone")
+		a := newApp("app-provgone", "prov-gone")
+		create(a)
+		_, err := reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+
+		p := &authentikiov1alpha1.AuthentikOAuthProvider{ObjectMeta: metav1.ObjectMeta{Name: "prov-gone", Namespace: namespace}}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
+		p.Finalizers = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, p)).To(Succeed())
+		writes := len(fake.Requests(true))
+
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Reason).To(Equal(reasonProviderNotFound))
+		Expect(fake.Requests(true)).To(HaveLen(writes))
+	})
+
 	It("recovers its own application after a lost create when it holds this resource's provider", func() {
 		readyProvider("prov-lost")
 		a := newApp("app-lost", "prov-lost")
@@ -348,13 +482,23 @@ var _ = Describe("AuthentikApplication Controller", func() {
 	})
 
 	Context("admission validation", func() {
-		It("rejects changing the slug", func() {
+		It("rejects changing the effective slug, but allows spelling out the default", func() {
 			a := newApp("app-slug", "")
-			a.Spec.Slug = "original"
 			create(a)
 			cur := get(a)
+			cur.Spec.Slug = "app-slug"
+			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+			cur = get(a)
 			cur.Spec.Slug = "changed"
 			Expect(k8sClient.Update(ctx, cur)).To(MatchError(ContainSubstring("slug is immutable")))
+		})
+		It("rejects changing authentikRef", func() {
+			a := newApp("app-ref", "")
+			a.Spec.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: "one"}
+			create(a)
+			cur := get(a)
+			cur.Spec.AuthentikRef.Name = "two"
+			Expect(k8sClient.Update(ctx, cur)).To(MatchError(ContainSubstring("authentikRef is immutable")))
 		})
 		It("requires spec.slug when metadata.name is not a valid slug", func() {
 			a := newApp("app.with.dots", "")

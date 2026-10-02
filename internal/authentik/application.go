@@ -18,7 +18,6 @@ package authentik
 
 import (
 	"context"
-	"net/http"
 
 	api "goauthentik.io/api/v3"
 )
@@ -34,23 +33,12 @@ func (c *Client) GetApplication(ctx context.Context, slug string) (*api.Applicat
 	return a, nil
 }
 
-// FindApplicationBySlug returns the application with exactly this slug, or
-// ErrNotFound. It lists with superuser_full_list: without it Authentik only
-// returns applications the token's user passes policies for, which would
-// hide existing applications and turn a conflict into a failed create.
+// FindApplicationBySlug returns the application with this slug, or
+// ErrNotFound. It uses retrieve-by-slug rather than the list endpoint: the
+// list filters by the token user's policy access (superuser_full_list is
+// only honoured for superusers), which would hide existing applications.
 func (c *Client) FindApplicationBySlug(ctx context.Context, slug string) (*api.Application, error) {
-	all, err := ListAll(func(page int32) ([]api.Application, api.Pagination, *http.Response, error) {
-		res, resp, err := c.api.CoreAPI.CoreApplicationsList(ctx).Slug(slug).SuperuserFullList(true).
-			Page(page).PageSize(PageSize).Execute()
-		if res == nil {
-			return nil, api.Pagination{}, resp, err
-		}
-		return res.Results, res.Pagination, resp, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return exactlyOne("application", "slug", slug, all, func(a api.Application) bool { return a.Slug == slug })
+	return c.GetApplication(ctx, slug)
 }
 
 // CreateApplication creates an application.
