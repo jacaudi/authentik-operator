@@ -94,7 +94,7 @@ chart 0.1.8 and will cut over once parity is released (gitops bead
 |---|---|---|
 | [TASK-01](./tasks/TASK-01-authentik-client-and-connection.md) | REST client, connection model, CA/TLS -- **done** | -- |
 | [TASK-02](./tasks/TASK-02-oauth-provider-kind.md) | AuthentikOAuthProvider, incl. grantTypes (JeffResc #279) -- **done** | 01 |
-| [TASK-03](./tasks/TASK-03-application-kind.md) | AuthentikApplication, providerRef | 01, 02 |
+| [TASK-03](./tasks/TASK-03-application-kind.md) | AuthentikApplication, providerRef -- **done** | 01, 02 |
 | [TASK-04](./tasks/TASK-04-credentials-secret-templating.md) | Credentials Secret, JeffResc-identical template vars | 02, 03 |
 | [TASK-05](./tasks/TASK-05-api-object-adoption-and-deletion-policy.md) | Opt-in adoption + deletionPolicy for API objects | 01-03 |
 | [TASK-06](./tasks/TASK-06-reconcile-observability-and-validation.md) | Finalizers, conditions, events, metrics, CEL, webhooks | 01-03 |

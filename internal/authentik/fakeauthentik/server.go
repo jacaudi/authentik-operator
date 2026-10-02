@@ -44,6 +44,10 @@ const (
 	ScopeEmailPK         = "00000000-0000-0000-0000-00000000a003"
 	MappingCustomPK      = "00000000-0000-0000-0000-00000000b001"
 
+	FlowAuthorizationSlug  = "default-provider-authorization-implicit-consent"
+	FlowInvalidationSlug   = "default-provider-invalidation-flow"
+	FlowAuthenticationSlug = "default-authentication-flow"
+
 	SigningKeyName    = "authentik Self-signed Certificate"
 	EncryptionKeyName = "jwe-key"
 	MappingCustomName = "custom-groups"
@@ -51,6 +55,7 @@ const (
 
 const (
 	fieldName   = "name"
+	fieldSlug   = "slug"
 	fieldAuthz  = "authorization_flow"
 	fieldInval  = "invalidation_flow"
 	fieldDetail = "detail"
@@ -79,6 +84,10 @@ type Server struct {
 	requests       []Request
 	failNext       map[string]failure
 	loseNextCreate bool
+
+	apps              map[string]map[string]any // by slug
+	nextApp           int
+	loseNextAppCreate bool
 }
 
 type failure struct {
@@ -92,13 +101,14 @@ func New(token string) *Server {
 	s := &Server{
 		Token:     token,
 		providers: map[int32]map[string]any{},
+		apps:      map[string]map[string]any{},
 		nextPK:    1,
 		failNext:  map[string]failure{},
 	}
 	s.flows = []map[string]any{
-		flow(FlowAuthorizationPK, "default-provider-authorization-implicit-consent"),
-		flow(FlowInvalidationPK, "default-provider-invalidation-flow"),
-		flow(FlowAuthenticationPK, "default-authentication-flow"),
+		flow(FlowAuthorizationPK, FlowAuthorizationSlug),
+		flow(FlowInvalidationPK, FlowInvalidationSlug),
+		flow(FlowAuthenticationPK, FlowAuthenticationSlug),
 	}
 	s.scopes = []map[string]any{
 		scope(ScopeOpenIDPK, "openid"),
@@ -155,6 +165,57 @@ func (s *Server) SeedProvider(name string) int32 {
 		"redirect_uris": []any{},
 	})
 	return pk
+}
+
+// Application returns a copy of a stored application, or nil.
+func (s *Server) Application(slug string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.apps[slug]
+	if !ok {
+		return nil
+	}
+	return clone(a)
+}
+
+// SetApplicationField changes a stored application out of band.
+func (s *Server) SetApplicationField(slug, field string, v any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apps[slug][field] = v
+}
+
+// SeedApplication inserts an application not created through the API.
+// provider is a provider pk or nil.
+func (s *Server) SeedApplication(slug string, provider any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pk, ok := provider.(int32); ok {
+		provider = float64(pk)
+	}
+	s.apps[slug] = s.completeApplication(map[string]any{fieldName: slug, fieldSlug: slug, "provider": provider})
+}
+
+// DeleteApplication removes an application out of band.
+func (s *Server) DeleteApplication(slug string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.apps, slug)
+}
+
+// ApplicationCount returns the number of stored applications.
+func (s *Server) ApplicationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.apps)
+}
+
+// LoseNextApplicationCreate makes the next application create succeed
+// server-side but answer 504.
+func (s *Server) LoseNextApplicationCreate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loseNextAppCreate = true
 }
 
 // DeleteProvider removes a provider out of band.
@@ -221,7 +282,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			"settings": map[string]any{}, "system_permissions": []string{}}
 		writeJSON(w, 200, map[string]any{"user": u, "users": []any{u}})
 	case path == "/flows/instances/":
-		writeJSON(w, 200, page(filter(s.flows, "slug", q.Get("slug"))))
+		writeJSON(w, 200, page(filter(s.flows, fieldSlug, q.Get(fieldSlug))))
 	case path == "/propertymappings/provider/scope/":
 		writeJSON(w, 200, page(filter(s.scopes, "scope_name", q.Get("scope_name"))))
 	case path == "/propertymappings/all/":
@@ -237,8 +298,20 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 	case path == "/crypto/certificatekeypairs/":
 		writeJSON(w, 200, page(filter(s.certs, fieldName, q.Get(fieldName))))
+	case strings.HasPrefix(path, "/core/applications/"):
+		s.handleApplications(w, r, path, body)
+	case strings.HasPrefix(path, "/providers/oauth2/"):
+		s.handleProviders(w, r, path, body)
+	default:
+		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+	}
+}
+
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path string, body map[string]any) {
+	q := r.URL.Query()
+	switch {
 	case path == "/providers/oauth2/" && r.Method == http.MethodGet:
-		var all []map[string]any
+		all := make([]map[string]any, 0, len(s.providers))
 		for _, p := range s.providers {
 			all = append(all, p)
 		}
@@ -342,6 +415,117 @@ func (s *Server) validate(body map[string]any, self int32) map[string]any {
 	return errs
 }
 
+func (s *Server) handleApplications(w http.ResponseWriter, r *http.Request, path string, body map[string]any) {
+	q := r.URL.Query()
+	switch {
+	case path == "/core/applications/" && r.Method == http.MethodGet:
+		if q.Get("superuser_full_list") != "true" {
+			// Real Authentik filters by the token user's policy access
+			// without this flag; model that as "sees nothing".
+			writeJSON(w, 200, page(nil))
+			return
+		}
+		all := make([]map[string]any, 0, len(s.apps))
+		for _, a := range s.apps {
+			all = append(all, a)
+		}
+		writeJSON(w, 200, page(filter(all, fieldSlug, q.Get(fieldSlug))))
+	case path == "/core/applications/" && r.Method == http.MethodPost:
+		s.createApplication(w, body)
+	case strings.HasPrefix(path, "/core/applications/"):
+		slug := strings.Trim(strings.TrimPrefix(path, "/core/applications/"), "/")
+		a, ok := s.apps[slug]
+		if !ok {
+			writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, 200, a)
+		case http.MethodPatch:
+			if errs := s.validateApplication(body, slug); len(errs) > 0 {
+				writeJSON(w, 400, errs)
+				return
+			}
+			maps.Copy(a, body)
+			writeJSON(w, 200, a)
+		case http.MethodDelete:
+			delete(s.apps, slug)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	default:
+		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+	}
+}
+
+func (s *Server) createApplication(w http.ResponseWriter, body map[string]any) {
+	missing := map[string]any{}
+	for _, f := range []string{fieldName, "slug"} {
+		if _, ok := body[f]; !ok {
+			missing[f] = []string{"This field is required."}
+		}
+	}
+	if len(missing) > 0 {
+		writeJSON(w, 400, missing)
+		return
+	}
+	if errs := s.validateApplication(body, ""); len(errs) > 0 {
+		writeJSON(w, 400, errs)
+		return
+	}
+	a := s.completeApplication(body)
+	s.apps[a[fieldSlug].(string)] = a
+	if s.loseNextAppCreate {
+		s.loseNextAppCreate = false
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: "upstream timed out"})
+		return
+	}
+	writeJSON(w, 201, a)
+}
+
+// validateApplication mimics Authentik: unique slug, provider must exist
+// and may belong to at most one application (OneToOne).
+func (s *Server) validateApplication(body map[string]any, self string) map[string]any {
+	errs := map[string]any{}
+	if slug, ok := body[fieldSlug].(string); ok && slug != self {
+		if _, taken := s.apps[slug]; taken {
+			errs[fieldSlug] = []string{"application with this slug already exists."}
+		}
+	}
+	if v, ok := body["provider"]; ok && v != nil {
+		pk, _ := v.(float64)
+		if _, exists := s.providers[int32(pk)]; !exists {
+			errs["provider"] = []string{fmt.Sprintf("Invalid pk %q - object does not exist.", fmt.Sprint(v))}
+		}
+		for slug, a := range s.apps {
+			if slug != self && a["provider"] == v {
+				errs["provider"] = []string{"application with this provider already exists."}
+			}
+		}
+	}
+	return errs
+}
+
+func (s *Server) completeApplication(in map[string]any) map[string]any {
+	s.nextApp++
+	a := map[string]any{
+		"group": "", "policy_engine_mode": "any", "meta_launch_url": "", "meta_description": "",
+		"meta_publisher": "", "meta_icon": nil, "open_in_new_tab": false, "meta_hide": false,
+		"provider": nil, "backchannel_providers": []any{},
+	}
+	maps.Copy(a, in)
+	a["pk"] = fmt.Sprintf("00000000-0000-0000-0000-%012d", s.nextApp)
+	a["pbm_uuid"] = a["pk"]
+	a["provider_obj"] = nil
+	a["backchannel_providers_obj"] = []any{}
+	a["launch_url"] = nil
+	a["meta_icon_url"] = nil
+	a["meta_icon_themed_urls"] = nil
+	return a
+}
+
 func (s *Server) nameTaken(name string, except int32) bool {
 	for pk, p := range s.providers {
 		if pk != except && p[fieldName] == name {
@@ -378,7 +562,7 @@ func (s *Server) completeProvider(pk int32, in map[string]any) map[string]any {
 
 func flow(pk, slug string) map[string]any {
 	return map[string]any{
-		"pk": pk, "policybindingmodel_ptr_id": pk, fieldName: slug, "slug": slug, "title": slug,
+		"pk": pk, "policybindingmodel_ptr_id": pk, fieldName: slug, fieldSlug: slug, "title": slug,
 		"designation": "authorization", "background_url": "", "background_themed_urls": nil,
 		"stages": []string{}, "policies": []string{}, "cache_count": 0, "export_url": "",
 	}

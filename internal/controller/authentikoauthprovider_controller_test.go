@@ -39,6 +39,7 @@ import (
 )
 
 const (
+	testAPIToken = "tok"
 	jsonName     = "name"
 	frontchannel = "frontchannel"
 )
@@ -63,7 +64,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 	)
 
 	BeforeEach(func() {
-		fake = fakeauthentik.New("tok")
+		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
 			Client:   k8sClient,
@@ -72,7 +73,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			Connections: &connection.Resolver{
 				Reader: k8sClient,
 				// No retries: tests inject single failures and assert on them.
-				Default: &authentik.Config{URL: fake.URL, Token: "tok", RPS: -1, MaxRetries: -1},
+				Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
 			},
 		}
 	})
@@ -82,8 +83,8 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		return &authentikiov1alpha1.AuthentikOAuthProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
-				AuthorizationFlow: "default-provider-authorization-implicit-consent",
-				InvalidationFlow:  "default-provider-invalidation-flow",
+				AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
+				InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
 				RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://app.example.com/callback"}},
 			},
 		}
@@ -203,7 +204,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			authentikiov1alpha1.RedirectURI{URL: "^https://.*\\.example\\.com/cb$", MatchingMode: "regex"})
 		cur.Spec.PropertyMappings = []string{fakeauthentik.MappingCustomName}
 		cur.Spec.EncryptionKey = fakeauthentik.EncryptionKeyName
-		cur.Spec.AuthenticationFlow = "default-authentication-flow"
+		cur.Spec.AuthenticationFlow = fakeauthentik.FlowAuthenticationSlug
 		cur.Spec.ClientType = "public"
 		cur.Spec.GrantTypes = []authentikiov1alpha1.OAuthGrantType{"authorization_code"}
 		cur.Spec.LogoutURI = "https://app.example.com/logout"
@@ -458,8 +459,8 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			"apiVersion": "authentik.io/v1alpha1", "kind": "AuthentikOAuthProvider",
 			"metadata": map[string]any{jsonName: "no-scopes", "namespace": namespace},
 			"spec": map[string]any{
-				"authorizationFlow": "default-provider-authorization-implicit-consent",
-				"invalidationFlow":  "default-provider-invalidation-flow",
+				"authorizationFlow": fakeauthentik.FlowAuthorizationSlug,
+				"invalidationFlow":  fakeauthentik.FlowInvalidationSlug,
 				"redirectUris":      []any{map[string]any{"url": "https://m2m.example.com/cb"}},
 				"grantTypes":        []any{"client_credentials"},
 				"scopes":            []any{},

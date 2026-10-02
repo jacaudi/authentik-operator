@@ -1,9 +1,17 @@
+# An application using the sample OAuth provider. It waits until the
+# provider is Ready. Both must use the same connection (authentikRef).
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikApplication
 metadata:
   labels:
     app.kubernetes.io/name: authentik-operator
     app.kubernetes.io/managed-by: kustomize
-  name: authentikapplication-sample
+  name: grafana
 spec:
-  # TODO(user): Add fields here
+  name: Grafana
+  # slug defaults to metadata.name and is immutable.
+  providerRef:
+    name: authentikoauthprovider-sample
+  metaLaunchUrl: https://grafana.example.com
+  group: Monitoring
+  # Defaults: policyEngineMode: any, openInNewTab: true, metaHide: false
