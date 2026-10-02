@@ -232,12 +232,7 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context, p *auth
 	log := logf.FromContext(ctx)
 
 	if pk := p.Status.ProviderPK; pk != 0 {
-		resolved, err := r.Connections.ForRef(ctx, p.Namespace, p.Spec.AuthentikRef)
-		if err != nil && connectionGone(err) {
-			if last, ok := r.Connections.LastKnown(p.Namespace, p.Spec.AuthentikRef); ok {
-				resolved, err = last, nil
-			}
-		}
+		resolved, err := resolveForDeletion(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 		switch {
 		case err == nil:
 			if err := r.deleteOwnedProvider(ctx, resolved.Client, p, pk); err != nil {
@@ -293,18 +288,6 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 	log.Info("Deleted OAuth2 provider", "pk", pk)
 	r.event(p, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted OAuth2 provider pk %d", pk)
 	return nil
-}
-
-// connectionGone reports connection errors caused by the connection's
-// objects having been deleted. A missing operator default (NoConnection) is
-// a fixable misconfiguration, not "gone".
-func connectionGone(err error) bool {
-	switch connection.Reason(err) {
-	case connection.ReasonDeploymentNotFound, connection.ReasonConnectionNotConfigured,
-		connection.ReasonSecretNotFound:
-		return true
-	}
-	return false
 }
 
 // writeError classifies a failed create/update. Validation errors are the

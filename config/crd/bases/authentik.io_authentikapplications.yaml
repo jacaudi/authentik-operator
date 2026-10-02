@@ -14,7 +14,21 @@ spec:
     singular: authentikapplication
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.slug
+      name: Slug
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: AuthentikApplication is the Schema for the authentikapplications
@@ -44,7 +58,8 @@ spec:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
                   connection this object is reconciled against. When omitted, the
-                  operator's default connection is used.
+                  operator's default connection is used. Must match the referenced
+                  provider's authentikRef.
                 properties:
                   name:
                     description: |-
@@ -57,25 +72,100 @@ spec:
                 required:
                 - name
                 type: object
-              foo:
-                description: foo is an example field of AuthentikApplication. Edit
-                  authentikapplication_types.go to remove/update
+              group:
+                description: group groups applications on the user's library page.
+                maxLength: 255
                 type: string
+              metaDescription:
+                description: metaDescription is shown on the library page.
+                type: string
+              metaHide:
+                default: false
+                description: metaHide hides the application from the user's library
+                  page.
+                type: boolean
+              metaIcon:
+                description: metaIcon is an icon URL (http(s)) or an Authentik-relative
+                  path.
+                maxLength: 2048
+                type: string
+              metaLaunchUrl:
+                description: |-
+                  metaLaunchUrl is the URL opened from the library page. Must be
+                  http(s). Defaults (in Authentik) to the provider's launch URL.
+                maxLength: 2048
+                pattern: ^https?://
+                type: string
+              metaPublisher:
+                description: metaPublisher is shown on the library page.
+                maxLength: 255
+                type: string
+              name:
+                description: name is the application's display name.
+                maxLength: 255
+                minLength: 1
+                type: string
+              openInNewTab:
+                default: true
+                description: openInNewTab opens the launch URL in a new tab.
+                type: boolean
+              policyEngineMode:
+                default: any
+                description: 'policyEngineMode: any (one passing policy grants access)
+                  or all.'
+                enum:
+                - all
+                - any
+                type: string
+              providerRef:
+                description: |-
+                  providerRef names the provider resource (same namespace) this
+                  application uses. The application waits until the provider is Ready.
+                  Optional: an application without a provider is a plain launcher link.
+                properties:
+                  kind:
+                    default: AuthentikOAuthProvider
+                    description: |-
+                      kind of the provider resource. Only AuthentikOAuthProvider is
+                      supported today.
+                    enum:
+                    - AuthentikOAuthProvider
+                    type: string
+                  name:
+                    description: name of the provider resource in this namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              slug:
+                description: |-
+                  slug is the application's identifier in Authentik URLs
+                  (/application/o/<slug>/). Defaults to metadata.name. The effective
+                  slug is immutable (setting it to metadata.name later is allowed).
+                maxLength: 50
+                pattern: ^[-a-zA-Z0-9_]+$
+                type: string
+            required:
+            - name
             type: object
+            x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
           status:
             description: status defines the observed state of AuthentikApplication
             properties:
+              applicationUid:
+                description: |-
+                  applicationUid is the Authentik primary key (UUID) of the application
+                  this resource created.
+                type: string
               conditions:
                 description: |-
-                  conditions represent the current state of the AuthentikApplication resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state of the resource. "Ready" is
+                  True once the application in Authentik matches the spec.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -134,10 +224,38 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the spec generation last synced
+                  to Authentik.
+                format: int64
+                type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the slug while a create is in flight. It lets the
+                  next reconcile recognise its own application if the create's outcome
+                  was lost (timeout, failed status write) without trusting anything
+                  another resource could also claim.
+                type: string
+              providerPk:
+                description: providerPk is the primary key of the provider currently
+                  assigned.
+                format: int32
+                type: integer
+              slug:
+                description: slug is the application's slug in Authentik.
+                type: string
             type: object
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: metadata.name is not a valid slug (letters, digits, - and _; max
+            50); set spec.slug
+          rule: has(self.spec.slug) || self.metadata.name.matches('^[-a-zA-Z0-9_]{1,50}$')
+        - message: slug is immutable (it is the application's identity in Authentik
+            URLs)
+          rule: '(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug)
+            ? oldSelf.spec.slug : oldSelf.metadata.name)'
     served: true
     storage: true
     subresources:

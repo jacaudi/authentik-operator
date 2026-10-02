@@ -218,6 +218,7 @@ func main() {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		Connections: connections,
+		Recorder:    mgr.GetEventRecorder("authentikapplication"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikapplication")
 		os.Exit(1)
