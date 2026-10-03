@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps)"
     groups:
@@ -20,6 +24,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci(deps)"
     groups:
@@ -29,5 +37,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "build(deps)"
