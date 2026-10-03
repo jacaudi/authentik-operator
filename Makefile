@@ -94,6 +94,16 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: verify
+verify: manifests generate fmt ## Verify go.mod is tidy and generated/formatted files are committed (CI runs this).
+	go mod tidy
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "Generated, formatted or go.mod/go.sum files are out of date. Run 'make verify' and commit:"; \
+		git status --porcelain; \
+		git --no-pager diff; \
+		exit 1; \
+	fi
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
