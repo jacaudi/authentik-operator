@@ -41,7 +41,7 @@ Constraints that shape the design:
   Release notes list per-platform digests.
 
 ## Implementation Plan (one PR each)
-1. [ ] **CI foundation**
+1. [x] **CI foundation** (merged)
    - `ci.yml` (pull_request + push to main): verify (tidy, generated-file
      drift, fmt), lint, test (+coverage artifact), multi-arch image build
      (no push), manifest validation (kubeconform), workflow lint
@@ -53,8 +53,16 @@ Constraints that shape the design:
    - LICENSE (Apache-2.0), CONTRIBUTING.md, SECURITY.md, PR template.
    - `make verify` so CI and laptops run the same checks.
    - User: branch protection on main requiring the CI jobs.
-2. [ ] **Security**: CodeQL, govulncheck (PR + nightly), dependency review,
-   Trivy image scan, OpenSSF Scorecard (public repos only).
+2. [x] **Security** (`security.yml`, `scorecard.yml`):
+   - govulncheck (PR, main, nightly) -- fails on reachable vulns only
+   - Trivy (pinned binary, checksum-verified; no third-party action):
+     image scan (HIGH/CRITICAL with fixes) + manifest misconfiguration scan.
+     Accepted findings live in `.trivyignore` with justification (KSV-0041:
+     cluster-wide Secret `get`, see scope.md)
+   - CodeQL + dependency review: public repos only (need GHAS when private)
+   - OpenSSF Scorecard: public repos only
+   - First scans found 8 fixable vulns in indirect deps (x/net, otel, grpc
+     x2); upgraded in the same PR.
 3. [ ] **Release**: release-please config; on release: multi-arch image,
    cosign, attestations, SBOM, `install.yaml` + CRDs assets, per-platform
    digests in notes. Dry run on the fork.

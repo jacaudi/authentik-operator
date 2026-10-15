@@ -1,0 +1,10 @@
+# Accepted Trivy findings. Every entry needs a justification and a pointer
+# to where the decision is recorded; revisit when that decision changes.
+
+# KSV-0041: ClusterRole has access to 'secrets'.
+# The operator holds cluster-wide `get` (no list/watch, no write) on Secrets
+# to read connection tokens and CA bundles by name, and refuses any Secret
+# not labeled authentik.io/connection=true. Decision and threat model:
+# docs/design/scope.md ("Decided: connection model"). Per-namespace RBAC as
+# an install option is planned with Secret write access in TASK-04.
+KSV-0041
