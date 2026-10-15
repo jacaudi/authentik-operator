@@ -67,9 +67,10 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
-			Client:   k8sClient,
-			Scheme:   k8sClient.Scheme(),
-			Recorder: recorder,
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			Recorder:  recorder,
+			APIReader: k8sClient,
 			Connections: &connection.Resolver{
 				Reader: k8sClient,
 				// No retries: tests inject single failures and assert on them.

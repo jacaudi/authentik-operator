@@ -58,7 +58,7 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		apps = &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Connections: connections, Recorder: recorder}
 		providers = &AuthentikOAuthProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
-			Connections: connections}
+			Connections: connections, APIReader: k8sClient}
 	})
 	AfterEach(func() { fake.Close() })
 

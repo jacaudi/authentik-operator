@@ -78,3 +78,15 @@ func (c *Client) DeleteOAuth2Provider(ctx context.Context, pk int32) error {
 	}
 	return nil
 }
+
+// OAuth2ProviderSetupURLs returns the endpoint URLs Authentik computes for a
+// provider (issuer, authorize, token, ...). Authentik builds them from the
+// host of the request, i.e. the operator's API URL; callers rewrite them to
+// the browser-facing URL (see credentials.Rewrite).
+func (c *Client) OAuth2ProviderSetupURLs(ctx context.Context, pk int32) (*api.OAuth2ProviderSetupURLs, error) {
+	u, resp, err := c.api.ProvidersAPI.ProvidersOauth2SetupUrlsRetrieve(ctx, pk).Execute()
+	if err := Check(resp, err); err != nil {
+		return nil, err
+	}
+	return u, nil
+}

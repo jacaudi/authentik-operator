@@ -209,11 +209,49 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	LogoutURI string `json:"logoutUri,omitempty"`
 
+	// secret, when set, renders the provider's client credentials and
+	// endpoint URLs into a Secret in this namespace (owned by this
+	// resource, deleted with it).
+	// +optional
+	Secret *CredentialsSecretSpec `json:"secret,omitempty"`
+
 	// logoutMethod is backchannel (server-to-server) or frontchannel
 	// (browser iframes; requires logoutUri).
 	// +kubebuilder:default=backchannel
 	// +optional
 	LogoutMethod OAuthLogoutMethod `json:"logoutMethod,omitempty"`
+}
+
+// CredentialsSecretSpec describes the Secret holding a provider's client
+// credentials.
+//
+// Template variables (Go text/template, missing keys are errors):
+// .ClientID .ClientSecret .IssuerURL .AuthURL .TokenURL .UserInfoURL
+// .LogoutURL .JWKSURL .ProviderInfoURL .Slug .Name (Slug and Name are the
+// assigned application's). The rendered output must be a YAML map of
+// string keys to string values; each entry becomes a Secret key.
+// Without a template the keys are client-id, client-secret, issuer-url,
+// authorization-url, token-url and userinfo-url.
+type CredentialsSecretSpec struct {
+	// name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
+	// deletes the previously rendered Secret.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// template renders the Secret data; see the type description.
+	// +kubebuilder:validation:MaxLength=65536
+	// +optional
+	Template string `json:"template,omitempty"`
+
+	// labels added to the Secret.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// annotations added to the Secret.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // AuthentikOAuthProviderStatus defines the observed state of AuthentikOAuthProvider.
@@ -238,6 +276,10 @@ type AuthentikOAuthProviderStatus struct {
 	// observedGeneration is the spec generation last synced to Authentik.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// secretName is the Secret this resource last rendered credentials into.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

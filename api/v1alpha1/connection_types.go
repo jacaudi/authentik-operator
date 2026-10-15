@@ -54,6 +54,15 @@ type ConnectionSpec struct {
 	// +required
 	URL string `json:"url"`
 
+	// externalURL is the browser-facing base URL of Authentik, used in the
+	// endpoint URLs rendered into credential Secrets (issuer, authorize,
+	// token, ...). Defaults to url. Set it when url is an in-cluster address
+	// that applications' users cannot reach.
+	// +kubebuilder:validation:Pattern=`^https?://[^/?#@]+(/[^?#@]*)?$`
+	// +kubebuilder:validation:MaxLength=2048
+	// +optional
+	ExternalURL string `json:"externalURL,omitempty"`
+
 	// tokenSecretRef selects the Secret key holding an Authentik API token.
 	// The Secret must be in the same namespace as the AuthentikDeployment.
 	// The token is never logged or copied into any status.

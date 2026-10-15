@@ -240,6 +240,34 @@ spec:
                 maxItems: 64
                 type: array
                 x-kubernetes-list-type: set
+              secret:
+                description: |-
+                  secret, when set, renders the provider's client credentials and
+                  endpoint URLs into a Secret in this namespace (owned by this
+                  resource, deleted with it).
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: annotations added to the Secret.
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: labels added to the Secret.
+                    type: object
+                  name:
+                    description: |-
+                      name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
+                      deletes the previously rendered Secret.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                  template:
+                    description: template renders the Secret data; see the type description.
+                    maxLength: 65536
+                    type: string
+                type: object
               signingKey:
                 default: authentik Self-signed Certificate
                 description: signingKey is the name of the certificate-key pair used
@@ -350,6 +378,10 @@ spec:
                   in Authentik. Set only for providers the operator created.
                 format: int32
                 type: integer
+              secretName:
+                description: secretName is the Secret this resource last rendered
+                  credentials into.
+                type: string
             type: object
         required:
         - spec

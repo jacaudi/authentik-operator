@@ -293,3 +293,44 @@ func TestDefaultConfig(t *testing.T) {
 		t.Fatal("invalid URL accepted")
 	}
 }
+
+const ssoURL = "https://sso.example.com"
+
+func TestExternalURL(t *testing.T) {
+	ext := conn("tok")
+	ext.ExternalURL = ssoURL + "/"
+	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(deployment("ext", ext), deployment("plain", conn("tok")), secret("tok", map[string]string{tokenKey: "x"})).Build()
+	r := &Resolver{Reader: reader, Default: &authentik.Config{URL: "https://internal.example.com", Token: "t"}}
+	ctx := context.Background()
+
+	for name, want := range map[string]string{"ext": ssoURL, "plain": "https://ak.example.com"} {
+		res, err := r.ForRef(ctx, ns, ref(name))
+		if err != nil || res.ExternalURL != want {
+			t.Errorf("%s: ExternalURL %q, err %v; want %q", name, res.ExternalURL, err, want)
+		}
+	}
+	res, _ := r.ForRef(ctx, ns, nil)
+	if res.ExternalURL != "https://internal.example.com" {
+		t.Errorf("default without external: %q", res.ExternalURL)
+	}
+	r.DefaultExternalURL = ssoURL
+	res, _ = r.ForRef(ctx, ns, nil)
+	if res.ExternalURL != ssoURL {
+		t.Errorf("default with external: %q", res.ExternalURL)
+	}
+}
+
+func TestDefaultConfigExternalURL(t *testing.T) {
+	env := map[string]string{EnvToken: "t"}
+	getenv := func(k string) string { return env[k] }
+	if _, err := DefaultConfig(DefaultOptions{URL: defaultAKURL, ExternalURL: ssoURL}, getenv); err != nil {
+		t.Fatalf("valid external URL rejected: %v", err)
+	}
+	if _, err := DefaultConfig(DefaultOptions{URL: defaultAKURL, ExternalURL: "sso.example.com"}, getenv); err == nil {
+		t.Fatal("external URL without scheme accepted")
+	}
+	if _, err := DefaultConfig(DefaultOptions{ExternalURL: ssoURL}, getenv); err == nil {
+		t.Fatal("external URL without URL accepted")
+	}
+}

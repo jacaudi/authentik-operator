@@ -29,12 +29,15 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "goauthentik.io/api/v3"
 
@@ -70,12 +73,17 @@ type AuthentikOAuthProviderReconciler struct {
 	Connections *connection.Resolver
 	// Recorder emits Kubernetes events; may be nil in tests.
 	Recorder events.EventRecorder
+	// APIReader reads Secrets uncached (the operator has no list/watch on
+	// Secrets); use the manager's API reader.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get
+// +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile makes the OAuth2 provider in Authentik match the spec.
@@ -210,6 +218,9 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 	}
 
 	p.Status.ClientID = got.GetClientId()
+	if res, done, err := r.syncSecret(ctx, p, resolved, got); !done {
+		return res, err
+	}
 	p.Status.ObservedGeneration = p.Generation
 	r.setReady(p, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
@@ -347,7 +358,19 @@ func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
 func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikOAuthProvider{}).
+		// An application being attached (or renamed) changes the
+		// provider's assigned slug/name, which the credentials Secret uses.
+		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(providerForApplication)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikoauthprovider").
 		Complete(r)
+}
+
+// providerForApplication maps an application to the provider it references.
+func providerForApplication(_ context.Context, o client.Object) []reconcile.Request {
+	ref := o.(*authentikiov1alpha1.AuthentikApplication).Spec.ProviderRef
+	if ref == nil {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: ref.Name}}}
 }

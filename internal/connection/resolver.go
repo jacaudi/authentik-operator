@@ -31,6 +31,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
@@ -85,6 +86,9 @@ type Resolver struct {
 	Reader client.Reader
 	// Default is the operator-level connection; nil when not configured.
 	Default *authentik.Config
+	// DefaultExternalURL is the browser-facing URL of the default
+	// connection; empty means Default.URL.
+	DefaultExternalURL string
 	// NewClient builds a client; defaults to authentik.New.
 	NewClient func(authentik.Config) (*authentik.Client, error)
 
@@ -102,6 +106,9 @@ type Resolved struct {
 	Client *authentik.Client
 	// Source is "default" or "<namespace>/<name>" of the AuthentikDeployment.
 	Source string
+	// ExternalURL is the browser-facing base URL of this Authentik (no
+	// trailing slash); it equals the API base URL unless configured.
+	ExternalURL string
 }
 
 // ForRef resolves the client for an API object in namespace with the given
@@ -118,7 +125,8 @@ func (r *Resolver) ForRef(ctx context.Context, namespace string, ref *authentiki
 		if err != nil {
 			return nil, err
 		}
-		return &Resolved{Client: c, Source: "default"}, nil
+		return &Resolved{Client: c, Source: "default",
+			ExternalURL: externalOrBase(r.DefaultExternalURL, c.BaseURL())}, nil
 	}
 
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
@@ -141,7 +149,15 @@ func (r *Resolver) ForDeployment(ctx context.Context, d *authentikiov1alpha1.Aut
 	if err != nil {
 		return nil, err
 	}
-	return &Resolved{Client: c, Source: key.String()}, nil
+	return &Resolved{Client: c, Source: key.String(),
+		ExternalURL: externalOrBase(d.Spec.Connection.ExternalURL, c.BaseURL())}, nil
+}
+
+func externalOrBase(external, base string) string {
+	if external == "" {
+		return base
+	}
+	return strings.TrimRight(external, "/")
 }
 
 // LastKnown returns the most recently built client for an object's

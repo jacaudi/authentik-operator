@@ -19,6 +19,7 @@ package connection
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -31,6 +32,7 @@ import (
 // Secret via valueFrom), never from a command-line flag.
 type DefaultOptions struct {
 	URL                string
+	ExternalURL        string
 	TokenFile          string
 	CAFile             string
 	InsecureSkipVerify bool
@@ -38,18 +40,24 @@ type DefaultOptions struct {
 
 // Env names, compatible with JeffResc/authentik-k8s-operator.
 const (
-	EnvURL   = "AUTHENTIK_URL"
-	EnvToken = "AUTHENTIK_TOKEN"
+	EnvURL         = "AUTHENTIK_URL"
+	EnvExternalURL = "AUTHENTIK_EXTERNAL_URL"
+	EnvToken       = "AUTHENTIK_TOKEN"
 )
 
 // DefaultConfig builds the default connection config, or returns nil when
 // no default is configured (URL empty).
 func DefaultConfig(o DefaultOptions, getenv func(string) string) (*authentik.Config, error) {
 	if o.URL == "" {
-		if o.TokenFile != "" || o.CAFile != "" {
-			return nil, errors.New("default Authentik connection: token or CA configured without a URL")
+		if o.TokenFile != "" || o.CAFile != "" || o.ExternalURL != "" {
+			return nil, errors.New("default Authentik connection: token, CA or external URL configured without a URL")
 		}
 		return nil, nil
+	}
+	if o.ExternalURL != "" {
+		if u, err := url.Parse(o.ExternalURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("default Authentik connection: external URL %q must be an http(s) URL", o.ExternalURL)
+		}
 	}
 
 	var token string

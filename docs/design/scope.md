@@ -130,8 +130,11 @@ token to whatever host the redirect names. Error bodies are surfaced in
 conditions only for 400 (field validation), so a user-chosen URL cannot be
 used to read arbitrary responses back through status.
 
-RBAC: the operator has cluster-wide **get** on Secrets and ConfigMaps and
-nothing more -- no list, no watch, no cache. Secrets are fetched by name
+RBAC: the operator has cluster-wide **get** on ConfigMaps and
+**get/create/update/patch/delete** on Secrets -- no list, no watch, no cache.
+Writes exist for credential Secrets (TASK-04): they go only to the provider's
+own namespace, and an existing Secret not controlled by that provider is
+never modified or deleted (`SecretConflict`). Secrets are fetched by name
 through the uncached API reader on every resolve, so token/CA rotation takes
 effect immediately for API objects; the `Connected` condition catches up on
 its next periodic recheck. A Forbidden read is reported as condition reason

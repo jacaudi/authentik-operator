@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none (Navigator-only)
-- Status: Planned
+- Status: Completed (per-namespace RBAC overlay, secret rotation and template webhook are follow-ups)
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -37,18 +37,26 @@ JeffResc semantics to match (`internal/template/secret.go`):
 - Renaming `secret.name` deletes the old Secret; unchanged data is not rewritten
 
 ## Implementation Plan
-- [ ] Decide which kind carries `spec.secret`: provider (credentials belong to the
-      provider) is recommended; application-level URLs (`.Slug`, launch URL) are
-      then read via the application that references it.
-- [ ] Implement vars + defaults above, identical names, so migrated templates
-      render byte-identical output (TASK-09 relies on this).
-- [ ] URLs derived from issuer mode + host; configurable external base URL,
-      since the in-cluster API URL is NOT what clients should see (orac hit this:
-      Grafana/Vault need the browser-facing host).
-- [ ] Credentials are never stored in CR spec or status (status may hold clientId).
-- [ ] Optional: rotate client secret on an annotation, with the Secret updated
-      atomically.
-- [ ] Validation: template must parse (admission webhook, TASK-06) and render.
+- [x] `spec.secret` lives on **AuthentikOAuthProvider**. `.Slug`/`.Name` come
+      from the provider's `assigned_application_slug/name` in Authentik; the
+      provider watches AuthentikApplications so attaching one re-renders
+      promptly. Until an application is attached: `WaitingForApplication`.
+- [x] Vars + defaults with identical names (`internal/credentials`):
+      text/template, `missingkey=error` (data passed as a map so the option
+      applies), no function library, output parsed with yaml.v3 into
+      map[string]string (scalars become strings), keys validated as Secret
+      keys. Byte-identical parity with JeffResc is asserted by TASK-09's
+      golden tests; JeffResc's source was not available here.
+- [x] URLs: taken from Authentik's own `setup_urls` (correct for issuer mode,
+      slug and Authentik version), then the operator's API base URL prefix is
+      rewritten to the browser-facing URL: `connection.externalURL` on
+      AuthentikDeployment, `--authentik-external-url` /
+      `AUTHENTIK_EXTERNAL_URL` for the default connection.
+- [x] Credentials are never stored in CR spec or status (status holds clientId
+      and secretName only); template/YAML errors never echo values.
+- [ ] Optional: rotate client secret on an annotation -- follow-up.
+- [ ] Validation: template parse at admission needs a webhook (TASK-06);
+      today errors surface as `TemplateError` (event once per change).
 
 ## Security and RBAC (findings from the TASK-01 review)
 
@@ -89,35 +97,31 @@ Crossplane docs):
   requirement.
 
 Decisions to make in this task:
-- [ ] **Write scope.** The operator writes Secrets only in the CR's own
-      namespace (already JeffResc semantics). Keep that invariant and test it.
-- [ ] **Never overwrite a foreign Secret.** Before updating an existing Secret
-      at the target name, require it to be controller-owned by this CR (or
-      carry `authentik.io/created-by`). Otherwise fail with a condition rather
-      than take it over, which matches the opt-in adoption principle. This
-      closes the "point `secret.name` at another app's Secret" deputy attack.
-- [ ] **Verbs.** create/update/patch/delete on Secrets. Owner references mean
-      GC handles deletion, so check whether `delete` is needed at all (it is,
-      for the rename-deletes-old-Secret behaviour).
-- [ ] **Per-namespace RBAC as an install option.** Ship an alternative
+- [x] **Write scope.** Secrets are written only in the CR's own namespace
+      (the name is the only input; namespace is always the CR's).
+- [x] **Never overwrite a foreign Secret.** An existing Secret must be
+      controlled (ownerReference, controller=true) by this CR, else
+      `SecretConflict` and no write. Rename/removal deletes the previous
+      Secret only if still controlled by this CR. Tested.
+- [x] **Verbs.** get/create/update/patch/delete on Secrets (delete for
+      rename/removal; GC handles CR deletion). Still no list/watch.
+- [ ] **Per-namespace RBAC as an install option.** Follow-up PR (kustomize
+      overlay now, Helm value with TASK-07). Ship an alternative
       kustomize overlay / Helm value that replaces the ClusterRole Secret rules
       with a ClusterRole bound per namespace via RoleBinding (namespace owners
       opt in). Keep cluster-wide as the default (simple homelab installs), and
       document the trade-off. The resolver already maps Forbidden to condition
       reason `Forbidden`; do the same for writes.
-- [ ] **No cache for Secrets.** Keep using the API reader for Secret reads.
-      If the controller needs to react to its own Secrets being edited or
-      deleted, watch them with a label selector (`cache.Options.ByObject`) on
-      `app.kubernetes.io/managed-by=authentik-operator` instead of cluster-wide.
-      Note: this still needs list/watch RBAC on Secrets. Weigh against
-      periodic requeue.
-- [ ] **Secret contents never in logs, events or status** (clientSecret
-      especially); status may hold clientId only.
+- [x] **No cache for Secrets.** Reads use the API reader; no watch, so an
+      out-of-band edit or deletion is repaired on the 5-minute resync (tested).
+      Unchanged data is not rewritten.
+- [x] **Secret contents never in logs, events or status** (tested).
 
 ## Dependencies
 - Requires: TASK-02, TASK-03
 - Blocks: TASK-08, TASK-09
 
 ## Completion Checklist
-- [ ] Golden-file tests: each of the four orac templates renders exactly as today
-- [ ] missingkey error surfaces as a TemplateError condition, not a crash loop
+- [ ] Golden-file tests: each of the four orac templates renders exactly as
+      today -- needs the orac templates; moved to TASK-09
+- [x] missingkey error surfaces as a TemplateError condition, not a crash loop

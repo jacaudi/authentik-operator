@@ -90,6 +90,9 @@ func main() {
 	flag.StringVar(&defaultConn.URL, "authentik-url", os.Getenv(connection.EnvURL),
 		"Default Authentik base URL for objects without spec.authentikRef (env "+connection.EnvURL+"). "+
 			"Empty disables the default connection.")
+	flag.StringVar(&defaultConn.ExternalURL, "authentik-external-url", os.Getenv(connection.EnvExternalURL),
+		"Browser-facing base URL of the default Authentik, used in rendered credential Secrets "+
+			"(env "+connection.EnvExternalURL+"). Defaults to --authentik-url.")
 	flag.StringVar(&defaultConn.TokenFile, "authentik-token-file", "",
 		"File holding the default connection's API token. If unset, the "+connection.EnvToken+" env var is used. "+
 			"Read once at startup: rotating the default token requires a restart.")
@@ -204,7 +207,8 @@ func main() {
 	} else {
 		setupLog.Info("No default Authentik connection; objects must set spec.authentikRef")
 	}
-	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg}
+	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg,
+		DefaultExternalURL: defaultConn.ExternalURL}
 
 	if err := (&controller.AuthentikDeploymentReconciler{
 		Client:      mgr.GetClient(),
@@ -244,6 +248,7 @@ func main() {
 		Scheme:      mgr.GetScheme(),
 		Connections: connections,
 		Recorder:    mgr.GetEventRecorder("authentikoauthprovider"),
+		APIReader:   mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "authentikoauthprovider")
 		os.Exit(1)

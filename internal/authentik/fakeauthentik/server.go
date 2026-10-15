@@ -329,6 +329,14 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 		writeJSON(w, 200, page(filter(all, fieldName, q.Get(fieldName))))
 	case path == "/providers/oauth2/" && r.Method == http.MethodPost:
 		s.createProvider(w, body)
+	case strings.HasSuffix(path, "/setup_urls/") && r.Method == http.MethodGet:
+		pk, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/providers/oauth2/"), "/setup_urls/"))
+		p, ok := s.providers[int32(pk)]
+		if !ok {
+			writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+			return
+		}
+		writeJSON(w, 200, s.setupURLs(r, p))
 	case strings.HasPrefix(path, "/providers/oauth2/"):
 		pk, err := strconv.Atoi(strings.Trim(strings.TrimPrefix(path, "/providers/oauth2/"), "/"))
 		p, ok := s.providers[int32(pk)]
@@ -336,6 +344,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 			writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 			return
 		}
+		s.assignApplication(p)
 		switch r.Method {
 		case http.MethodGet:
 			writeJSON(w, 200, p)
@@ -354,6 +363,39 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 		}
 	default:
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+	}
+}
+
+// assignApplication fills the read-only assigned_application_* fields from
+// the application (if any) that references the provider, as Authentik does.
+func (s *Server) assignApplication(p map[string]any) {
+	p["assigned_application_slug"], p["assigned_application_name"] = nil, nil
+	for _, a := range s.apps {
+		if pk, ok := a["provider"].(float64); ok && int32(pk) == p["pk"].(int32) {
+			p["assigned_application_slug"], p["assigned_application_name"] = a[fieldSlug], a[fieldName]
+		}
+	}
+}
+
+// setupURLs mimics /providers/oauth2/{pk}/setup_urls/: like Authentik, it
+// builds URLs from the host the request came in on.
+func (s *Server) setupURLs(r *http.Request, p map[string]any) map[string]any {
+	s.assignApplication(p)
+	base := "http://" + r.Host
+	slug, _ := p["assigned_application_slug"].(string)
+	issuer := base + "/application/o/" + slug + "/"
+	if p["issuer_mode"] == "global" {
+		issuer = base + "/"
+	}
+	return map[string]any{
+		"issuer":           issuer,
+		"authorize":        base + "/application/o/authorize/",
+		"token":            base + "/application/o/token/",
+		"user_info":        base + "/application/o/userinfo/",
+		"provider_info":    base + "/application/o/" + slug + "/.well-known/openid-configuration",
+		"logout":           base + "/application/o/" + slug + "/end-session/",
+		"jwks":             base + "/application/o/" + slug + "/jwks/",
+		"dcr_registration": nil,
 	}
 }
 
