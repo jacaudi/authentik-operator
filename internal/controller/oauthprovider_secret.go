@@ -18,16 +18,20 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"slices"
 
 	api "goauthentik.io/api/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -37,13 +41,28 @@ import (
 )
 
 const (
+	// ConditionCredentialsReady reports whether the credentials Secret is
+	// rendered and current. Kept separate from Ready, which only describes
+	// the provider in Authentik: applications gate on Ready, and the Secret
+	// needs an application -- folding the two together would deadlock.
+	ConditionCredentialsReady = "CredentialsReady"
+
+	reasonSecretSynced          = "SecretSynced"
 	reasonWaitingForApplication = "WaitingForApplication"
 	reasonTemplateError         = "TemplateError"
 	reasonSecretConflict        = "SecretConflict"
+	reasonSecretInvalid         = "SecretInvalid"
+	reasonExternalURLMismatch   = "ExternalURLMismatch"
 
 	labelManagedBy      = "app.kubernetes.io/managed-by"
 	labelManagedByValue = "authentik-operator"
-	labelProvider       = "authentik.io/provider"
+	// annotationProvider names the owning provider (an annotation, not a
+	// label: CR names may exceed the 63-character label value limit).
+	annotationProvider = "authentik.io/provider"
+	// annotationApplied records which user label/annotation keys the
+	// operator applied, so keys removed from the spec can be removed from
+	// the Secret without touching keys added by other controllers.
+	annotationApplied = "authentik.io/applied-metadata"
 )
 
 // credentialsSecretName is the Secret this resource should render, or "".
@@ -55,42 +74,88 @@ func credentialsSecretName(p *authentikiov1alpha1.AuthentikOAuthProvider) string
 }
 
 // syncSecret renders the credentials Secret after the provider itself is in
-// sync. done is false when sync must stop here (the Ready condition has been
-// set); err is non-nil only for transient failures.
+// sync and records the outcome in the CredentialsReady condition. It never
+// affects Ready. A non-nil error is a transient failure to retry with
+// backoff; requeue asks for a slow retry of a user-fixable problem.
 //
 // Invariants: the Secret is only ever written in the resource's own
 // namespace, and an existing Secret not controlled by this resource is never
-// modified or deleted (SecretConflict) -- so spec.secret.name cannot be used
-// to overwrite another application's Secret.
+// modified or deleted -- so spec.secret.name cannot be used to overwrite or
+// remove another application's Secret.
 func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider,
-	resolved *connection.Resolved, got *api.OAuth2Provider) (ctrl.Result, bool, error) {
-	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
+	resolved *connection.Resolved, got *api.OAuth2Provider) (requeue bool, err error) {
 	name := credentialsSecretName(p)
+	if name == "" {
+		if prev := p.Status.SecretName; prev != "" {
+			if err := r.deleteOwnedSecret(ctx, p, prev); err != nil {
+				return false, err
+			}
+			p.Status.SecretName = ""
+		}
+		meta.RemoveStatusCondition(&p.Status.Conditions, ConditionCredentialsReady)
+		return false, nil
+	}
 
+	data, reason, msg, err := r.renderSecretData(ctx, p, resolved, got)
+	if err != nil {
+		return false, err
+	}
+	if reason != "" {
+		r.setCredentials(p, metav1.ConditionFalse, reason, msg, reason == reasonTemplateError)
+		return true, nil
+	}
+
+	if reason, msg, err := r.applySecret(ctx, p, name, data); err != nil || reason != "" {
+		if err != nil {
+			return false, err
+		}
+		r.setCredentials(p, metav1.ConditionFalse, reason, msg, true)
+		return true, nil
+	}
+
+	// Only now that the new Secret exists is a previously rendered one
+	// (rename) removed, so a failed rename never leaves workloads without
+	// credentials.
 	if prev := p.Status.SecretName; prev != "" && prev != name {
 		if err := r.deleteOwnedSecret(ctx, p, prev); err != nil {
-			return ctrl.Result{}, false, err
+			return false, err
 		}
-		p.Status.SecretName = ""
 	}
-	if name == "" {
-		return ctrl.Result{}, true, nil
-	}
+	p.Status.SecretName = name
+	r.setCredentials(p, metav1.ConditionTrue, reasonSecretSynced, fmt.Sprintf("Secret %q is current", name), false)
+	return false, nil
+}
 
+// renderSecretData computes the Secret data. A non-empty reason is a
+// user-visible, non-transient problem.
+func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider,
+	resolved *connection.Resolved, got *api.OAuth2Provider) (map[string][]byte, string, string, error) {
 	slug := nullable(got.AssignedApplicationSlug.Get())
 	if slug == "" {
-		r.setReady(p, metav1.ConditionFalse, reasonWaitingForApplication,
-			"no AuthentikApplication uses this provider yet; the credentials Secret needs the application's slug")
-		return retryLater, false, nil
+		return nil, reasonWaitingForApplication,
+			"no AuthentikApplication uses this provider yet; the credentials Secret needs the application's slug", nil
 	}
-
 	urls, err := resolved.Client.OAuth2ProviderSetupURLs(ctx, got.Pk)
 	if err != nil {
-		res, err := r.authentikError(p, err)
-		return res, false, err
+		return nil, "", "", err
 	}
-	rw := func(u string) string { return credentials.Rewrite(u, resolved.Client.BaseURL(), resolved.ExternalURL) }
-	data, err := credentials.Render(p.Spec.Secret.Template, credentials.Vars{
+	if urls.Issuer == "" || urls.Authorize == "" || urls.Token == "" {
+		// The application was detached between the two reads.
+		return nil, reasonWaitingForApplication, "Authentik returned no endpoint URLs for this provider yet", nil
+	}
+
+	var rewriteErr error
+	rw := func(u string) string {
+		if u == "" {
+			return ""
+		}
+		out, err := credentials.Rewrite(u, resolved.Client.BaseURL(), resolved.ExternalURL)
+		if err != nil && rewriteErr == nil {
+			rewriteErr = err
+		}
+		return out
+	}
+	vars := credentials.Vars{
 		ClientID:        got.GetClientId(),
 		ClientSecret:    got.GetClientSecret(),
 		IssuerURL:       rw(urls.Issuer),
@@ -102,79 +167,143 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *au
 		ProviderInfoURL: rw(urls.ProviderInfo),
 		Slug:            slug,
 		Name:            nullable(got.AssignedApplicationName.Get()),
-	})
+	}
+	if rewriteErr != nil {
+		return nil, reasonExternalURLMismatch, fmt.Sprintf("cannot rewrite Authentik endpoint URLs to the external URL "+
+			"(%v); they are built from the operator's API URL %s", rewriteErr, resolved.Client.BaseURL()), nil
+	}
+	data, err := credentials.Render(p.Spec.Secret.Template, vars)
 	if err != nil {
 		if credentials.IsTemplateError(err) {
-			if r.setReady(p, metav1.ConditionFalse, reasonTemplateError, err.Error()) {
-				r.event(p, corev1.EventTypeWarning, reasonTemplateError, "Render", "%v", err)
-			}
-			return retryLater, false, nil
+			return nil, reasonTemplateError, err.Error(), nil
 		}
-		return ctrl.Result{}, false, err
+		return nil, "", "", err
 	}
-
-	if done, err := r.applySecret(ctx, p, name, data); !done || err != nil {
-		return retryLater, false, err
-	}
-	p.Status.SecretName = name
-	return ctrl.Result{}, true, nil
+	return data, "", "", nil
 }
 
-// applySecret creates or updates the owned Secret. done is false (with the
-// Ready condition set) when an existing Secret belongs to someone else.
+// appliedMetadata is the content of annotationApplied.
+type appliedMetadata struct {
+	Labels      []string `json:"labels,omitempty"`
+	Annotations []string `json:"annotations,omitempty"`
+}
+
+// applySecret creates or updates the owned Secret. A non-empty reason is a
+// user-visible problem (Secret owned by someone else, rejected by the API).
 func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider,
-	name string, data map[string][]byte) (bool, error) {
-	labels := maps.Clone(p.Spec.Secret.Labels)
-	if labels == nil {
-		labels = map[string]string{}
+	name string, data map[string][]byte) (string, string, error) {
+	userLabels, userAnnotations := p.Spec.Secret.Labels, p.Spec.Secret.Annotations
+	applied := appliedMetadata{Labels: sortedKeys(userLabels), Annotations: sortedKeys(userAnnotations)}
+	appliedJSON, err := json.Marshal(applied)
+	if err != nil {
+		return "", "", err
 	}
-	labels[labelManagedBy] = labelManagedByValue
-	labels[labelProvider] = p.Name
-	annotations := maps.Clone(p.Spec.Secret.Annotations)
 
 	var s corev1.Secret
-	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: name}, &s)
+	err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: name}, &s)
 	switch {
 	case apierrors.IsNotFound(err):
 		s = corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace, Labels: labels, Annotations: annotations},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace},
 			Type:       corev1.SecretTypeOpaque,
 			Data:       data,
 		}
+		s.Labels = mergeMetadata(nil, userLabels, nil, map[string]string{labelManagedBy: labelManagedByValue})
+		s.Annotations = mergeMetadata(nil, userAnnotations, nil,
+			map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
 		if err := controllerutil.SetControllerReference(p, &s, r.Scheme); err != nil {
-			return false, err
+			return "", "", err
 		}
 		if err := r.Create(ctx, &s); err != nil {
-			return false, fmt.Errorf("create Secret %s/%s: %w", p.Namespace, name, err)
+			if reason, msg, ok := userWriteError(name, err); ok {
+				return reason, msg, nil
+			}
+			// AlreadyExists (created concurrently by someone else) and
+			// other errors retry; the next attempt sees the Secret and
+			// applies the ownership check.
+			return "", "", fmt.Errorf("create Secret %s/%s: %w", p.Namespace, name, err)
 		}
 		logf.FromContext(ctx).Info("Created credentials Secret", "secret", name)
 		r.event(p, corev1.EventTypeNormal, "SecretCreated", "Create", "Created credentials Secret %q", name)
-		return true, nil
+		return "", "", nil
 	case err != nil:
-		return false, fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
+		return "", "", fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
 	}
 
 	if !metav1.IsControlledBy(&s, p) {
-		r.setReady(p, metav1.ConditionFalse, reasonSecretConflict, fmt.Sprintf(
-			"Secret %q already exists and is not managed by this resource; refusing to overwrite it. "+
-				"Choose another spec.secret.name or delete that Secret", name))
-		return false, nil
+		return reasonSecretConflict, fmt.Sprintf("Secret %q already exists and is not managed by this resource; "+
+			"refusing to overwrite it. Choose another spec.secret.name or delete that Secret", name), nil
 	}
+
+	var previous appliedMetadata
+	_ = json.Unmarshal([]byte(s.Annotations[annotationApplied]), &previous)
+	labels := mergeMetadata(s.Labels, userLabels, previous.Labels, map[string]string{labelManagedBy: labelManagedByValue})
+	annotations := mergeMetadata(s.Annotations, userAnnotations, previous.Annotations,
+		map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
 	if equality.Semantic.DeepEqual(s.Data, data) && equality.Semantic.DeepEqual(s.Labels, labels) &&
-		equality.Semantic.DeepEqual(nilIfEmpty(s.Annotations), nilIfEmpty(annotations)) {
-		return true, nil // unchanged data is not rewritten
+		equality.Semantic.DeepEqual(s.Annotations, annotations) {
+		return "", "", nil // unchanged: not rewritten
 	}
 	s.Data, s.Labels, s.Annotations = data, labels, annotations
 	if err := r.Update(ctx, &s); err != nil {
-		return false, fmt.Errorf("update Secret %s/%s: %w", p.Namespace, name, err)
+		if reason, msg, ok := userWriteError(name, err); ok {
+			return reason, msg, nil
+		}
+		return "", "", fmt.Errorf("update Secret %s/%s: %w", p.Namespace, name, err)
 	}
 	logf.FromContext(ctx).Info("Updated credentials Secret", "secret", name)
 	r.event(p, corev1.EventTypeNormal, "SecretUpdated", "Update", "Updated credentials Secret %q", name)
-	return true, nil
+	return "", "", nil
+}
+
+// userWriteError maps API rejections that retrying cannot fix (invalid
+// labels, oversized data, ...) to a user-visible reason.
+func userWriteError(name string, err error) (string, string, bool) {
+	if apierrors.IsInvalid(err) || apierrors.IsRequestEntityTooLargeError(err) {
+		return reasonSecretInvalid, fmt.Sprintf("the API server rejected Secret %q: %s", name, apiErrorMessage(err)), true
+	}
+	return "", "", false
+}
+
+// apiErrorMessage returns the API server's message, which describes field
+// problems; Secret data values are never echoed by the API server.
+func apiErrorMessage(err error) string {
+	var st apierrors.APIStatus
+	if errors.As(err, &st) {
+		return st.Status().Message
+	}
+	return err.Error()
+}
+
+// mergeMetadata computes labels or annotations for an owned Secret: keys
+// added by others are kept, keys this operator applied before but no longer
+// wants are removed, desired user keys are set, and operator keys win.
+func mergeMetadata(existing, desired map[string]string, previouslyApplied []string,
+	operator map[string]string) map[string]string {
+	out := maps.Clone(existing)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for _, k := range previouslyApplied {
+		if _, still := desired[k]; !still {
+			delete(out, k)
+		}
+	}
+	maps.Copy(out, desired)
+	maps.Copy(out, operator)
+	return out
+}
+
+func sortedKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(m))
 }
 
 // deleteOwnedSecret deletes a previously rendered Secret if (and only if) it
-// is still controlled by this resource.
+// is still controlled by this resource. Preconditions make the delete fail
+// if the Secret was replaced or changed after the ownership check.
 func (r *AuthentikOAuthProviderReconciler) deleteOwnedSecret(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, name string) error {
 	var s corev1.Secret
@@ -187,16 +316,22 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedSecret(ctx context.Context
 	case !metav1.IsControlledBy(&s, p):
 		return nil
 	}
-	if err := r.Delete(ctx, &s); err != nil && !apierrors.IsNotFound(err) {
+	uid, rv := s.UID, s.ResourceVersion
+	if err := r.Delete(ctx, &s, client.Preconditions{UID: &uid, ResourceVersion: &rv}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete Secret %s/%s: %w", p.Namespace, name, err)
 	}
 	r.event(p, corev1.EventTypeNormal, "SecretDeleted", "Delete", "Deleted previous credentials Secret %q", name)
 	return nil
 }
 
-func nilIfEmpty(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
+// setCredentials records the CredentialsReady condition; with warn, a
+// Warning event is emitted once per change.
+func (r *AuthentikOAuthProviderReconciler) setCredentials(p *authentikiov1alpha1.AuthentikOAuthProvider,
+	status metav1.ConditionStatus, reason, msg string, warn bool) {
+	changed := meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
+		Type: ConditionCredentialsReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: p.Generation,
+	})
+	if changed && warn {
+		r.event(p, corev1.EventTypeWarning, reason, "Render", "%s", msg)
 	}
-	return m
 }

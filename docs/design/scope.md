@@ -134,7 +134,16 @@ RBAC: the operator has cluster-wide **get** on ConfigMaps and
 **get/create/update/patch/delete** on Secrets -- no list, no watch, no cache.
 Writes exist for credential Secrets (TASK-04): they go only to the provider's
 own namespace, and an existing Secret not controlled by that provider is
-never modified or deleted (`SecretConflict`). Secrets are fetched by name
+never modified or deleted (`SecretConflict`).
+
+Trust boundary for credential Secrets: whoever can create or edit an
+`AuthentikOAuthProvider` in a namespace can make the operator create a
+Secret there with any name, data and labels/annotations -- except reserved
+keys under `authentik.io/`, `kubernetes.io/` and `k8s.io/` -- including one
+containing the provider's client secret. Grant provider write like Secret
+write. Templates are restricted (no loops, no nested templates, capped
+output, `.ClientSecret` printable only) so a template author cannot hang or
+crash the operator or probe the client secret through render errors. Secrets are fetched by name
 through the uncached API reader on every resolve, so token/CA rotation takes
 effect immediately for API objects; the `Connected` condition catches up on
 its next periodic recheck. A Forbidden read is reported as condition reason

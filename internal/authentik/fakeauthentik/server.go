@@ -73,6 +73,9 @@ type Request struct {
 type Server struct {
 	*httptest.Server
 	Token string
+	// SetupURLHost, when set, is used instead of the request's Host to
+	// build setup_urls (simulates Authentik configured with another host).
+	SetupURLHost string
 
 	mu             sync.Mutex
 	flows          []map[string]any
@@ -324,6 +327,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 	case path == "/providers/oauth2/" && r.Method == http.MethodGet:
 		all := make([]map[string]any, 0, len(s.providers))
 		for _, p := range s.providers {
+			s.assignApplication(p)
 			all = append(all, p)
 		}
 		writeJSON(w, 200, page(filter(all, fieldName, q.Get(fieldName))))
@@ -381,22 +385,36 @@ func (s *Server) assignApplication(p map[string]any) {
 // builds URLs from the host the request came in on.
 func (s *Server) setupURLs(r *http.Request, p map[string]any) map[string]any {
 	s.assignApplication(p)
-	base := "http://" + r.Host
-	slug, _ := p["assigned_application_slug"].(string)
-	issuer := base + "/application/o/" + slug + "/"
-	if p["issuer_mode"] == "global" {
-		issuer = base + "/"
+	host := r.Host
+	if s.SetupURLHost != "" {
+		host = s.SetupURLHost
 	}
-	return map[string]any{
-		"issuer":           issuer,
+	base := "http://" + host
+	slug, _ := p["assigned_application_slug"].(string)
+	out := map[string]any{
 		"authorize":        base + "/application/o/authorize/",
 		"token":            base + "/application/o/token/",
 		"user_info":        base + "/application/o/userinfo/",
-		"provider_info":    base + "/application/o/" + slug + "/.well-known/openid-configuration",
-		"logout":           base + "/application/o/" + slug + "/end-session/",
-		"jwks":             base + "/application/o/" + slug + "/jwks/",
+		"issuer":           nil,
+		"provider_info":    nil,
+		"logout":           nil,
+		"jwks":             nil,
 		"dcr_registration": nil,
 	}
+	if p["issuer_mode"] == "global" {
+		out["issuer"] = base + "/"
+	}
+	// Like Authentik, slug-dependent URLs are null until an application
+	// is attached.
+	if slug != "" {
+		if p["issuer_mode"] != "global" {
+			out["issuer"] = base + "/application/o/" + slug + "/"
+		}
+		out["provider_info"] = base + "/application/o/" + slug + "/.well-known/openid-configuration"
+		out["logout"] = base + "/application/o/" + slug + "/end-session/"
+		out["jwks"] = base + "/application/o/" + slug + "/jwks/"
+	}
+	return out
 }
 
 func (s *Server) createProvider(w http.ResponseWriter, body map[string]any) {

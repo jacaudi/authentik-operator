@@ -218,11 +218,18 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 	}
 
 	p.Status.ClientID = got.GetClientId()
-	if res, done, err := r.syncSecret(ctx, p, resolved, got); !done {
-		return res, err
-	}
 	p.Status.ObservedGeneration = p.Generation
 	r.setReady(p, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
+
+	// The credentials Secret has its own condition and never affects Ready
+	// (see ConditionCredentialsReady).
+	requeue, err := r.syncSecret(ctx, p, resolved, got)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if requeue {
+		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
+	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
 }
 

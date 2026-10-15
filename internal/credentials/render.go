@@ -17,23 +17,33 @@ limitations under the License.
 // Package credentials renders an OAuth2 provider's client credentials and
 // endpoint URLs into Secret data.
 //
-// Semantics follow JeffResc/authentik-k8s-operator so migrated templates
-// render the same: Go text/template with missingkey=error and no extra
-// function library; the output is parsed as a YAML map of string keys to
-// string values, one Secret key per entry; without a template a fixed set
-// of keys is written.
+// Templates use Go text/template with missingkey=error and no extra
+// function library, like JeffResc/authentik-k8s-operator, but restricted
+// to a safe subset (see validateTemplate): text, {{ .Var }}, if/else,
+// comparisons and a width-free printf. That subset covers credential
+// templates while making it impossible for whoever writes the template to
+// hang the operator (unbounded range, recursive define) or exhaust its
+// memory. Output is capped and parsed as a YAML mapping of string keys to
+// string values.
 package credentials
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
+	"regexp"
 	"strings"
 	"text/template"
+	"text/template/parse"
 
 	yaml "go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
+
+// MaxOutput bounds rendered output; Secrets are limited to 1 MiB anyway.
+const MaxOutput = 1 << 20
 
 // Vars are the values available to templates.
 type Vars struct {
@@ -51,8 +61,17 @@ type Vars struct {
 	Name string
 }
 
+func (v Vars) data() map[string]string {
+	return map[string]string{
+		"ClientID": v.ClientID, "ClientSecret": v.ClientSecret, "IssuerURL": v.IssuerURL,
+		"AuthURL": v.AuthURL, "TokenURL": v.TokenURL, "UserInfoURL": v.UserInfoURL,
+		"LogoutURL": v.LogoutURL, "JWKSURL": v.JWKSURL, "ProviderInfoURL": v.ProviderInfoURL,
+		"Slug": v.Slug, "Name": v.Name,
+	}
+}
+
 // TemplateError is a user error in the template or its output. Retrying does
-// not help until the spec changes.
+// not help until the spec changes. Messages never contain rendered content.
 type TemplateError struct{ Err error }
 
 func (e *TemplateError) Error() string { return "credentials template: " + e.Err.Error() }
@@ -78,62 +97,307 @@ func Render(tmpl string, v Vars) (map[string][]byte, error) {
 		}), nil
 	}
 
-	t, err := template.New("secret").Option("missingkey=error").Parse(tmpl)
+	t, err := Parse(tmpl)
 	if err != nil {
-		return nil, &TemplateError{Err: err}
+		return nil, err
 	}
+	out := &limitedBuffer{max: MaxOutput}
 	// A map (not the struct) so that missingkey=error governs unknown
 	// variables, as in the operator this one replaces.
-	data := map[string]string{
-		"ClientID":        v.ClientID,
-		"ClientSecret":    v.ClientSecret,
-		"IssuerURL":       v.IssuerURL,
-		"AuthURL":         v.AuthURL,
-		"TokenURL":        v.TokenURL,
-		"UserInfoURL":     v.UserInfoURL,
-		"LogoutURL":       v.LogoutURL,
-		"JWKSURL":         v.JWKSURL,
-		"ProviderInfoURL": v.ProviderInfoURL,
-		"Slug":            v.Slug,
-		"Name":            v.Name,
-	}
-	var out bytes.Buffer
-	if err := t.Execute(&out, data); err != nil {
-		// The error text names the template position and key, never values.
-		return nil, &TemplateError{Err: err}
-	}
-
-	var kv map[string]string
-	if err := yaml.Unmarshal(out.Bytes(), &kv); err != nil {
-		// Deliberately not wrapping err: yaml errors can quote the
-		// offending line, which may contain the client secret.
-		return nil, &TemplateError{Err: errors.New("output is not a YAML map of string keys to string values")}
-	}
-	if len(kv) == 0 {
-		return nil, &TemplateError{Err: errors.New("output has no keys")}
-	}
-	for k := range kv {
-		if errs := validation.IsConfigMapKey(k); len(errs) > 0 {
-			return nil, &TemplateError{Err: fmt.Errorf("output key %q is not a valid Secret key: %s", k, strings.Join(errs, "; "))}
+	if err := t.Execute(out, v.data()); err != nil {
+		if errors.Is(err, errOutputTooLarge) {
+			return nil, &TemplateError{Err: fmt.Errorf("output exceeds %d bytes", MaxOutput)}
 		}
+		// Execution errors name the template position and key, never values;
+		// scrub the secret anyway.
+		return nil, &TemplateError{Err: errors.New(scrub(err.Error(), v.ClientSecret))}
+	}
+	kv, err := parseOutput(out.Bytes())
+	if err != nil {
+		return nil, err
 	}
 	return toBytes(kv), nil
 }
 
-// Rewrite replaces the internalBase prefix of u (the operator's API base URL,
-// which Authentik uses to build endpoint URLs) with externalBase. URLs that
-// do not start with internalBase are returned unchanged: Authentik already
-// produced a different (configured) host for them.
-func Rewrite(u, internalBase, externalBase string) string {
+// Parse parses and validates a template without executing it.
+func Parse(tmpl string) (*template.Template, error) {
+	t, err := template.New("secret").Option("missingkey=error").Parse(tmpl)
+	if err != nil {
+		return nil, &TemplateError{Err: err}
+	}
+	if err := validateTemplate(t); err != nil {
+		return nil, &TemplateError{Err: err}
+	}
+	return t, nil
+}
+
+var (
+	allowedFuncs = map[string]bool{
+		"eq": true, "ne": true, "lt": true, "le": true, "gt": true, "ge": true,
+		"and": true, "or": true, "not": true, "print": true, "printf": true,
+	}
+	// Functions whose result reveals something about their arguments
+	// without printing them; .ClientSecret may not be an argument.
+	predicateFuncs = map[string]bool{
+		"eq": true, "ne": true, "lt": true, "le": true, "gt": true, "ge": true,
+		"and": true, "or": true, "not": true,
+	}
+	// printf formats without width or precision (no %0999999999d).
+	safePrintf = regexp.MustCompile(`^([^%]|%[sqv%])*$`)
+)
+
+// validateTemplate allows only constructs whose cost is linear in the
+// template size: text, comments, actions, if/else. No range, with,
+// template/define/block, break/continue or variable declarations.
+func validateTemplate(t *template.Template) error {
+	if len(t.Templates()) > 1 {
+		return errors.New("define/block is not allowed")
+	}
+	if t.Tree == nil || t.Root == nil {
+		return nil
+	}
+	return (&validator{tree: t.Tree}).walkList(t.Root)
+}
+
+// validator walks a parse tree; tree is used for error locations.
+type validator struct{ tree *parse.Tree }
+
+// at returns " (line:col)" for n; the location refers to the template
+// source, never to rendered values.
+func (v *validator) at(n parse.Node) string {
+	loc, _ := v.tree.ErrorContext(n)
+	if _, pos, ok := strings.Cut(loc, ":"); ok {
+		return " (at " + pos + ")"
+	}
+	return ""
+}
+
+func (v *validator) walkList(l *parse.ListNode) error {
+	if l == nil {
+		return nil
+	}
+	for _, n := range l.Nodes {
+		if err := v.walkNode(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *validator) walkNode(n parse.Node) error {
+	switch n := n.(type) {
+	case *parse.TextNode, *parse.CommentNode:
+		return nil
+	case *parse.ActionNode:
+		return v.walkPipe(n.Pipe, false)
+	case *parse.IfNode:
+		// The condition must not depend on the client secret: success vs
+		// failure of the render would otherwise leak it bit by bit.
+		if err := v.walkPipe(n.Pipe, true); err != nil {
+			return err
+		}
+		if err := v.walkList(n.List); err != nil {
+			return err
+		}
+		return v.walkList(n.ElseList)
+	case *parse.RangeNode:
+		return fmt.Errorf("range is not allowed%s", v.at(n))
+	case *parse.WithNode:
+		return fmt.Errorf("with is not allowed%s", v.at(n))
+	case *parse.TemplateNode:
+		return fmt.Errorf("template is not allowed%s", v.at(n))
+	default:
+		return fmt.Errorf("%T is not allowed%s", n, v.at(n))
+	}
+}
+
+func (v *validator) walkPipe(p *parse.PipeNode, predicate bool) error {
+	if p == nil {
+		return nil
+	}
+	if len(p.Decl) > 0 || p.IsAssign {
+		return fmt.Errorf("variables are not allowed%s", v.at(p))
+	}
+	for _, cmd := range p.Cmds {
+		if err := v.walkCommand(cmd, predicate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *validator) walkCommand(cmd *parse.CommandNode, predicate bool) error {
+	if len(cmd.Args) == 0 {
+		return nil
+	}
+	if id, ok := cmd.Args[0].(*parse.IdentifierNode); ok {
+		if !allowedFuncs[id.Ident] {
+			return fmt.Errorf("function %q is not allowed%s", id.Ident, v.at(cmd))
+		}
+		if id.Ident == "printf" {
+			if len(cmd.Args) < 2 {
+				return fmt.Errorf("printf needs a format%s", v.at(cmd))
+			}
+			f, ok := cmd.Args[1].(*parse.StringNode)
+			if !ok || !safePrintf.MatchString(f.Text) {
+				return fmt.Errorf("printf format must be a literal using only %%s, %%q, %%v%s", v.at(cmd))
+			}
+		}
+		predicate = predicate || predicateFuncs[id.Ident]
+		for _, a := range cmd.Args[1:] {
+			if err := v.walkArg(a, predicate); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, a := range cmd.Args {
+		if err := v.walkArg(a, predicate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *validator) walkArg(a parse.Node, predicate bool) error {
+	switch a := a.(type) {
+	case *parse.FieldNode:
+		if len(a.Ident) != 1 {
+			return fmt.Errorf("nested fields are not allowed%s", v.at(a))
+		}
+		if predicate && a.Ident[0] == "ClientSecret" {
+			return fmt.Errorf(".ClientSecret may only be printed, not compared or tested%s", v.at(a))
+		}
+		return nil
+	case *parse.StringNode, *parse.NumberNode, *parse.BoolNode:
+		return nil
+	case *parse.PipeNode:
+		return v.walkPipe(a, predicate)
+	default:
+		return fmt.Errorf("%T is not allowed here%s", a, v.at(a))
+	}
+}
+
+// parseOutput parses the rendered output as a single YAML mapping of scalar
+// keys to scalar values. Errors describe the problem and position only.
+func parseOutput(out []byte) (map[string]string, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(out))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, &TemplateError{Err: errors.New("output has no keys")}
+		}
+		return nil, &TemplateError{Err: fmt.Errorf("output is not valid YAML%s", yamlLine(err))}
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, &TemplateError{Err: errors.New("output must be a single YAML document")}
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, &TemplateError{Err: errors.New("output must be a YAML mapping of keys to values")}
+	}
+	m := doc.Content[0]
+	kv := make(map[string]string, len(m.Content)/2)
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		k, v := m.Content[i], m.Content[i+1]
+		entry := i/2 + 1
+		if k.Kind != yaml.ScalarNode || v.Kind != yaml.ScalarNode {
+			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): keys and values must be plain strings", entry, k.Line)}
+		}
+		if _, dup := kv[k.Value]; dup {
+			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): duplicate key", entry, k.Line)}
+		}
+		if errs := validation.IsConfigMapKey(k.Value); len(errs) > 0 {
+			// The key is not echoed: it may contain rendered values.
+			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): key is not a valid Secret key "+
+				"(alphanumerics, '-', '_' or '.')", entry, k.Line)}
+		}
+		value := v.Value
+		if v.Tag == "!!null" {
+			value = ""
+		}
+		kv[k.Value] = value
+	}
+	if len(kv) == 0 {
+		return nil, &TemplateError{Err: errors.New("output has no keys")}
+	}
+	return kv, nil
+}
+
+var yamlLineRe = regexp.MustCompile(`line (\d+)`)
+
+// yamlLine extracts only the line number from a YAML error (the rest of the
+// message can quote content).
+func yamlLine(err error) string {
+	if m := yamlLineRe.FindStringSubmatch(err.Error()); m != nil {
+		return " (line " + m[1] + ")"
+	}
+	return ""
+}
+
+// ErrURLMismatch means an Authentik endpoint URL did not start with the
+// operator's API base URL, so it could not be rewritten to the external URL.
+var ErrURLMismatch = errors.New("endpoint URL does not match the Authentik API base URL")
+
+// Rewrite replaces the internalBase prefix (scheme, host and path) of u --
+// Authentik builds endpoint URLs from the host the operator's request was
+// sent to -- with externalBase. Scheme and host compare case-insensitively
+// and default ports are ignored. With no externalBase (or one equal to
+// internalBase) u is returned unchanged. A URL outside internalBase is an
+// error rather than silently left internal.
+func Rewrite(u, internalBase, externalBase string) (string, error) {
 	internalBase = strings.TrimRight(internalBase, "/")
 	externalBase = strings.TrimRight(externalBase, "/")
-	if externalBase == "" || internalBase == externalBase {
-		return u
+	if externalBase == "" || strings.EqualFold(internalBase, externalBase) {
+		return u, nil
 	}
-	if u == internalBase || strings.HasPrefix(u, internalBase+"/") {
-		return externalBase + strings.TrimPrefix(u, internalBase)
+	pu, err1 := url.Parse(u)
+	pi, err2 := url.Parse(internalBase)
+	if err1 != nil || err2 != nil {
+		return "", ErrURLMismatch
 	}
-	return u
+	if !strings.EqualFold(pu.Scheme, pi.Scheme) || hostKey(pu) != hostKey(pi) {
+		return "", fmt.Errorf("%w: %s", ErrURLMismatch, pu.Scheme+"://"+pu.Host)
+	}
+	prefix := strings.TrimRight(pi.EscapedPath(), "/")
+	path := pu.EscapedPath()
+	if path != prefix && !strings.HasPrefix(path, prefix+"/") {
+		return "", fmt.Errorf("%w: path %s", ErrURLMismatch, path)
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	if pu.RawQuery != "" {
+		rest += "?" + pu.RawQuery
+	}
+	return externalBase + rest, nil
+}
+
+func hostKey(u *url.URL) string {
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if (port == "80" && strings.EqualFold(u.Scheme, "http")) || (port == "443" && strings.EqualFold(u.Scheme, "https")) {
+		port = ""
+	}
+	return host + ":" + port
+}
+
+var errOutputTooLarge = errors.New("output too large")
+
+type limitedBuffer struct {
+	bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > b.max {
+		return 0, errOutputTooLarge
+	}
+	return b.Buffer.Write(p)
+}
+
+func scrub(msg, secret string) string {
+	if secret == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, secret, "<redacted>")
 }
 
 func toBytes(m map[string]string) map[string][]byte {

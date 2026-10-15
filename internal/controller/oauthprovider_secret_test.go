@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -33,6 +34,11 @@ import (
 	"github.com/jacaudi/authentik-operator/internal/authentik"
 	"github.com/jacaudi/authentik-operator/internal/authentik/fakeauthentik"
 	"github.com/jacaudi/authentik-operator/internal/connection"
+)
+
+const (
+	teamObs   = "obs"
+	labelTeam = "team"
 )
 
 var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
@@ -99,6 +105,10 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		return meta.FindStatusCondition(get(p).Status.Conditions, ConditionReady)
 	}
 
+	creds := func(p *authentikiov1alpha1.AuthentikOAuthProvider) *metav1.Condition {
+		return meta.FindStatusCondition(get(p).Status.Conditions, ConditionCredentialsReady)
+	}
+
 	secret := func(name string) (*corev1.Secret, error) {
 		var s corev1.Secret
 		err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &s)
@@ -123,10 +133,11 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		})
 	}
 
-	It("waits for an application before rendering", func() {
+	It("waits for an application before rendering, while the provider itself is Ready", func() {
 		p := newProvider("sec-wait", &authentikiov1alpha1.CredentialsSecretSpec{})
 		reconcileP(p)
-		Expect(ready(p).Reason).To(Equal(reasonWaitingForApplication))
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(creds(p).Reason).To(Equal(reasonWaitingForApplication))
 		_, err := secret("sec-wait-oauth")
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
@@ -134,19 +145,20 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	It("renders the default keys with browser-facing URLs and owns the Secret", func() {
 		cleanupSecret("sec-default-oauth")
 		p := attached("sec-default", "grafana", &authentikiov1alpha1.CredentialsSecretSpec{
-			Labels: map[string]string{"team": "obs"}, Annotations: map[string]string{"note": "x"},
+			Labels: map[string]string{labelTeam: teamObs}, Annotations: map[string]string{"note": "x"},
 		})
 		cur := get(p)
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
 		Expect(cur.Status.SecretName).To(Equal("sec-default-oauth"))
 
 		s, err := secret("sec-default-oauth")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(metav1.IsControlledBy(s, cur)).To(BeTrue())
 		Expect(s.Type).To(Equal(corev1.SecretTypeOpaque))
-		Expect(s.Labels).To(HaveKeyWithValue("team", "obs"))
+		Expect(s.Labels).To(HaveKeyWithValue(labelTeam, teamObs))
 		Expect(s.Labels).To(HaveKeyWithValue(labelManagedBy, labelManagedByValue))
-		Expect(s.Labels).To(HaveKeyWithValue(labelProvider, "sec-default"))
+		Expect(s.Annotations).To(HaveKeyWithValue(annotationProvider, "sec-default"))
 		Expect(s.Annotations).To(HaveKeyWithValue("note", "x"))
 		Expect(s.Data).To(HaveLen(6))
 		Expect(string(s.Data["client-id"])).To(Equal(cur.Status.ClientID))
@@ -176,12 +188,13 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		Expect(string(s.Data["INFO"])).To(Equal(externalURL + "/application/o/grafana-t/.well-known/openid-configuration"))
 		Expect(string(s.Data["SLUG"])).To(Equal("grafana-t"))
 		Expect(string(s.Data["NAME"])).To(Equal("grafana-t"))
-		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
 	})
 
 	It("reports template errors once and writes nothing", func() {
 		p := attached("sec-bad", "bad", &authentikiov1alpha1.CredentialsSecretSpec{Template: "A: {{ .NoSuchVar }}"})
-		Expect(ready(p).Reason).To(Equal(reasonTemplateError))
+		Expect(creds(p).Reason).To(Equal(reasonTemplateError))
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 		reconcileP(p)
 		_, err := secret("sec-bad-oauth")
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
@@ -197,7 +210,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		cleanupSecret("someone-elses")
 
 		p := attached("sec-conflict", "conflict", &authentikiov1alpha1.CredentialsSecretSpec{Name: "someone-elses"})
-		Expect(ready(p).Reason).To(Equal(reasonSecretConflict))
+		Expect(creds(p).Reason).To(Equal(reasonSecretConflict))
 		s, err := secret("someone-elses")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(s.Data).To(HaveLen(1))
@@ -246,6 +259,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		_, err = secret("renamed")
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		Expect(get(p).Status.SecretName).To(BeEmpty())
+		Expect(creds(p)).To(BeNil())
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 	})
 
@@ -256,6 +270,155 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		s, err := secret("sec-internal-oauth")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(s.Data["issuer-url"])).To(Equal(fake.URL + "/application/o/internal/"))
+	})
+
+	It("does not deadlock with an AuthentikApplication resource (both reconcilers, real CRs)", func() {
+		cleanupSecret("sec-crs-oauth")
+		p := newProvider("sec-crs", &authentikiov1alpha1.CredentialsSecretSpec{})
+		app := &authentikiov1alpha1.AuthentikApplication{
+			ObjectMeta: metav1.ObjectMeta{Name: "sec-crs-app", Namespace: namespace},
+			Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "CRs",
+				ProviderRef: &authentikiov1alpha1.ProviderRef{Name: "sec-crs"}},
+		}
+		Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		DeferCleanup(func() {
+			var cur authentikiov1alpha1.AuthentikApplication
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &cur); err == nil {
+				cur.Finalizers = nil
+				_ = k8sClient.Update(ctx, &cur)
+				_ = k8sClient.Delete(ctx, &cur)
+			}
+		})
+		apps := &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+			Connections: reconciler.Connections}
+		appReq := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+
+		// Order as the controllers would run: provider, app, provider again
+		// (triggered by the application watch).
+		reconcileP(p)
+		_, err := apps.Reconcile(ctx, appReq)
+		Expect(err).NotTo(HaveOccurred())
+		reconcileP(p)
+
+		var cur authentikiov1alpha1.AuthentikApplication
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &cur)).To(Succeed())
+		Expect(meta.IsStatusConditionTrue(cur.Status.Conditions, ConditionReady)).To(BeTrue())
+		Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
+		s, err := secret("sec-crs-oauth")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(s.Data["issuer-url"])).To(Equal(externalURL + "/application/o/sec-crs-app/"))
+	})
+
+	It("keeps the old Secret when a rename fails", func() {
+		cleanupSecret("sec-keep-oauth")
+		foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "taken-name", Namespace: namespace},
+			StringData: map[string]string{"x": "y"}}
+		Expect(k8sClient.Create(ctx, foreign)).To(Succeed())
+		cleanupSecret("taken-name")
+		p := attached("sec-keep", "keep", &authentikiov1alpha1.CredentialsSecretSpec{})
+
+		cur := get(p)
+		cur.Spec.Secret.Name = "taken-name"
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		reconcileP(p)
+		Expect(creds(p).Reason).To(Equal(reasonSecretConflict))
+		_, err := secret("sec-keep-oauth")
+		Expect(err).NotTo(HaveOccurred(), "old Secret must survive a failed rename")
+		Expect(get(p).Status.SecretName).To(Equal("sec-keep-oauth"))
+	})
+
+	It("preserves labels added by others and removes labels dropped from the spec, without churn", func() {
+		cleanupSecret("sec-labels-oauth")
+		p := attached("sec-labels", "labels", &authentikiov1alpha1.CredentialsSecretSpec{
+			Labels: map[string]string{labelTeam: teamObs, "tier": "1"}})
+		s, _ := secret("sec-labels-oauth")
+		s.Labels["policy.example.com/cost-center"] = "42" // added by a mutating admission policy
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+		reconcileP(p)
+		s, _ = secret("sec-labels-oauth")
+		rv := s.ResourceVersion
+		Expect(s.Labels).To(HaveKeyWithValue("policy.example.com/cost-center", "42"))
+		reconcileP(p)
+		s, _ = secret("sec-labels-oauth")
+		Expect(s.ResourceVersion).To(Equal(rv), "no update loop with a foreign label")
+
+		cur := get(p)
+		cur.Spec.Secret.Labels = map[string]string{labelTeam: teamObs}
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		reconcileP(p)
+		s, _ = secret("sec-labels-oauth")
+		Expect(s.Labels).NotTo(HaveKey("tier"))
+		Expect(s.Labels).To(HaveKeyWithValue(labelTeam, teamObs))
+		Expect(s.Labels).To(HaveKeyWithValue("policy.example.com/cost-center", "42"))
+	})
+
+	It("reports a Secret the API server rejects as SecretInvalid instead of retrying forever", func() {
+		p := attached("sec-invalid", "invalid", &authentikiov1alpha1.CredentialsSecretSpec{
+			Labels: map[string]string{"bad": "not a valid label value"}})
+		Expect(creds(p).Reason).To(Equal(reasonSecretInvalid))
+	})
+
+	It("renders for provider names longer than a label value allows", func() {
+		long := "p-" + strings.Repeat("x", 80)
+		cleanupSecret(long + "-oauth")
+		p := attached(long, "long", &authentikiov1alpha1.CredentialsSecretSpec{})
+		Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("reports endpoint URLs that cannot be rewritten instead of writing internal URLs", func() {
+		fake.SetupURLHost = "authentik.internal:9000"
+		p := attached("sec-mismatch", "mismatch", &authentikiov1alpha1.CredentialsSecretSpec{})
+		Expect(creds(p).Reason).To(Equal(reasonExternalURLMismatch))
+		Expect(creds(p).Message).To(ContainSubstring("authentik.internal:9000"))
+		_, err := secret("sec-mismatch-oauth")
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("uses the global issuer when issuerMode is global", func() {
+		cleanupSecret("sec-global-oauth")
+		p := newProvider("sec-global", &authentikiov1alpha1.CredentialsSecretSpec{})
+		cur := get(p)
+		cur.Spec.IssuerMode = "global"
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		reconcileP(p)
+		fake.SeedApplication("global", get(p).Status.ProviderPK)
+		reconcileP(p)
+		s, err := secret("sec-global-oauth")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(s.Data["issuer-url"])).To(Equal(externalURL + "/"))
+	})
+
+	Context("admission validation", func() {
+		It("rejects reserved label and annotation keys", func() {
+			for _, spec := range []*authentikiov1alpha1.CredentialsSecretSpec{
+				{Labels: map[string]string{"authentik.io/connection": "true"}},
+				{Labels: map[string]string{"app.kubernetes.io/name": "x"}},
+				{Annotations: map[string]string{"foo.k8s.io/bar": "x"}},
+			} {
+				p := &authentikiov1alpha1.AuthentikOAuthProvider{
+					ObjectMeta: metav1.ObjectMeta{GenerateName: "reserved-", Namespace: namespace},
+					Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
+						AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
+						InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
+						RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://x.example.com/cb"}},
+						Secret:            spec,
+					},
+				}
+				Expect(k8sClient.Create(ctx, p)).To(MatchError(ContainSubstring("reserved")))
+			}
+		})
+		It("rejects a malformed Secret name", func() {
+			p := &authentikiov1alpha1.AuthentikOAuthProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-secret-name", Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
+					AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
+					InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
+					RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://x.example.com/cb"}},
+					Secret:            &authentikiov1alpha1.CredentialsSecretSpec{Name: "a..b"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).NotTo(Succeed())
+		})
 	})
 
 	It("maps an application to the provider it references", func() {

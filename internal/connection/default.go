@@ -55,8 +55,11 @@ func DefaultConfig(o DefaultOptions, getenv func(string) string) (*authentik.Con
 		return nil, nil
 	}
 	if o.ExternalURL != "" {
-		if u, err := url.Parse(o.ExternalURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return nil, fmt.Errorf("default Authentik connection: external URL %q must be an http(s) URL", o.ExternalURL)
+		u, err := url.Parse(o.ExternalURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("default Authentik connection: external URL %q must be an http(s) URL "+
+				"without userinfo, query or fragment", o.ExternalURL)
 		}
 	}
 

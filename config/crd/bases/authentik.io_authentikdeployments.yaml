@@ -130,7 +130,7 @@ spec:
                       token, ...). Defaults to url. Set it when url is an in-cluster address
                       that applications' users cannot reach.
                     maxLength: 2048
-                    pattern: ^https?://[^/?#@]+(/[^?#@]*)?$
+                    pattern: ^https?://[^/?#@\s]+(/[^?#@\s]*)?$
                     type: string
                   insecureSkipVerify:
                     description: |-
@@ -168,7 +168,7 @@ spec:
                       http://authentik-server.authentik.svc.cluster.local. Plain HTTP is used
                       only when the URL says http.
                     maxLength: 2048
-                    pattern: ^https?://[^/?#@]+(/[^?#@]*)?$
+                    pattern: ^https?://[^/?#@\s]+(/[^?#@\s]*)?$
                     type: string
                 required:
                 - tokenSecretRef

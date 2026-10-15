@@ -101,9 +101,13 @@ spec:
                 maxLength: 255
                 type: string
               name:
-                description: name is the application's display name.
+                description: |-
+                  name is the application's display name. Control characters (e.g.
+                  newlines) are not allowed: the name is available to credential
+                  Secret templates.
                 maxLength: 255
                 minLength: 1
+                pattern: ^[^\x00-\x1F\x7F]+$
                 type: string
               openInNewTab:
                 default: true

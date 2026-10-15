@@ -117,6 +117,48 @@ Decisions to make in this task:
       Unchanged data is not rewritten.
 - [x] **Secret contents never in logs, events or status** (tested).
 
+## Review findings addressed (independent review of the first commit)
+- **Deadlock fixed**: Secret state moved to its own `CredentialsReady`
+  condition (SecretSynced / WaitingForApplication / TemplateError /
+  SecretConflict / SecretInvalid / ExternalURLMismatch). `Ready` describes
+  only the provider in Authentik, so applications (which gate on Ready) can
+  attach and the Secret renders afterwards. Tested with both reconcilers on
+  real CRs.
+- **Template DoS closed**: templates are restricted by a parse-tree walk to
+  text, `{{ .Var }}`, if/else, comparisons, print and width-free printf
+  (`%s %q %v`); range/with/define/template/variables are rejected before
+  execution; output capped at 1 MiB.
+- `.ClientSecret` may only be printed (no comparisons/conditions), so render
+  success/failure cannot be used as an oracle on it.
+- Error messages never echo rendered content (invalid/duplicate keys are
+  reported by entry and line).
+- Reserved Secret label/annotation prefixes (`authentik.io/`,
+  `kubernetes.io/`, `k8s.io/` and subdomains) rejected by CEL -- blocks
+  self-opting a rendered Secret into `authentik.io/connection`.
+- Rename deletes the old Secret only after the new one exists.
+- Permanent API rejections -> `SecretInvalid`, no backoff loop; provider name
+  moved from a label to an annotation (no 63-char limit); default-name length
+  and DNS-subdomain name pattern enforced by CEL.
+- Labels/annotations merged, not replaced: keys added by mutators are kept,
+  keys removed from the spec are removed (tracked in
+  `authentik.io/applied-metadata`).
+- URL rewrite parses URLs (case-insensitive host, default ports, subpaths);
+  a mismatch is `ExternalURLMismatch` instead of silently writing internal
+  URLs. External URL flag rejects userinfo/query/fragment; URL patterns
+  reject whitespace.
+- Application display names reject control characters (no newline key
+  injection); docs recommend `{{ printf "%q" .Name }}`.
+- Multi-document output rejected; deletes use UID/resourceVersion
+  preconditions; empty issuer/authorize/token -> WaitingForApplication.
+
+Accepted/documented, not changed:
+- Creating/editing an AuthentikOAuthProvider is equivalent to creating
+  Secrets (any name/data/non-reserved labels) in that namespace: grant it
+  like Secret write. Documented on the API type and in scope.md.
+- SecretConflict vs success reveals whether a Secret name exists.
+- The provider watch on AuthentikApplications has no predicate (extra API
+  calls on application status writes); revisit with TASK-06 metrics.
+
 ## Dependencies
 - Requires: TASK-02, TASK-03
 - Blocks: TASK-08, TASK-09

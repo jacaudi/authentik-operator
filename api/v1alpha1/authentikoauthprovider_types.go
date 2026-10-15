@@ -232,11 +232,21 @@ type AuthentikOAuthProviderSpec struct {
 // string keys to string values; each entry becomes a Secret key.
 // Without a template the keys are client-id, client-secret, issuer-url,
 // authorization-url, token-url and userinfo-url.
+//
+// Templates are restricted to text, {{ .Var }}, if/else, comparisons (eq,
+// ne, lt, le, gt, ge, and, or, not), print and printf with %s/%q/%v.
+// .ClientSecret may only be printed. Values are inserted as-is, so quote
+// values that may contain ':' or newlines: {{ printf "%q" .Name }}.
+//
+// Security note: whoever can create or edit an AuthentikOAuthProvider can
+// create a Secret with any name, data, labels and annotations in that
+// namespace (subject to the reserved prefixes below), including one holding
+// the provider's client secret. Grant this kind like Secret write access.
 type CredentialsSecretSpec struct {
 	// name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
-	// deletes the previously rendered Secret.
+	// deletes the previously rendered Secret once the new one exists.
 	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
 	Name string `json:"name,omitempty"`
 
@@ -245,11 +255,15 @@ type CredentialsSecretSpec struct {
 	// +optional
 	Template string `json:"template,omitempty"`
 
-	// labels added to the Secret.
+	// labels added to the Secret. Keys under authentik.io/, kubernetes.io/
+	// and k8s.io/ (and their subdomains) are reserved.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="label keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 
-	// annotations added to the Secret.
+	// annotations added to the Secret. Keys under authentik.io/,
+	// kubernetes.io/ and k8s.io/ (and their subdomains) are reserved.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="annotation keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
@@ -286,7 +300,9 @@ type AuthentikOAuthProviderStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Client ID",type=string,JSONPath=".status.clientId"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Credentials",type=string,JSONPath=".status.conditions[?(@.type=='CredentialsReady')].status"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.secret) || has(self.spec.secret.name) || size(self.metadata.name) <= 247",message="metadata.name is too long for the default Secret name <name>-oauth; set spec.secret.name"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // AuthentikOAuthProvider is the Schema for the authentikoauthproviders API

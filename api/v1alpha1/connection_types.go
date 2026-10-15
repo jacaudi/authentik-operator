@@ -49,7 +49,7 @@ type ConnectionSpec struct {
 	// url is the base URL of Authentik, e.g. https://authentik.example.com or
 	// http://authentik-server.authentik.svc.cluster.local. Plain HTTP is used
 	// only when the URL says http.
-	// +kubebuilder:validation:Pattern=`^https?://[^/?#@]+(/[^?#@]*)?$`
+	// +kubebuilder:validation:Pattern=`^https?://[^/?#@\s]+(/[^?#@\s]*)?$`
 	// +kubebuilder:validation:MaxLength=2048
 	// +required
 	URL string `json:"url"`
@@ -58,7 +58,7 @@ type ConnectionSpec struct {
 	// endpoint URLs rendered into credential Secrets (issuer, authorize,
 	// token, ...). Defaults to url. Set it when url is an in-cluster address
 	// that applications' users cannot reach.
-	// +kubebuilder:validation:Pattern=`^https?://[^/?#@]+(/[^?#@]*)?$`
+	// +kubebuilder:validation:Pattern=`^https?://[^/?#@\s]+(/[^?#@\s]*)?$`
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	ExternalURL string `json:"externalURL,omitempty"`

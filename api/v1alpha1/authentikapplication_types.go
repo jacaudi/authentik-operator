@@ -57,9 +57,12 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	AuthentikRef *AuthentikRef `json:"authentikRef,omitempty"`
 
-	// name is the application's display name.
+	// name is the application's display name. Control characters (e.g.
+	// newlines) are not allowed: the name is available to credential
+	// Secret templates.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F]+$`
 	// +required
 	Name string `json:"name"`
 
