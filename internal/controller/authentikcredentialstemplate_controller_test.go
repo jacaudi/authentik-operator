@@ -48,7 +48,7 @@ var _ = Describe("AuthentikCredentialsTemplate Controller", func() {
 	It("marks a valid template Ready", func() {
 		c := validate("tv-ok", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 			Template:          "ID: {{ .ClientID }}\nSECRET: {{ .ClientSecret }}",
-			NamespaceSelector: &metav1.LabelSelector{},
+			NamespaceSelector: metav1.LabelSelector{},
 		})
 		Expect(c.Status).To(Equal(metav1.ConditionTrue))
 		Expect(c.Reason).To(Equal(reasonTemplateValid))
@@ -57,6 +57,20 @@ var _ = Describe("AuthentikCredentialsTemplate Controller", func() {
 	It("treats an empty template (default keys) as valid", func() {
 		Expect(validate("tv-empty", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{}).Status).
 			To(Equal(metav1.ConditionTrue))
+	})
+
+	It("reports labels and annotations the API server would reject", func() {
+		c := validate("tv-meta", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+			Labels: map[string]string{"invalid-value": "not a valid label value"}})
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal(reasonInvalidMetadata))
+		Expect(c.Message).To(ContainSubstring("spec.labels"))
+	})
+
+	It("reports an unquoted application name, with a hint", func() {
+		c := validate("tv-name", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Template: "NAME: {{ .Name }}"})
+		Expect(c.Reason).To(Equal(reasonTemplateError))
+		Expect(c.Message).To(ContainSubstring("printf"))
 	})
 
 	It("reports unknown variables, disallowed functions and malformed output", func() {
@@ -74,7 +88,7 @@ var _ = Describe("AuthentikCredentialsTemplate Controller", func() {
 
 	It("reports an invalid namespaceSelector", func() {
 		c := validate("tv-selector", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
-			NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+			NamespaceSelector: metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 				{Key: "team", Operator: metav1.LabelSelectorOpIn}}},
 		})
 		Expect(c.Status).To(Equal(metav1.ConditionFalse))

@@ -22,8 +22,11 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -34,6 +37,7 @@ import (
 const (
 	reasonTemplateValid            = "Valid"
 	reasonInvalidNamespaceSelector = "InvalidNamespaceSelector"
+	reasonInvalidMetadata          = "InvalidMetadata"
 )
 
 // AuthentikCredentialsTemplateReconciler validates AuthentikCredentialsTemplates
@@ -62,11 +66,11 @@ func (r *AuthentikCredentialsTemplateReconciler) Reconcile(ctx context.Context, 
 			return ctrl.Result{}, err
 		}
 		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reasonTemplateError, err.Error()
-	} else if t.Spec.NamespaceSelector != nil {
-		if _, err := metav1.LabelSelectorAsSelector(t.Spec.NamespaceSelector); err != nil {
-			cond.Status, cond.Reason = metav1.ConditionFalse, reasonInvalidNamespaceSelector
-			cond.Message = fmt.Sprintf("invalid namespaceSelector: %v", err)
-		}
+	} else if errs := validateTemplateMetadata(&t.Spec); len(errs) > 0 {
+		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, reasonInvalidMetadata, errs.ToAggregate().Error()
+	} else if _, err := metav1.LabelSelectorAsSelector(&t.Spec.NamespaceSelector); err != nil {
+		cond.Status, cond.Reason = metav1.ConditionFalse, reasonInvalidNamespaceSelector
+		cond.Message = fmt.Sprintf("invalid namespaceSelector: %v", err)
 	}
 
 	base := t.DeepCopy()
@@ -77,6 +81,14 @@ func (r *AuthentikCredentialsTemplateReconciler) Reconcile(ctx context.Context, 
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// validateTemplateMetadata applies the API server's own label and
+// annotation rules, so a template the API server would reject on every
+// Secret fails here once.
+func validateTemplateMetadata(spec *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) field.ErrorList {
+	errs := metav1validation.ValidateLabels(spec.Labels, field.NewPath("spec", "labels"))
+	return append(errs, apivalidation.ValidateAnnotations(spec.Annotations, field.NewPath("spec", "annotations"))...)
 }
 
 // SetupWithManager sets up the controller with the Manager.

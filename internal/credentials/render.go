@@ -97,6 +97,9 @@ func Render(tmpl string, v Vars) (map[string][]byte, error) {
 		}), nil
 	}
 
+	if err := checkVars(v); err != nil {
+		return nil, err
+	}
 	t, err := Parse(tmpl)
 	if err != nil {
 		return nil, err
@@ -119,17 +122,43 @@ func Render(tmpl string, v Vars) (map[string][]byte, error) {
 	return toBytes(kv), nil
 }
 
+// checkVars rejects values containing control characters (newlines in
+// particular): interpolated unescaped into YAML, they could add keys the
+// template author did not write. Values come from the provider spec and from
+// Authentik. The message names the variable, never its value.
+func checkVars(v Vars) error {
+	for k, val := range v.data() {
+		if strings.ContainsFunc(val, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return &TemplateError{Err: fmt.Errorf("variable .%s contains control characters", k)}
+		}
+	}
+	return nil
+}
+
 // Check validates a template by rendering it with example values, so that
 // unknown variables and malformed output are reported before any provider
-// uses it. Output that depends on the actual values can still fail later.
+// uses it. It renders twice: with plain values, then with an application
+// name containing YAML syntax (allowed in Authentik), which catches
+// unquoted {{ .Name }}. Output that depends on other actual values can
+// still fail later.
 func Check(tmpl string) error {
+	if _, err := Render(tmpl, exampleVars("Example")); err != nil {
+		return err
+	}
+	if _, err := Render(tmpl, exampleVars(`Example: "app" #1, [a]`)); err != nil {
+		return &TemplateError{Err: fmt.Errorf("%w (with an application name containing ': ', '#' and quotes; "+
+			`quote .Name with {{ printf "%%q" .Name }})`, errors.Unwrap(err))}
+	}
+	return nil
+}
+
+func exampleVars(name string) Vars {
 	const ex = "https://authentik.example.com/application/o/example/"
-	_, err := Render(tmpl, Vars{
+	return Vars{
 		ClientID: "example-client-id", ClientSecret: "example-client-secret",
 		IssuerURL: ex, AuthURL: ex, TokenURL: ex, UserInfoURL: ex, LogoutURL: ex, JWKSURL: ex, ProviderInfoURL: ex,
-		Slug: "example", Name: "Example",
-	})
-	return err
+		Slug: "example", Name: name,
+	}
 }
 
 // Parse parses and validates a template without executing it.

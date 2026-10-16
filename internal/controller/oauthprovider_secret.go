@@ -104,6 +104,18 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *au
 		return false, err
 	}
 	if reason != "" {
+		// Access to the template is gone (or it is broken): what the
+		// template granted -- its labels and annotations, which may opt the
+		// Secret into replication or another controller -- is withdrawn.
+		// The data, this provider's own credentials, is kept so workloads
+		// keep working.
+		stripped, err := r.stripTemplateMetadata(ctx, p)
+		if err != nil {
+			return false, err
+		}
+		if stripped {
+			msg += fmt.Sprintf("; removed the template's labels and annotations from Secret %q (data kept)", p.Status.SecretName)
+		}
 		r.setCredentials(p, metav1.ConditionFalse, reason, msg, true)
 		return true, nil
 	}
@@ -155,12 +167,12 @@ func (r *AuthentikOAuthProviderReconciler) credentialsTemplate(ctx context.Conte
 		}
 		return nil, "", "", fmt.Errorf("get AuthentikCredentialsTemplate %s: %w", ref.Name, err)
 	}
-	if t.Spec.NamespaceSelector != nil {
-		sel, err := metav1.LabelSelectorAsSelector(t.Spec.NamespaceSelector)
-		if err != nil {
-			return nil, reasonTemplateError, fmt.Sprintf("AuthentikCredentialsTemplate %q has an invalid namespaceSelector: %v",
-				ref.Name, err), nil
-		}
+	sel, err := metav1.LabelSelectorAsSelector(&t.Spec.NamespaceSelector)
+	if err != nil {
+		return nil, reasonInvalidNamespaceSelector, fmt.Sprintf("AuthentikCredentialsTemplate %q has an invalid "+
+			"namespaceSelector: %v", ref.Name, err), nil
+	}
+	if !sel.Empty() {
 		var ns corev1.Namespace
 		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: p.Namespace}, &ns); err != nil {
 			return nil, "", "", fmt.Errorf("get Namespace %s: %w", p.Namespace, err)
@@ -303,6 +315,41 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context, p *a
 	return "", "", nil
 }
 
+// stripTemplateMetadata removes the labels and annotations a template
+// applied (per annotationApplied) from the currently rendered Secret, if this
+// resource still controls it. It reports whether anything was removed.
+func (r *AuthentikOAuthProviderReconciler) stripTemplateMetadata(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) (bool, error) {
+	name := p.Status.SecretName
+	if name == "" {
+		return false, nil
+	}
+	var s corev1.Secret
+	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: name}, &s)
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
+	case !metav1.IsControlledBy(&s, p):
+		return false, nil
+	}
+	var previous appliedMetadata
+	_ = json.Unmarshal([]byte(s.Annotations[annotationApplied]), &previous)
+	if len(previous.Labels) == 0 && len(previous.Annotations) == 0 {
+		return false, nil
+	}
+	s.Labels = mergeMetadata(s.Labels, nil, previous.Labels, map[string]string{labelManagedBy: labelManagedByValue})
+	s.Annotations = mergeMetadata(s.Annotations, nil, previous.Annotations,
+		map[string]string{annotationProvider: p.Name, annotationApplied: "{}"})
+	if err := r.Update(ctx, &s); err != nil {
+		return false, fmt.Errorf("update Secret %s/%s: %w", p.Namespace, name, err)
+	}
+	r.event(p, corev1.EventTypeNormal, "SecretUpdated", "Update",
+		"Removed template labels and annotations from credentials Secret %q", name)
+	return true, nil
+}
+
 // userWriteError maps API rejections that retrying cannot fix (invalid
 // labels, oversized data, ...) to a user-visible reason.
 func userWriteError(name string, err error) (string, string, bool) {
@@ -325,6 +372,8 @@ func apiErrorMessage(err error) string {
 // mergeMetadata computes labels or annotations for an owned Secret: keys
 // added by others are kept, keys this operator applied before but no longer
 // wants are removed, desired template keys are set, and operator keys win.
+// A key both a template and another controller set is removed with the
+// template's key: the operator cannot tell the two writers apart.
 func mergeMetadata(existing, desired map[string]string, previouslyApplied []string,
 	operator map[string]string) map[string]string {
 	out := maps.Clone(existing)

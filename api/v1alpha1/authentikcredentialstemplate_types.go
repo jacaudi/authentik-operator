@@ -43,30 +43,32 @@ type AuthentikCredentialsTemplateSpec struct {
 	Template string `json:"template,omitempty"`
 
 	// labels added to every Secret rendered from this template. Keys under
-	// authentik.io/, kubernetes.io/ and k8s.io/ (and their subdomains) are
-	// reserved.
-	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="label keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
+	// authentik.io/ (and its subdomains) are reserved; keys the operator
+	// sets itself (app.kubernetes.io/managed-by) are overridden.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?authentik[.]io/'))",message="label keys under authentik.io/ are reserved"
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 
 	// annotations added to every Secret rendered from this template. Keys
-	// under authentik.io/, kubernetes.io/ and k8s.io/ (and their
-	// subdomains) are reserved.
-	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="annotation keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
+	// under authentik.io/ (and its subdomains) are reserved.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?authentik[.]io/'))",message="annotation keys under authentik.io/ are reserved"
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 
-	// namespaceSelector restricts which namespaces' providers may use this
-	// template. Omitted, every namespace may; {} also matches every
-	// namespace.
-	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+	// namespaceSelector selects the namespaces whose providers may use this
+	// template; {} allows every namespace. Required, so that allowing every
+	// namespace is an explicit choice. The selector is only as strong as
+	// control over namespace labels: if tenants can create namespaces or
+	// label them, prefer kubernetes.io/metadata.name, which the API server
+	// sets to the namespace's name.
+	// +required
+	NamespaceSelector metav1.LabelSelector `json:"namespaceSelector"`
 }
 
 // AuthentikCredentialsTemplateStatus defines the observed state of AuthentikCredentialsTemplate.
 type AuthentikCredentialsTemplateStatus struct {
-	// conditions: Ready reports whether the template and namespaceSelector
-	// are valid.
+	// conditions: Ready reports whether the template, labels, annotations
+	// and namespaceSelector are valid.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

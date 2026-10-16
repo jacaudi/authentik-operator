@@ -147,8 +147,10 @@ type AuthentikOAuthProviderSpec struct {
 	// ID derived from this resource's UID ("k8s-<uid>"), reported in
 	// status.clientId and never written back to spec. Client IDs are not
 	// secret; the derived one lets the operator recognise its own provider
-	// if a create's outcome was lost.
+	// if a create's outcome was lost. Printable ASCII without spaces, so it
+	// cannot inject keys into a rendered credentials Secret.
 	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[\x21-\x7E]+$`
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 

@@ -142,8 +142,9 @@ never modified or deleted (`SecretConflict`).
 Trust boundary for credential Secrets, with personas split as in Crossplane's
 XRD/Composition versus claim model:
 - Platform administrators own the cluster-scoped `AuthentikCredentialsTemplate`.
-  It holds the data template, the labels and the annotations, and its
-  `namespaceSelector` limits which namespaces may use it.
+  It holds the data template, the labels and the annotations. Its required
+  `namespaceSelector` limits which namespaces may use it; `{}` allows all,
+  so opening a template to everyone is an explicit choice.
 - Teams own `AuthentikOAuthProvider`, and choose only the Secret's name and
   which template to reference.
 
@@ -152,15 +153,31 @@ not already taken, in the team's own namespace. The Secret holds that
 provider's client secret, in a shape an administrator defined. Provider write
 does not let a team choose the Secret's keys, labels or annotations, so a team
 cannot, for example, opt a rendered Secret into `authentik.io/connection` or
-into another controller's label selector. Template labels and annotations also
-reject the reserved prefixes `authentik.io/`, `kubernetes.io/` and `k8s.io/`.
+into another controller's label selector. Template labels and annotations
+reject the reserved prefix `authentik.io/`. Variables are inserted into YAML,
+so values containing control characters are refused (`spec.clientId` is
+restricted to printable ASCII at admission), and an unquoted `.Name` is
+caught when the template is validated. Neither a newline nor YAML syntax in a
+value can add keys.
+
+The selector is only as strong as control over namespace labels. Plain
+namespaced RBAC cannot label a Namespace. But tenants who can create
+namespaces, or a multi-tenancy layer (Capsule, Rancher projects, HNC), may be
+able to, so match on `kubernetes.io/metadata.name`, which the API server sets
+to the namespace's name. `TemplateNotFound` versus `TemplateNotAllowed` tells
+a tenant which template names exist, a disclosure accepted like
+`SecretConflict`'s.
 Templates are restricted (no loops, no nested templates, capped output,
 `.ClientSecret` printable only), so even a template author cannot hang or crash
 the operator or probe the client secret through render errors.
 
-Checking the namespaceSelector needs `get` on Namespaces. When a template
-stops allowing a namespace, the existing Secret is kept, and the provider
-reports `TemplateNotAllowed` until the template is fixed or the reference is
+Checking the namespaceSelector needs `get` on Namespaces; there is no
+Namespace watch, so a label change takes effect within the 5-minute recheck.
+When a template stops allowing a namespace, or is deleted, the template's
+labels and annotations are removed from the existing Secret: what they opted
+it into is withdrawn. Its data, that provider's own credentials, is kept so
+workloads keep running. The provider reports `TemplateNotAllowed` /
+`TemplateNotFound` until the template is fixed or the reference is
 removed. Secrets are fetched by name
 through the uncached API reader on every resolve, so token/CA rotation takes
 effect immediately for API objects; the `Connected` condition catches up on

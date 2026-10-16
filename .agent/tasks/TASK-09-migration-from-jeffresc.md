@@ -18,8 +18,9 @@ hold either. Target migrant: orac gitops, 4 OAuth2 apps on JeffResc chart 0.1.8.
       AuthentikApplication / AuthentikOAuth2Application / AuthentikSAMLApplication
       YAML and emitting AuthentikOAuthProvider + AuthentikApplication (one object
       per file, `<kind>-<name>.yaml`), plus one cluster-scoped
-      AuthentikCredentialsTemplate per distinct inline `secret.template`
-      (with its labels and annotations), referenced via
+      AuthentikCredentialsTemplate per distinct (template, labels,
+      annotations) tuple, with a `namespaceSelector` on
+      `kubernetes.io/metadata.name` listing the source namespaces, referenced via
       `spec.secret.templateRef`. Templates are admin-owned (TASK-04), so the
       runbook has the platform admin apply them. Also: `adoption.enabled: true`,
       `adoption.match` targeting `<slug>-provider`, `deletionPolicy: Retain`

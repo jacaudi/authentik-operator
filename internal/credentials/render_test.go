@@ -160,13 +160,53 @@ func TestErrorsNeverContainTheSecret(t *testing.T) {
 // A value containing a newline cannot add keys when quoted with printf %q.
 func TestQuotedValuesCannotInjectKeys(t *testing.T) {
 	v := vars
-	v.Name = "x\nINJECTED: y"
-	got, err := Render("NAME: {{ printf \"%q\" .Name }}\n", v)
-	if err != nil {
-		t.Fatal(err)
+	v.Name = `x: y, INJECTED: "z" #c`
+	for _, tmpl := range []string{"NAME: {{ printf \"%q\" .Name }}\n", "{NAME: {{ printf \"%q\" .Name }}}"} {
+		got, err := Render(tmpl, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || string(got["NAME"]) != v.Name {
+			t.Fatalf("%s: got %q", tmpl, got)
+		}
 	}
-	if len(got) != 1 || string(got["NAME"]) != v.Name {
-		t.Fatalf("got %q", got)
+}
+
+func TestControlCharactersRejected(t *testing.T) {
+	for name, mutate := range map[string]func(*Vars){
+		"newline in client ID": func(v *Vars) { v.ClientID = "x\nINJECTED: y" },
+		"newline in name":      func(v *Vars) { v.Name = "x\nINJECTED: y" },
+		"DEL in secret":        func(v *Vars) { v.ClientSecret = clientSecret + "\x7f" },
+	} {
+		v := vars
+		mutate(&v)
+		_, err := Render("ID: {{ .ClientID }}\n", v)
+		if !IsTemplateError(err) || !strings.Contains(err.Error(), "control characters") {
+			t.Fatalf("%s: got %v", name, err)
+		}
+		if strings.Contains(err.Error(), "INJECTED") || strings.Contains(err.Error(), clientSecret) {
+			t.Fatalf("%s: error echoes the value: %v", name, err)
+		}
+	}
+}
+
+func TestCheck(t *testing.T) {
+	for tmpl, wantErr := range map[string]string{
+		"":                                    "",
+		"ID: {{ .ClientID }}":                 "",
+		"NAME: {{ printf \"%q\" .Name }}":     "",
+		"NAME: {{ .Name }}":                   "printf",
+		"A: {{ .NoSuchVar }}":                 "NoSuchVar",
+		"- not a map":                         "map",
+		"S: {{ if .ClientSecret }}x{{ end }}": "ClientSecret",
+	} {
+		err := Check(tmpl)
+		switch {
+		case wantErr == "" && err != nil:
+			t.Errorf("%q: unexpected error %v", tmpl, err)
+		case wantErr != "" && (!IsTemplateError(err) || !strings.Contains(err.Error(), wantErr)):
+			t.Errorf("%q: got %v, want a template error mentioning %q", tmpl, err, wantErr)
+		}
 	}
 }
 

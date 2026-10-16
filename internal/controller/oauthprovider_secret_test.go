@@ -39,6 +39,7 @@ import (
 const (
 	teamObs   = "obs"
 	labelTeam = "team"
+	tmplAX    = "A: x"
 )
 
 var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
@@ -406,16 +407,28 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	})
 
 	Context("admission validation", func() {
-		It("rejects reserved label and annotation keys on templates", func() {
+		It("rejects authentik.io label and annotation keys on templates, and allows others", func() {
 			for _, spec := range []authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 				{Labels: map[string]string{"authentik.io/connection": "true"}},
-				{Labels: map[string]string{"app.kubernetes.io/name": "x"}},
-				{Annotations: map[string]string{"foo.k8s.io/bar": "x"}},
+				{Annotations: map[string]string{"x.authentik.io/y": "x"}},
 			} {
 				t := &authentikiov1alpha1.AuthentikCredentialsTemplate{
 					ObjectMeta: metav1.ObjectMeta{GenerateName: "reserved-"}, Spec: spec}
 				Expect(k8sClient.Create(ctx, t)).To(MatchError(ContainSubstring("reserved")))
 			}
+			newTemplate("allowed-keys", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Labels: map[string]string{"app.kubernetes.io/part-of": "x"}})
+		})
+		It("rejects a client ID that could inject Secret keys", func() {
+			p := &authentikiov1alpha1.AuthentikOAuthProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-client-id", Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
+					AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
+					InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
+					RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://x.example.com/cb"}},
+					ClientID:          "x\nEXTRA: y",
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).To(MatchError(ContainSubstring("clientId")))
 		})
 		It("rejects a malformed Secret name", func() {
 			p := &authentikiov1alpha1.AuthentikOAuthProvider{
@@ -476,8 +489,9 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		It("enforces the template's namespaceSelector", func() {
 			cleanupSecret("sec-ns-oauth")
 			spec := newTemplate("tmpl-ns", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
-				Template:          "A: x",
-				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: "elsewhere"}},
+				Template:          tmplAX,
+				Labels:            map[string]string{labelTeam: teamObs},
+				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: "elsewhere"}},
 			})
 			p := attached("sec-ns", "ns", spec)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
@@ -490,14 +504,77 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 			reconcileP(p)
 			Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
 
-			By("keeping the rendered Secret when access is revoked later")
+			s, _ := secret("sec-ns-oauth")
+			Expect(s.Labels).To(HaveKeyWithValue(labelTeam, teamObs))
+
+			By("withdrawing the template's labels, but keeping the data, when access is revoked")
 			updateTemplate("tmpl-ns", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
 				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = "elsewhere"
 			})
 			reconcileP(p)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
-			_, err = secret("sec-ns-oauth")
+			Expect(creds(p).Message).To(ContainSubstring("removed the template's labels"))
+			s, err = secret("sec-ns-oauth")
 			Expect(err).NotTo(HaveOccurred())
+			Expect(s.Labels).NotTo(HaveKey(labelTeam))
+			Expect(s.Labels).To(HaveKeyWithValue(labelManagedBy, labelManagedByValue))
+			Expect(s.Data).To(HaveKeyWithValue("A", []byte("x")))
+			rv := s.ResourceVersion
+			reconcileP(p)
+			s, _ = secret("sec-ns-oauth")
+			Expect(s.ResourceVersion).To(Equal(rv), "stripping is not repeated")
+		})
+
+		It("falls back to the default keys and drops template metadata when templateRef is removed", func() {
+			cleanupSecret("sec-unref-oauth")
+			p := attached("sec-unref", "unref", newTemplate("tmpl-unref", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+				Template: tmplAX, Labels: map[string]string{labelTeam: teamObs}, Annotations: map[string]string{"note": "n"}}))
+			cur := get(p)
+			cur.Spec.Secret.TemplateRef = nil
+			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+			reconcileP(p)
+			s, _ := secret("sec-unref-oauth")
+			Expect(s.Data).To(HaveKey("client-id"))
+			Expect(s.Data).NotTo(HaveKey("A"))
+			Expect(s.Labels).NotTo(HaveKey(labelTeam))
+			Expect(s.Annotations).NotTo(HaveKey("note"))
+			Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("switches templates, replacing their labels", func() {
+			cleanupSecret("sec-switch-oauth")
+			p := attached("sec-switch", "switch", newTemplate("tmpl-switch-a", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+				Labels: map[string]string{"a": "1", "both": "a"}}))
+			newTemplate("tmpl-switch-b", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Labels: map[string]string{"b": "1", "both": "b"}})
+			cur := get(p)
+			cur.Spec.Secret.TemplateRef.Name = "tmpl-switch-b"
+			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+			reconcileP(p)
+			s, _ := secret("sec-switch-oauth")
+			Expect(s.Labels).NotTo(HaveKey("a"))
+			Expect(s.Labels).To(HaveKeyWithValue("b", "1"))
+			Expect(s.Labels).To(HaveKeyWithValue("both", "b"))
+		})
+
+		It("keeps the data but drops template metadata when the template is deleted", func() {
+			cleanupSecret("sec-gone-oauth")
+			p := attached("sec-gone", "gone", newTemplate("tmpl-gone", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+				Template: tmplAX, Labels: map[string]string{labelTeam: teamObs}}))
+			Expect(k8sClient.Delete(ctx, &authentikiov1alpha1.AuthentikCredentialsTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "tmpl-gone"}})).To(Succeed())
+			reconcileP(p)
+			Expect(creds(p).Reason).To(Equal(reasonTemplateNotFound))
+			s, err := secret("sec-gone-oauth")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s.Data).To(HaveKeyWithValue("A", []byte("x")))
+			Expect(s.Labels).NotTo(HaveKey(labelTeam))
+		})
+
+		It("reports an invalid namespaceSelector on the provider", func() {
+			p := attached("sec-badsel", "badsel", newTemplate("tmpl-badsel", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+				NamespaceSelector: metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+					{Key: labelTeam, Operator: metav1.LabelSelectorOpIn}}}}))
+			Expect(creds(p).Reason).To(Equal(reasonInvalidNamespaceSelector))
 		})
 
 		It("only maps templates to the providers that reference them", func() {

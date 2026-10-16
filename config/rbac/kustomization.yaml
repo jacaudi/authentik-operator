@@ -22,6 +22,8 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the authentik-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+# AuthentikCredentialsTemplate decides what goes into operator-written
+# Secrets: bind its admin/editor roles to platform administrators only.
 - authentikcredentialstemplate_admin_role.yaml
 - authentikcredentialstemplate_editor_role.yaml
 - authentikcredentialstemplate_viewer_role.yaml

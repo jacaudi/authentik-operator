@@ -32,11 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "goauthentik.io/api/v3"
@@ -371,7 +373,9 @@ func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) er
 		// provider's assigned slug/name, which the credentials Secret uses.
 		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(providerForApplication)).
 		// A template change re-renders every Secret that uses it.
-		Watches(&authentikiov1alpha1.AuthentikCredentialsTemplate{}, handler.EnqueueRequestsFromMapFunc(r.providersForTemplate)).
+		// Status-only writes (the template reconciler's) are ignored.
+		Watches(&authentikiov1alpha1.AuthentikCredentialsTemplate{}, handler.EnqueueRequestsFromMapFunc(r.providersForTemplate),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikoauthprovider").
 		Complete(r)

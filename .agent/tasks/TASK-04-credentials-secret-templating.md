@@ -133,17 +133,19 @@ Crossplane does. Platform engineers own XRDs and Compositions; tenants own
 claims and fill in only what the platform exposes.
 
 - `AuthentikCredentialsTemplate` (cluster-scoped) holds `template`,
-  `labels`, `annotations` and an optional `namespaceSelector`; omitted, every
-  namespace may use it.
+  `labels`, `annotations` and a required `namespaceSelector` (`{}` = all
+  namespaces, so this is never the default by accident).
 - A provider's `spec.secret` holds only `name` and `templateRef`. Without
   `templateRef`, it gets the default keys and no extra metadata.
 - A small reconciler validates each template by rendering it with example
   values, and reports the result in the template's `Ready` condition
-  (`Valid` / `TemplateError` / `InvalidNamespaceSelector`). Administrators
+  (`Valid` / `TemplateError` / `InvalidMetadata` / `InvalidNamespaceSelector`). Administrators
   see their mistakes on the template, not on every provider using it.
 - New provider `CredentialsReady` reasons: `TemplateNotFound` and
-  `TemplateNotAllowed`. On either, the existing Secret is kept (same rule as
-  other failures). A template change re-renders every provider that
+  `TemplateNotAllowed` (and `InvalidNamespaceSelector`). On these, the
+  template's labels and annotations are removed from the existing Secret and
+  its data is kept. A template spec change (generation, not status)
+  re-renders every provider that
   references it (watch plus list; no field index, since templates change
   rarely).
 - RBAC added: templates `get;list;watch` and status `update;patch`;
@@ -151,6 +153,32 @@ claims and fill in only what the platform exposes.
 - This does not change what a compromised operator could do. It still has
   cluster-wide Secret write, so per-namespace RBAC remains the follow-up for
   that.
+
+### Review findings addressed (independent review of the template split)
+- **Blocking, fixed**: YAML key injection through `spec.clientId`, e.g.
+  `"x\nEXTRA: y"`. `clientId` is now printable ASCII without spaces
+  (admission), and `Render` refuses any variable that contains control
+  characters, including values from Authentik. The error names the variable,
+  never the value. The sample quotes values with `printf "%q"`.
+- `namespaceSelector` is required (no default-open). Its doc and scope.md
+  explain that it is only as strong as control over namespace labels, and
+  recommend `kubernetes.io/metadata.name`.
+- Revocation withdraws the template's labels and annotations; see above.
+- The template reconciler validates labels and annotations with the API
+  server's own rules (`InvalidMetadata`). `Check` also renders with a
+  YAML-hostile application name, so an unquoted `.Name` fails on the
+  template, with a hint.
+- `GenerationChangedPredicate` on the template watch; no Namespace GET for
+  `{}`; same `InvalidNamespaceSelector` reason on template and provider.
+- The reserved-prefix rule on templates is narrowed to `authentik.io/`:
+  admins legitimately set `app.kubernetes.io/*`, and the operator's own keys
+  win anyway.
+- Accepted: TemplateNotFound/NotAllowed discloses template names. A label key
+  that both a template and another controller set is removed with the
+  template's key (documented on `mergeMetadata`).
+- Tests added: templateRef removal, template switch, template deletion,
+  revocation stripping (idempotent), invalid selector on the provider,
+  `clientId` admission, metadata validation, `Check` unit tests.
 
 ## Review findings addressed (independent review of the first commit)
 - **Deadlock fixed**: Secret state moved to its own `CredentialsReady`
