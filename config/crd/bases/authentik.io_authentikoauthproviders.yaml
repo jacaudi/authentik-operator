@@ -249,28 +249,6 @@ spec:
                   endpoint URLs into a Secret in this namespace (owned by this
                   resource, deleted with it).
                 properties:
-                  annotations:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      annotations added to the Secret. Keys under authentik.io/,
-                      kubernetes.io/ and k8s.io/ (and their subdomains) are reserved.
-                    type: object
-                    x-kubernetes-validations:
-                    - message: annotation keys under authentik.io/, kubernetes.io/
-                        and k8s.io/ are reserved
-                      rule: self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))
-                  labels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      labels added to the Secret. Keys under authentik.io/, kubernetes.io/
-                      and k8s.io/ (and their subdomains) are reserved.
-                    type: object
-                    x-kubernetes-validations:
-                    - message: label keys under authentik.io/, kubernetes.io/ and
-                        k8s.io/ are reserved
-                      rule: self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))
                   name:
                     description: |-
                       name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
@@ -278,10 +256,19 @@ spec:
                     maxLength: 253
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                     type: string
-                  template:
-                    description: template renders the Secret data; see the type description.
-                    maxLength: 65536
-                    type: string
+                  templateRef:
+                    description: |-
+                      templateRef names the AuthentikCredentialsTemplate that renders the
+                      Secret. The template's namespaceSelector must match this namespace.
+                    properties:
+                      name:
+                        description: name of the AuthentikCredentialsTemplate.
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
                 type: object
               signingKey:
                 default: authentik Self-signed Certificate

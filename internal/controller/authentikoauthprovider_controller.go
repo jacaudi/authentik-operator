@@ -83,7 +83,9 @@ type AuthentikOAuthProviderReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch
+// +kubebuilder:rbac:groups=authentik.io,resources=authentikcredentialstemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile makes the OAuth2 provider in Authentik match the spec.
@@ -368,6 +370,8 @@ func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) er
 		// An application being attached (or renamed) changes the
 		// provider's assigned slug/name, which the credentials Secret uses.
 		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(providerForApplication)).
+		// A template change re-renders every Secret that uses it.
+		Watches(&authentikiov1alpha1.AuthentikCredentialsTemplate{}, handler.EnqueueRequestsFromMapFunc(r.providersForTemplate)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikoauthprovider").
 		Complete(r)
@@ -380,4 +384,22 @@ func providerForApplication(_ context.Context, o client.Object) []reconcile.Requ
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: ref.Name}}}
+}
+
+// providersForTemplate maps a credentials template to the providers that
+// reference it. Templates change rarely, so a list beats a field index.
+func (r *AuthentikOAuthProviderReconciler) providersForTemplate(ctx context.Context, o client.Object) []reconcile.Request {
+	var list authentikiov1alpha1.AuthentikOAuthProviderList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list providers for credentials template", "template", o.GetName())
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		p := &list.Items[i]
+		if p.Spec.Secret != nil && p.Spec.Secret.TemplateRef != nil && p.Spec.Secret.TemplateRef.Name == o.GetName() {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
+		}
+	}
+	return reqs
 }

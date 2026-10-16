@@ -223,25 +223,14 @@ type AuthentikOAuthProviderSpec struct {
 }
 
 // CredentialsSecretSpec describes the Secret holding a provider's client
-// credentials.
-//
-// Template variables (Go text/template, missing keys are errors):
-// .ClientID .ClientSecret .IssuerURL .AuthURL .TokenURL .UserInfoURL
-// .LogoutURL .JWKSURL .ProviderInfoURL .Slug .Name (Slug and Name are the
-// assigned application's). The rendered output must be a YAML map of
-// string keys to string values; each entry becomes a Secret key.
-// Without a template the keys are client-id, client-secret, issuer-url,
+// credentials. The Secret's content, labels and annotations come from the
+// referenced AuthentikCredentialsTemplate, which administrators own; without
+// templateRef the keys are client-id, client-secret, issuer-url,
 // authorization-url, token-url and userinfo-url.
 //
-// Templates are restricted to text, {{ .Var }}, if/else, comparisons (eq,
-// ne, lt, le, gt, ge, and, or, not), print and printf with %s/%q/%v.
-// .ClientSecret may only be printed. Values are inserted as-is, so quote
-// values that may contain ':' or newlines: {{ printf "%q" .Name }}.
-//
 // Security note: whoever can create or edit an AuthentikOAuthProvider can
-// create a Secret with any name, data, labels and annotations in that
-// namespace (subject to the reserved prefixes below), including one holding
-// the provider's client secret. Grant this kind like Secret write access.
+// have the operator create a Secret, with any name not already taken, in
+// that namespace, holding the provider's client secret.
 type CredentialsSecretSpec struct {
 	// name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
 	// deletes the previously rendered Secret once the new one exists.
@@ -250,22 +239,19 @@ type CredentialsSecretSpec struct {
 	// +optional
 	Name string `json:"name,omitempty"`
 
-	// template renders the Secret data; see the type description.
-	// +kubebuilder:validation:MaxLength=65536
+	// templateRef names the AuthentikCredentialsTemplate that renders the
+	// Secret. The template's namespaceSelector must match this namespace.
 	// +optional
-	Template string `json:"template,omitempty"`
+	TemplateRef *CredentialsTemplateRef `json:"templateRef,omitempty"`
+}
 
-	// labels added to the Secret. Keys under authentik.io/, kubernetes.io/
-	// and k8s.io/ (and their subdomains) are reserved.
-	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="label keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
-	// +optional
-	Labels map[string]string `json:"labels,omitempty"`
-
-	// annotations added to the Secret. Keys under authentik.io/,
-	// kubernetes.io/ and k8s.io/ (and their subdomains) are reserved.
-	// +kubebuilder:validation:XValidation:rule="self.all(k, !k.matches('^([^/]*[.])?(authentik[.]io|kubernetes[.]io|k8s[.]io)/'))",message="annotation keys under authentik.io/, kubernetes.io/ and k8s.io/ are reserved"
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
+// CredentialsTemplateRef names a cluster-scoped AuthentikCredentialsTemplate.
+type CredentialsTemplateRef struct {
+	// name of the AuthentikCredentialsTemplate.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +required
+	Name string `json:"name"`
 }
 
 // AuthentikOAuthProviderStatus defines the observed state of AuthentikOAuthProvider.

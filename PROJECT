@@ -49,4 +49,11 @@ resources:
   kind: AuthentikOAuthProvider
   path: github.com/jacaudi/authentik-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: authentik.io
+  kind: AuthentikCredentialsTemplate
+  path: github.com/jacaudi/authentik-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

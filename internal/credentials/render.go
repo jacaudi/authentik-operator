@@ -119,6 +119,19 @@ func Render(tmpl string, v Vars) (map[string][]byte, error) {
 	return toBytes(kv), nil
 }
 
+// Check validates a template by rendering it with example values, so that
+// unknown variables and malformed output are reported before any provider
+// uses it. Output that depends on the actual values can still fail later.
+func Check(tmpl string) error {
+	const ex = "https://authentik.example.com/application/o/example/"
+	_, err := Render(tmpl, Vars{
+		ClientID: "example-client-id", ClientSecret: "example-client-secret",
+		IssuerURL: ex, AuthURL: ex, TokenURL: ex, UserInfoURL: ex, LogoutURL: ex, JWKSURL: ex, ProviderInfoURL: ex,
+		Slug: "example", Name: "Example",
+	})
+	return err
+}
+
 // Parse parses and validates a template without executing it.
 func Parse(tmpl string) (*template.Template, error) {
 	t, err := template.New("secret").Option("missingkey=error").Parse(tmpl)

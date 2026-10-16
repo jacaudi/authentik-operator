@@ -125,6 +125,22 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		return p
 	}
 
+	// newTemplate creates a cluster-scoped credentials template and returns
+	// a Secret spec referencing it.
+	newTemplate := func(name string, spec authentikiov1alpha1.AuthentikCredentialsTemplateSpec) *authentikiov1alpha1.CredentialsSecretSpec {
+		t := &authentikiov1alpha1.AuthentikCredentialsTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: spec}
+		Expect(k8sClient.Create(ctx, t)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, t) })
+		return &authentikiov1alpha1.CredentialsSecretSpec{TemplateRef: &authentikiov1alpha1.CredentialsTemplateRef{Name: name}}
+	}
+
+	updateTemplate := func(name string, mutate func(*authentikiov1alpha1.AuthentikCredentialsTemplateSpec)) {
+		var t authentikiov1alpha1.AuthentikCredentialsTemplate
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: name}, &t)).To(Succeed())
+		mutate(&t.Spec)
+		Expect(k8sClient.Update(ctx, &t)).To(Succeed())
+	}
+
 	cleanupSecret := func(name string) {
 		DeferCleanup(func() {
 			if s, err := secret(name); err == nil {
@@ -144,9 +160,9 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 
 	It("renders the default keys with browser-facing URLs and owns the Secret", func() {
 		cleanupSecret("sec-default-oauth")
-		p := attached("sec-default", "grafana", &authentikiov1alpha1.CredentialsSecretSpec{
+		p := attached("sec-default", "grafana", newTemplate("tmpl-meta", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 			Labels: map[string]string{labelTeam: teamObs}, Annotations: map[string]string{"note": "x"},
-		})
+		}))
 		cur := get(p)
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 		Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
@@ -174,13 +190,14 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 
 	It("renders a template with every variable", func() {
 		cleanupSecret("grafana-oidc")
-		p := attached("sec-tmpl", "grafana-t", &authentikiov1alpha1.CredentialsSecretSpec{
-			Name: "grafana-oidc",
+		spec := newTemplate("tmpl-all", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 			Template: "ID: {{ .ClientID }}\nSECRET: {{ .ClientSecret }}\nISSUER: {{ .IssuerURL }}\n" +
 				"AUTH: {{ .AuthURL }}\nTOKEN: {{ .TokenURL }}\nUSERINFO: {{ .UserInfoURL }}\n" +
 				"LOGOUT: {{ .LogoutURL }}\nJWKS: {{ .JWKSURL }}\nINFO: {{ .ProviderInfoURL }}\n" +
 				"SLUG: {{ .Slug }}\nNAME: {{ .Name }}\n",
 		})
+		spec.Name = "grafana-oidc"
+		p := attached("sec-tmpl", "grafana-t", spec)
 		s, err := secret("grafana-oidc")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(s.Data["LOGOUT"])).To(Equal(externalURL + "/application/o/grafana-t/end-session/"))
@@ -192,7 +209,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	})
 
 	It("reports template errors once and writes nothing", func() {
-		p := attached("sec-bad", "bad", &authentikiov1alpha1.CredentialsSecretSpec{Template: "A: {{ .NoSuchVar }}"})
+		p := attached("sec-bad", "bad", newTemplate("tmpl-bad", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Template: "A: {{ .NoSuchVar }}"}))
 		Expect(creds(p).Reason).To(Equal(reasonTemplateError))
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 		reconcileP(p)
@@ -329,8 +346,8 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 
 	It("preserves labels added by others and removes labels dropped from the spec, without churn", func() {
 		cleanupSecret("sec-labels-oauth")
-		p := attached("sec-labels", "labels", &authentikiov1alpha1.CredentialsSecretSpec{
-			Labels: map[string]string{labelTeam: teamObs, "tier": "1"}})
+		p := attached("sec-labels", "labels", newTemplate("tmpl-labels", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+			Labels: map[string]string{labelTeam: teamObs, "tier": "1"}}))
 		s, _ := secret("sec-labels-oauth")
 		s.Labels["policy.example.com/cost-center"] = "42" // added by a mutating admission policy
 		Expect(k8sClient.Update(ctx, s)).To(Succeed())
@@ -342,9 +359,9 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		s, _ = secret("sec-labels-oauth")
 		Expect(s.ResourceVersion).To(Equal(rv), "no update loop with a foreign label")
 
-		cur := get(p)
-		cur.Spec.Secret.Labels = map[string]string{labelTeam: teamObs}
-		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		updateTemplate("tmpl-labels", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
+			t.Labels = map[string]string{labelTeam: teamObs}
+		})
 		reconcileP(p)
 		s, _ = secret("sec-labels-oauth")
 		Expect(s.Labels).NotTo(HaveKey("tier"))
@@ -353,8 +370,8 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	})
 
 	It("reports a Secret the API server rejects as SecretInvalid instead of retrying forever", func() {
-		p := attached("sec-invalid", "invalid", &authentikiov1alpha1.CredentialsSecretSpec{
-			Labels: map[string]string{"bad": "not a valid label value"}})
+		p := attached("sec-invalid", "invalid", newTemplate("tmpl-invalid", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+			Labels: map[string]string{"bad": "not a valid label value"}}))
 		Expect(creds(p).Reason).To(Equal(reasonSecretInvalid))
 	})
 
@@ -389,22 +406,15 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	})
 
 	Context("admission validation", func() {
-		It("rejects reserved label and annotation keys", func() {
-			for _, spec := range []*authentikiov1alpha1.CredentialsSecretSpec{
+		It("rejects reserved label and annotation keys on templates", func() {
+			for _, spec := range []authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 				{Labels: map[string]string{"authentik.io/connection": "true"}},
 				{Labels: map[string]string{"app.kubernetes.io/name": "x"}},
 				{Annotations: map[string]string{"foo.k8s.io/bar": "x"}},
 			} {
-				p := &authentikiov1alpha1.AuthentikOAuthProvider{
-					ObjectMeta: metav1.ObjectMeta{GenerateName: "reserved-", Namespace: namespace},
-					Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
-						AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
-						InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
-						RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://x.example.com/cb"}},
-						Secret:            spec,
-					},
-				}
-				Expect(k8sClient.Create(ctx, p)).To(MatchError(ContainSubstring("reserved")))
+				t := &authentikiov1alpha1.AuthentikCredentialsTemplate{
+					ObjectMeta: metav1.ObjectMeta{GenerateName: "reserved-"}, Spec: spec}
+				Expect(k8sClient.Create(ctx, t)).To(MatchError(ContainSubstring("reserved")))
 			}
 		})
 		It("rejects a malformed Secret name", func() {
@@ -430,5 +440,75 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 			reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "p"}}))
 		app.Spec.ProviderRef = nil
 		Expect(providerForApplication(ctx, app)).To(BeEmpty())
+	})
+
+	Context("templates", func() {
+		It("reports a missing template and renders once it exists", func() {
+			cleanupSecret("sec-late-oauth")
+			spec := &authentikiov1alpha1.CredentialsSecretSpec{TemplateRef: &authentikiov1alpha1.CredentialsTemplateRef{Name: "tmpl-late"}}
+			p := attached("sec-late", "late", spec)
+			Expect(creds(p).Reason).To(Equal(reasonTemplateNotFound))
+			Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+			_, err := secret("sec-late-oauth")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			newTemplate("tmpl-late", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Template: "KEY: {{ .Slug }}"})
+			Expect(reconciler.providersForTemplate(ctx, &authentikiov1alpha1.AuthentikCredentialsTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "tmpl-late"}})).To(ContainElement(
+				reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)}))
+			reconcileP(p)
+			s, err := secret("sec-late-oauth")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s.Data).To(HaveKeyWithValue("KEY", []byte("late")))
+		})
+
+		It("re-renders when the template changes", func() {
+			cleanupSecret("sec-edit-oauth")
+			p := attached("sec-edit", "edit", newTemplate("tmpl-edit", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{Template: "A: one"}))
+			s, _ := secret("sec-edit-oauth")
+			Expect(s.Data).To(HaveKeyWithValue("A", []byte("one")))
+			updateTemplate("tmpl-edit", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) { t.Template = "B: two" })
+			reconcileP(p)
+			s, _ = secret("sec-edit-oauth")
+			Expect(s.Data).To(Equal(map[string][]byte{"B": []byte("two")}))
+		})
+
+		It("enforces the template's namespaceSelector", func() {
+			cleanupSecret("sec-ns-oauth")
+			spec := newTemplate("tmpl-ns", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
+				Template:          "A: x",
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: "elsewhere"}},
+			})
+			p := attached("sec-ns", "ns", spec)
+			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
+			_, err := secret("sec-ns-oauth")
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			updateTemplate("tmpl-ns", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
+				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = namespace
+			})
+			reconcileP(p)
+			Expect(creds(p).Status).To(Equal(metav1.ConditionTrue))
+
+			By("keeping the rendered Secret when access is revoked later")
+			updateTemplate("tmpl-ns", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
+				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = "elsewhere"
+			})
+			reconcileP(p)
+			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
+			_, err = secret("sec-ns-oauth")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("only maps templates to the providers that reference them", func() {
+			cleanupSecret("sec-map-a-oauth")
+			cleanupSecret("sec-map-b-oauth")
+			attached("sec-map-a", "map-a", newTemplate("tmpl-map", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{}))
+			attached("sec-map-b", "map-b", &authentikiov1alpha1.CredentialsSecretSpec{})
+			reqs := reconciler.providersForTemplate(ctx, &authentikiov1alpha1.AuthentikCredentialsTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "tmpl-map"}})
+			Expect(reqs).To(HaveExactElements(
+				reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "sec-map-a"}}))
+		})
 	})
 })

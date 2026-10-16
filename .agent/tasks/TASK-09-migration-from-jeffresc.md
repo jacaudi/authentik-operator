@@ -17,7 +17,11 @@ hold either. Target migrant: orac gitops, 4 OAuth2 apps on JeffResc chart 0.1.8.
 - [ ] Converter: `hack/convert-jeffresc` (Go, testable) reading
       AuthentikApplication / AuthentikOAuth2Application / AuthentikSAMLApplication
       YAML and emitting AuthentikOAuthProvider + AuthentikApplication (one object
-      per file, `<kind>-<name>.yaml`), with `adoption.enabled: true`,
+      per file, `<kind>-<name>.yaml`), plus one cluster-scoped
+      AuthentikCredentialsTemplate per distinct inline `secret.template`
+      (with its labels and annotations), referenced via
+      `spec.secret.templateRef`. Templates are admin-owned (TASK-04), so the
+      runbook has the platform admin apply them. Also: `adoption.enabled: true`,
       `adoption.match` targeting `<slug>-provider`, `deletionPolicy: Retain`
 - [ ] Runbook, zero-downtime, credentials preserved:
   1. install new operator alongside the old (different group, no CRD clash)

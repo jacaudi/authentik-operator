@@ -30,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -53,14 +54,16 @@ const (
 	reasonSecretConflict        = "SecretConflict"
 	reasonSecretInvalid         = "SecretInvalid"
 	reasonExternalURLMismatch   = "ExternalURLMismatch"
+	reasonTemplateNotFound      = "TemplateNotFound"
+	reasonTemplateNotAllowed    = "TemplateNotAllowed"
 
 	labelManagedBy      = "app.kubernetes.io/managed-by"
 	labelManagedByValue = "authentik-operator"
 	// annotationProvider names the owning provider (an annotation, not a
 	// label: CR names may exceed the 63-character label value limit).
 	annotationProvider = "authentik.io/provider"
-	// annotationApplied records which user label/annotation keys the
-	// operator applied, so keys removed from the spec can be removed from
+	// annotationApplied records which template label/annotation keys the
+	// operator applied, so keys removed from the template can be removed from
 	// the Secret without touching keys added by other controllers.
 	annotationApplied = "authentik.io/applied-metadata"
 )
@@ -96,7 +99,16 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *au
 		return false, nil
 	}
 
-	data, reason, msg, err := r.renderSecretData(ctx, p, resolved, got)
+	tmpl, reason, msg, err := r.credentialsTemplate(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	if reason != "" {
+		r.setCredentials(p, metav1.ConditionFalse, reason, msg, true)
+		return true, nil
+	}
+
+	data, reason, msg, err := r.renderSecretData(ctx, resolved, got, tmpl)
 	if err != nil {
 		return false, err
 	}
@@ -105,7 +117,7 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *au
 		return true, nil
 	}
 
-	if reason, msg, err := r.applySecret(ctx, p, name, data); err != nil || reason != "" {
+	if reason, msg, err := r.applySecret(ctx, p, name, data, tmpl); err != nil || reason != "" {
 		if err != nil {
 			return false, err
 		}
@@ -126,10 +138,45 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context, p *au
 	return false, nil
 }
 
+// credentialsTemplate returns the template spec.secret.templateRef names,
+// or an empty template (default keys, no labels or annotations) without
+// one. A non-empty reason is a user-visible, non-transient problem; the
+// previously rendered Secret is then left as it is.
+func (r *AuthentikOAuthProviderReconciler) credentialsTemplate(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) (*authentikiov1alpha1.AuthentikCredentialsTemplateSpec, string, string, error) {
+	ref := p.Spec.Secret.TemplateRef
+	if ref == nil {
+		return &authentikiov1alpha1.AuthentikCredentialsTemplateSpec{}, "", "", nil
+	}
+	var t authentikiov1alpha1.AuthentikCredentialsTemplate
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name}, &t); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, reasonTemplateNotFound, fmt.Sprintf("AuthentikCredentialsTemplate %q not found", ref.Name), nil
+		}
+		return nil, "", "", fmt.Errorf("get AuthentikCredentialsTemplate %s: %w", ref.Name, err)
+	}
+	if t.Spec.NamespaceSelector != nil {
+		sel, err := metav1.LabelSelectorAsSelector(t.Spec.NamespaceSelector)
+		if err != nil {
+			return nil, reasonTemplateError, fmt.Sprintf("AuthentikCredentialsTemplate %q has an invalid namespaceSelector: %v",
+				ref.Name, err), nil
+		}
+		var ns corev1.Namespace
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: p.Namespace}, &ns); err != nil {
+			return nil, "", "", fmt.Errorf("get Namespace %s: %w", p.Namespace, err)
+		}
+		if !sel.Matches(labels.Set(ns.Labels)) {
+			return nil, reasonTemplateNotAllowed, fmt.Sprintf("AuthentikCredentialsTemplate %q does not allow namespace %q "+
+				"(its namespaceSelector does not match)", ref.Name, p.Namespace), nil
+		}
+	}
+	return &t.Spec, "", "", nil
+}
+
 // renderSecretData computes the Secret data. A non-empty reason is a
 // user-visible, non-transient problem.
-func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider,
-	resolved *connection.Resolved, got *api.OAuth2Provider) (map[string][]byte, string, string, error) {
+func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context, resolved *connection.Resolved,
+	got *api.OAuth2Provider, tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) (map[string][]byte, string, string, error) {
 	slug := nullable(got.AssignedApplicationSlug.Get())
 	if slug == "" {
 		return nil, reasonWaitingForApplication,
@@ -172,7 +219,7 @@ func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context,
 		return nil, reasonExternalURLMismatch, fmt.Sprintf("cannot rewrite Authentik endpoint URLs to the external URL "+
 			"(%v); they are built from the operator's API URL %s", rewriteErr, resolved.Client.BaseURL()), nil
 	}
-	data, err := credentials.Render(p.Spec.Secret.Template, vars)
+	data, err := credentials.Render(tmpl.Template, vars)
 	if err != nil {
 		if credentials.IsTemplateError(err) {
 			return nil, reasonTemplateError, err.Error(), nil
@@ -191,9 +238,9 @@ type appliedMetadata struct {
 // applySecret creates or updates the owned Secret. A non-empty reason is a
 // user-visible problem (Secret owned by someone else, rejected by the API).
 func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider,
-	name string, data map[string][]byte) (string, string, error) {
-	userLabels, userAnnotations := p.Spec.Secret.Labels, p.Spec.Secret.Annotations
-	applied := appliedMetadata{Labels: sortedKeys(userLabels), Annotations: sortedKeys(userAnnotations)}
+	name string, data map[string][]byte, tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) (string, string, error) {
+	tmplLabels, tmplAnnotations := tmpl.Labels, tmpl.Annotations
+	applied := appliedMetadata{Labels: sortedKeys(tmplLabels), Annotations: sortedKeys(tmplAnnotations)}
 	appliedJSON, err := json.Marshal(applied)
 	if err != nil {
 		return "", "", err
@@ -208,8 +255,8 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context, p *a
 			Type:       corev1.SecretTypeOpaque,
 			Data:       data,
 		}
-		s.Labels = mergeMetadata(nil, userLabels, nil, map[string]string{labelManagedBy: labelManagedByValue})
-		s.Annotations = mergeMetadata(nil, userAnnotations, nil,
+		s.Labels = mergeMetadata(nil, tmplLabels, nil, map[string]string{labelManagedBy: labelManagedByValue})
+		s.Annotations = mergeMetadata(nil, tmplAnnotations, nil,
 			map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
 		if err := controllerutil.SetControllerReference(p, &s, r.Scheme); err != nil {
 			return "", "", err
@@ -237,14 +284,14 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context, p *a
 
 	var previous appliedMetadata
 	_ = json.Unmarshal([]byte(s.Annotations[annotationApplied]), &previous)
-	labels := mergeMetadata(s.Labels, userLabels, previous.Labels, map[string]string{labelManagedBy: labelManagedByValue})
-	annotations := mergeMetadata(s.Annotations, userAnnotations, previous.Annotations,
+	wantLabels := mergeMetadata(s.Labels, tmplLabels, previous.Labels, map[string]string{labelManagedBy: labelManagedByValue})
+	wantAnnotations := mergeMetadata(s.Annotations, tmplAnnotations, previous.Annotations,
 		map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
-	if equality.Semantic.DeepEqual(s.Data, data) && equality.Semantic.DeepEqual(s.Labels, labels) &&
-		equality.Semantic.DeepEqual(s.Annotations, annotations) {
+	if equality.Semantic.DeepEqual(s.Data, data) && equality.Semantic.DeepEqual(s.Labels, wantLabels) &&
+		equality.Semantic.DeepEqual(s.Annotations, wantAnnotations) {
 		return "", "", nil // unchanged: not rewritten
 	}
-	s.Data, s.Labels, s.Annotations = data, labels, annotations
+	s.Data, s.Labels, s.Annotations = data, wantLabels, wantAnnotations
 	if err := r.Update(ctx, &s); err != nil {
 		if reason, msg, ok := userWriteError(name, err); ok {
 			return reason, msg, nil
@@ -277,7 +324,7 @@ func apiErrorMessage(err error) string {
 
 // mergeMetadata computes labels or annotations for an owned Secret: keys
 // added by others are kept, keys this operator applied before but no longer
-// wants are removed, desired user keys are set, and operator keys win.
+// wants are removed, desired template keys are set, and operator keys win.
 func mergeMetadata(existing, desired map[string]string, previouslyApplied []string,
 	operator map[string]string) map[string]string {
 	out := maps.Clone(existing)

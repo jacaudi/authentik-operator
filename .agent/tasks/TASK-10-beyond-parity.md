@@ -23,7 +23,8 @@ all (groups, users -- its issue #202 is open), plus this repo's own
       Secret
 - [ ] `AuthentikDeployment` per scope.md (adoption contract already decided),
       including connect-only mode (see TASK-01 decision)
-- [ ] Other provider types later: proxy (+ outposts), LDAP, RADIUS
+- [ ] Other provider types later: proxy (+ outposts), LDAP, RADIUS -- see
+      [TASK-12](./TASK-12-outposts.md)
 - [ ] Out of scope for CRDs: flows, stages, brands -- Authentik blueprints already
       express these declaratively (orac manages its recovery flow, branding and
       login flow as blueprints). Possible thin `AuthentikBlueprint` kind that

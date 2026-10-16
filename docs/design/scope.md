@@ -17,7 +17,9 @@ as the codegen target, consistent with those repos.
 
 ## API
 
-- group `authentik.io`, version `v1alpha1`, all kinds namespaced
+- group `authentik.io`, version `v1alpha1`. Every kind is namespaced
+  except `AuthentikCredentialsTemplate`, which is cluster-scoped because
+  platform administrators own it (see the credential Secret trust boundary below).
 - `internal/authentik/` holds the Authentik REST client, mirroring
   `towonel-operator`'s `internal/towonel/`
 
@@ -28,6 +30,7 @@ as the codegen target, consistent with those repos.
 | `AuthentikUser` | a user |
 | `AuthentikGroup` | a group |
 | `AuthentikOAuthProvider` | an OAuth2 provider |
+| `AuthentikCredentialsTemplate` | (cluster-scoped) the keys, labels and annotations of credential Secrets |
 
 ### Why `AuthentikDeployment` and not `Authentik`
 
@@ -136,14 +139,29 @@ Writes exist for credential Secrets (TASK-04): they go only to the provider's
 own namespace, and an existing Secret not controlled by that provider is
 never modified or deleted (`SecretConflict`).
 
-Trust boundary for credential Secrets: whoever can create or edit an
-`AuthentikOAuthProvider` in a namespace can make the operator create a
-Secret there with any name, data and labels/annotations -- except reserved
-keys under `authentik.io/`, `kubernetes.io/` and `k8s.io/` -- including one
-containing the provider's client secret. Grant provider write like Secret
-write. Templates are restricted (no loops, no nested templates, capped
-output, `.ClientSecret` printable only) so a template author cannot hang or
-crash the operator or probe the client secret through render errors. Secrets are fetched by name
+Trust boundary for credential Secrets, with personas split as in Crossplane's
+XRD/Composition versus claim model:
+- Platform administrators own the cluster-scoped `AuthentikCredentialsTemplate`.
+  It holds the data template, the labels and the annotations, and its
+  `namespaceSelector` limits which namespaces may use it.
+- Teams own `AuthentikOAuthProvider`, and choose only the Secret's name and
+  which template to reference.
+
+So provider write lets a team make the operator create a Secret, with any name
+not already taken, in the team's own namespace. The Secret holds that
+provider's client secret, in a shape an administrator defined. Provider write
+does not let a team choose the Secret's keys, labels or annotations, so a team
+cannot, for example, opt a rendered Secret into `authentik.io/connection` or
+into another controller's label selector. Template labels and annotations also
+reject the reserved prefixes `authentik.io/`, `kubernetes.io/` and `k8s.io/`.
+Templates are restricted (no loops, no nested templates, capped output,
+`.ClientSecret` printable only), so even a template author cannot hang or crash
+the operator or probe the client secret through render errors.
+
+Checking the namespaceSelector needs `get` on Namespaces. When a template
+stops allowing a namespace, the existing Secret is kept, and the provider
+reports `TemplateNotAllowed` until the template is fixed or the reference is
+removed. Secrets are fetched by name
 through the uncached API reader on every resolve, so token/CA rotation takes
 effect immediately for API objects; the `Connected` condition catches up on
 its next periodic recheck. A Forbidden read is reported as condition reason

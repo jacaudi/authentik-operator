@@ -36,6 +36,12 @@ JeffResc semantics to match (`internal/template/secret.go`):
   `<group>/application=<cr>`
 - Renaming `secret.name` deletes the old Secret; unchanged data is not rewritten
 
+**Deliberate deviation from JeffResc**: the template, labels and annotations
+are not inline in the provider spec. They live on a cluster-scoped,
+administrator-owned `AuthentikCredentialsTemplate` that the provider names
+in `spec.secret.templateRef`. See "Admin-owned templates" below. The TASK-09
+converter therefore emits one template per distinct inline template.
+
 ## Implementation Plan
 - [x] `spec.secret` lives on **AuthentikOAuthProvider**. `.Slug`/`.Name` come
       from the provider's `assigned_application_slug/name` in Authentik; the
@@ -117,6 +123,35 @@ Decisions to make in this task:
       Unchanged data is not rewritten.
 - [x] **Secret contents never in logs, events or status** (tested).
 
+## Admin-owned templates (decided after the first review)
+
+The first version put `template`, `labels` and `annotations` inline in
+`spec.secret`. That made provider write equal to Secret write in that
+namespace: any data, and any non-reserved labels or annotations. We had no
+users yet, so instead of documenting this we split the personas the way
+Crossplane does. Platform engineers own XRDs and Compositions; tenants own
+claims and fill in only what the platform exposes.
+
+- `AuthentikCredentialsTemplate` (cluster-scoped) holds `template`,
+  `labels`, `annotations` and an optional `namespaceSelector`; omitted, every
+  namespace may use it.
+- A provider's `spec.secret` holds only `name` and `templateRef`. Without
+  `templateRef`, it gets the default keys and no extra metadata.
+- A small reconciler validates each template by rendering it with example
+  values, and reports the result in the template's `Ready` condition
+  (`Valid` / `TemplateError` / `InvalidNamespaceSelector`). Administrators
+  see their mistakes on the template, not on every provider using it.
+- New provider `CredentialsReady` reasons: `TemplateNotFound` and
+  `TemplateNotAllowed`. On either, the existing Secret is kept (same rule as
+  other failures). A template change re-renders every provider that
+  references it (watch plus list; no field index, since templates change
+  rarely).
+- RBAC added: templates `get;list;watch` and status `update;patch`;
+  namespaces `get`. The namespace is read through the API reader, uncached.
+- This does not change what a compromised operator could do. It still has
+  cluster-wide Secret write, so per-namespace RBAC remains the follow-up for
+  that.
+
 ## Review findings addressed (independent review of the first commit)
 - **Deadlock fixed**: Secret state moved to its own `CredentialsReady`
   condition (SecretSynced / WaitingForApplication / TemplateError /
@@ -152,9 +187,10 @@ Decisions to make in this task:
   preconditions; empty issuer/authorize/token -> WaitingForApplication.
 
 Accepted/documented, not changed:
-- Creating/editing an AuthentikOAuthProvider is equivalent to creating
-  Secrets (any name/data/non-reserved labels) in that namespace: grant it
-  like Secret write. Documented on the API type and in scope.md.
+- ~~Creating/editing an AuthentikOAuthProvider is equivalent to creating
+  Secrets in that namespace~~: superseded by admin-owned templates (above).
+  Provider write now means "create a Secret with an unused name holding this
+  provider's credentials, in an administrator-defined shape".
 - SecretConflict vs success reveals whether a Secret name exists.
 - The provider watch on AuthentikApplications has no predicate (extra API
   calls on application status writes); revisit with TASK-06 metrics.

@@ -96,13 +96,14 @@ chart 0.1.8 and will cut over once parity is released (gitops bead
 | [TASK-02](./tasks/TASK-02-oauth-provider-kind.md) | AuthentikOAuthProvider, incl. grantTypes (JeffResc #279) -- **done** | 01 |
 | [TASK-03](./tasks/TASK-03-application-kind.md) | AuthentikApplication, providerRef -- **done** | 01, 02 |
 | [TASK-11](./tasks/TASK-11-ci-release-docs.md) | CI, release pipeline (release-please + Actions), MkDocs docs site -- **next** | 01 |
-| [TASK-04](./tasks/TASK-04-credentials-secret-templating.md) | Credentials Secret, JeffResc-identical template vars | 02, 03 |
+| [TASK-04](./tasks/TASK-04-credentials-secret-templating.md) | Credentials Secret, JeffResc-identical template vars, admin-owned AuthentikCredentialsTemplate -- **in review** | 02, 03 |
 | [TASK-05](./tasks/TASK-05-api-object-adoption-and-deletion-policy.md) | Opt-in adoption + deletionPolicy for API objects | 01-03 |
 | [TASK-06](./tasks/TASK-06-reconcile-observability-and-validation.md) | Finalizers, conditions, events, metrics, CEL, webhooks | 01-03 |
 | [TASK-07](./tasks/TASK-07-release-pipeline-image-and-chart.md) | Multi-arch image + OCI chart release | 06 |
 | [TASK-08](./tasks/TASK-08-e2e-against-real-authentik.md) | e2e vs real Authentik 2026.2 and >=2026.8 | 01-05 |
 | [TASK-09](./tasks/TASK-09-migration-from-jeffresc.md) | Field map, converter, zero-downtime runbook | 02-05, 08 |
 | [TASK-10](./tasks/TASK-10-beyond-parity.md) | SAML, groups/users, AuthentikDeployment | parity |
+| [TASK-12](./tasks/TASK-12-outposts.md) | Outposts (embedded, operator-deployed) + proxy/LDAP/RADIUS providers | 01-03, 05, 08 |
 
 **Format**: `TASK-XX-feature-slug.md`
 

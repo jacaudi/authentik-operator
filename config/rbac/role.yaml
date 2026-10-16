@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - namespaces
   verbs:
   - get
 - apiGroups:
@@ -50,6 +51,7 @@ rules:
   - authentik.io
   resources:
   - authentikapplications/status
+  - authentikcredentialstemplates/status
   - authentikdeployments/status
   - authentikgroups/status
   - authentikoauthproviders/status
@@ -58,6 +60,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - authentik.io
+  resources:
+  - authentikcredentialstemplates
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - events.k8s.io
   resources:
