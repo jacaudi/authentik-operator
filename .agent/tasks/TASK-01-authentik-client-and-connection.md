@@ -13,9 +13,9 @@ a 10 req/s rate limit, and has **no TLS/CA option** (system roots only). The
 original Rust operator (see `docs/design/scope.md`) used plaintext HTTP to a
 hardcoded address and had no pagination. Both are defects to not repeat.
 
-Downstream consumer: orac gitops (`clusters/orac/foundation/authentik-operator/`)
-points the current operator at `http://authentik-server.authentik.svc.cluster.local`
-with the token in Secret `authentik-operator-token` key `token`.
+Typical installs point the operator at the in-cluster Authentik Service
+(e.g. `http://authentik-server.authentik.svc.cluster.local`) with the token in
+a Secret.
 
 ## Implementation Plan
 ### Phase 1: client
@@ -43,7 +43,7 @@ Options -- pick one and record it in `docs/design/scope.md`:
       **connect-only mode** (manages no workloads; supplies URL, token secretRef, CA).
       Supports several Authentiks; reuses scope.md adoption item 3 (supplied token).
 - Recommendation: (b) with (a) as a default when `authentikRef` is omitted --
-  dual-mode, so a Helm-installed Authentik (orac's case) needs no
+  dual-mode, so a Helm-installed Authentik (the common case) needs no
   `AuthentikDeployment` managing its pods.
 - [x] `spec.authentikRef` on all API kinds; `AuthentikDeployment.spec.mode`
       (`Managed` | `ConnectOnly`, required) + `spec.connection`; operator default via

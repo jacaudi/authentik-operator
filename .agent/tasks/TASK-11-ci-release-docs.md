@@ -8,22 +8,20 @@
   gated on TASK-06).
 
 ## Context
-Until now no CI had ever run: the repo is a **private fork** of the public
-upstream `jacaudi/authentik-operator`, Actions were disabled, and the three
-kubebuilder scaffold workflows had never executed. The goal is to merge all of
-this back upstream, which is public.
+Before this task no CI had ever run: the three kubebuilder scaffold workflows
+had never executed.
 
 Constraints that shape the design:
-- The fork cannot change visibility. Private repos get limited Actions
-  minutes, no free GitHub Pages, and private-by-default GHCR packages.
+- Development may happen in private copies of the repo, which get limited
+  Actions minutes, no free GitHub Pages, and private-by-default GHCR packages.
 - So: **validate / test / build run everywhere; publishing (images, charts,
   Pages) runs only on a public repo**, gated on
-  `!github.event.repository.private`. On the fork, release and docs jobs do
+  `!github.event.repository.private`. Elsewhere, release and docs jobs do
   dry runs (build, package, render) without publishing.
 - Everything is owner-agnostic (`github.repository_owner`,
-  `github.event.repository.name`), so the same workflows publish to
-  `ghcr.io/leftathome/...` or `ghcr.io/jacaudi/...` without edits.
-- Cut real releases only upstream, so version history starts there.
+  `github.event.repository.name`), so the same workflows publish under any
+  owner's `ghcr.io/<owner>/...` without edits.
+- Releases are cut only from the canonical public repository.
 
 ## Decisions
 - Docs: **MkDocs Material** + `mike` (versioned), on GitHub Pages.
@@ -35,9 +33,10 @@ Constraints that shape the design:
   (same as `make docker-build`), `helm push` to OCI, cosign keyless signing,
   `actions/attest-build-provenance`, Syft SBOM.
   GoReleaser only if/when we ship binaries (e.g. the TASK-09 converter).
-- Image index must not contain `unknown/unknown` attestation entries
-  (orac's zot cache cannot sync them): `provenance: false`, `sbom: false` on
-  the build; provenance/SBOM attached as separate attestations/signatures.
+- Image index must not contain `unknown/unknown` attestation entries (some
+  registry mirrors and pull-through caches cannot sync them):
+  `provenance: false`, `sbom: false` on the build; provenance/SBOM attached as
+  separate attestations/signatures.
   Release notes list per-platform digests.
 
 ## Implementation Plan (one PR each)
@@ -63,9 +62,10 @@ Constraints that shape the design:
    - OpenSSF Scorecard: public repos only
    - First scans found 8 fixable vulns in indirect deps (x/net, otel, grpc
      x2); upgraded in the same PR.
-3. [ ] **Release**: release-please config; on release: multi-arch image,
-   cosign, attestations, SBOM, `install.yaml` + CRDs assets, per-platform
-   digests in notes. Dry run on the fork.
+3. [ ] **Release** (proposal for the maintainers; registry, signing and
+   versioning are their call): release-please config; on release: multi-arch
+   image, cosign, attestations, SBOM, `install.yaml` + CRDs assets,
+   per-platform digests in notes.
 4. [ ] **Helm chart**: kubebuilder `helm/v2-alpha` -> `dist/chart`, chart
    version == app version (release-please extra-files), helm lint +
    kubeconform, OCI publish, kind smoke install with DEFAULT values.
@@ -83,5 +83,5 @@ Constraints that shape the design:
 
 ## Completion Checklist
 - [ ] CI required on main; first green run recorded
-- [ ] Upstream release dry run passes on the fork
+- [ ] Release dry run passes
 - [ ] Docs build on PRs; publish verified upstream

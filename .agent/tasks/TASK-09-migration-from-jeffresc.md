@@ -9,7 +9,7 @@
 Different API group (`goauthentik.io/v1alpha1` -> `authentik.io/v1alpha1`) and
 split kinds mean no in-place upgrade. JeffResc itself renamed
 `AuthentikApplication` -> `AuthentikOAuth2Application` in v0.2.0, so users may
-hold either. Target migrant: orac gitops, 4 OAuth2 apps on JeffResc chart 0.1.8.
+hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
 
 ## Implementation Plan
 - [ ] Field map document (`docs/migration-from-jeffresc.md`): every JeffResc
@@ -28,17 +28,17 @@ hold either. Target migrant: orac gitops, 4 OAuth2 apps on JeffResc chart 0.1.8.
   1. install new operator alongside the old (different group, no CRD clash)
   2. apply converted CRs with adoption (+ dryRun first); confirm Ready and that
      the rendered Secret is byte-identical to the old one
-  3. point consumers (ExternalSecrets) at the new Secret names if they differ
+  3. point consumers (workloads, secret-sync tools) at the new Secret names if they differ
   4. remove old CRs -- NOT before removing the old operator's finalizer
      behaviour: JeffResc deletes adopted and created objects alike on CR delete.
      Scale the old operator to 0, strip `goauthentik.io/finalizer` from its CRs,
      then delete them, so the Authentik objects survive
   5. uninstall the old chart and CRDs
-- [ ] Converter tests against orac's four real manifests (golden files)
+- [ ] Converter tests against representative real-world manifests (golden files)
 
 ## Dependencies
 - Requires: TASK-02..TASK-05, TASK-08
-- Blocks: orac gitops cutover bead
+- Blocks: first release recommended to JeffResc users
 
 ## Completion Checklist
 - [ ] Runbook exercised end to end in e2e (old operator installed, migrated,

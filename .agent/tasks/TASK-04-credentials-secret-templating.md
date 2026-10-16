@@ -6,21 +6,21 @@
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
-This is the feature orac's gitops actually depends on. Each of its four apps
-(gitlab, grafana, litellm, vault) renders client credentials plus endpoint URLs
-into an app-specific Secret, e.g.
+This is the feature most JeffResc users depend on: each application renders
+client credentials plus endpoint URLs into an app-specific Secret shaped for
+the consuming app (e.g. its environment variable names), e.g.
 
 ```yaml
 secret:
-  name: gitlab-oidc-credentials
+  name: myapp-oidc-credentials
   template: |
     OIDC_CLIENT_ID: {{ .ClientID }}
     OIDC_CLIENT_SECRET: {{ .ClientSecret }}
 ```
 
-and ExternalSecrets (Kubernetes-provider ClusterSecretStore) copy them to the
-consuming namespace. Variables in use there: `.ClientID .ClientSecret .IssuerURL
-.AuthURL .TokenURL .UserInfoURL`.
+Consumers mount the Secret directly or copy it to another namespace with a
+secret-sync tool. The most common variables: `.ClientID .ClientSecret
+.IssuerURL .AuthURL .TokenURL .UserInfoURL`.
 
 JeffResc semantics to match (`internal/template/secret.go`):
 - `text/template` with `missingkey=error`, no sprig; output parsed as a YAML map
@@ -72,7 +72,7 @@ plus a required opt-in label (`authentik.io/connection: "true"`) on any
 Secret an `AuthentikDeployment` references. Adding cluster-wide
 create/update/delete changes the blast radius from "read a Secret whose name
 you know" to "overwrite or plant any Secret in any namespace", which enables
-things like replacing a TLS key or an ExternalSecrets source. Decide RBAC
+things like replacing a TLS key or a secret-sync source. Decide RBAC
 here, not later.
 
 Two separate threats, two separate controls:
@@ -115,7 +115,7 @@ Decisions to make in this task:
       overlay now, Helm value with TASK-07). Ship an alternative
       kustomize overlay / Helm value that replaces the ClusterRole Secret rules
       with a ClusterRole bound per namespace via RoleBinding (namespace owners
-      opt in). Keep cluster-wide as the default (simple homelab installs), and
+      opt in). Keep cluster-wide as the default (simple single-tenant installs), and
       document the trade-off. The resolver already maps Forbidden to condition
       reason `Forbidden`; do the same for writes.
 - [x] **No cache for Secrets.** Reads use the API reader; no watch, so an
@@ -228,6 +228,6 @@ Accepted/documented, not changed:
 - Blocks: TASK-08, TASK-09
 
 ## Completion Checklist
-- [ ] Golden-file tests: each of the four orac templates renders exactly as
-      today -- needs the orac templates; moved to TASK-09
+- [ ] Golden-file tests: representative JeffResc templates render exactly as
+      they do there -- moved to TASK-09
 - [x] missingkey error surfaces as a TemplateError condition, not a crash loop

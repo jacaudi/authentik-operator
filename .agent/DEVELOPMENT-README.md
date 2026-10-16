@@ -86,9 +86,9 @@
 #### Roadmap: parity with JeffResc/authentik-k8s-operator v0.2.5 (then beyond)
 
 The operator this rewrite replaces in practice is `JeffResc/authentik-k8s-operator`
-(`goauthentik.io/v1alpha1`, OAuth2 + SAML applications only). orac gitops runs its
-chart 0.1.8 and will cut over once parity is released (gitops bead
-`gitops-j8sm`; related: `gitops-ikwi`, JeffResc #279 blocks Authentik >= 2026.8). Order below is dependency order.
+(`goauthentik.io/v1alpha1`, OAuth2 + SAML applications only). Its users need
+a migration path once parity is released (JeffResc #279 blocks Authentik
+>= 2026.8). Order below is dependency order.
 
 | Task | Summary | Requires |
 |---|---|---|

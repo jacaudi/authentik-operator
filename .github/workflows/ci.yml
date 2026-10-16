@@ -1,7 +1,8 @@
 name: CI
 
 # Runs on pull requests and on pushes to main only (not on every branch
-# push): this repo may be a private fork with a limited Actions budget.
+# push), to keep Actions usage low, e.g. in private copies with a limited
+# minutes budget.
 on:
   pull_request:
   push:

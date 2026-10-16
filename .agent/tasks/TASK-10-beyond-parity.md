@@ -6,7 +6,7 @@
 - Milestone: post-parity
 
 ## Context
-Items that JeffResc either has but orac does not use (SAML), or does not have at
+Items that JeffResc either has but parity does not cover yet (SAML), or does not have at
 all (groups, users -- its issue #202 is open), plus this repo's own
 `AuthentikDeployment` goal from scope.md.
 
@@ -26,8 +26,8 @@ all (groups, users -- its issue #202 is open), plus this repo's own
 - [ ] Other provider types later: proxy (+ outposts), LDAP, RADIUS -- see
       [TASK-12](./TASK-12-outposts.md)
 - [ ] Out of scope for CRDs: flows, stages, brands -- Authentik blueprints already
-      express these declaratively (orac manages its recovery flow, branding and
-      login flow as blueprints). Possible thin `AuthentikBlueprint` kind that
+      express these declaratively (recovery flows, branding and login flows
+      are commonly managed as blueprints). Possible thin `AuthentikBlueprint` kind that
       wraps a ConfigMap + BlueprintInstance status, if useful.
 
 ## Dependencies

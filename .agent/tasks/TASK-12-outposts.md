@@ -17,7 +17,7 @@ patches. These are from memory, so verify them against the pinned
 `goauthentik.io/api/v3` before designing fields.
 
 Every Authentik install also has a managed "authentik Embedded Outpost".
-Assigning proxy providers to it is the most common homelab setup and needs no
+Assigning proxy providers to it is the most common small-install setup and needs no
 extra workload.
 
 JeffResc does not support outposts or non-OAuth/SAML providers, so this is

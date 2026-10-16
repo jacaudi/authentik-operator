@@ -6,18 +6,19 @@
 - Milestone: parity-with-jeffresc-v0.2.5 (a cutover needs a release to pin)
 
 ## Context
-`.github/workflows/` has lint, test and test-e2e but no release. Consumers (orac
-gitops via Flux) pin a chart version from an OCI HelmRepository and an image.
+`.github/workflows/` has lint, test and test-e2e but no release. GitOps
+consumers (Flux, Argo CD) pin a chart version from an OCI registry and an image.
 
 Lessons from JeffResc to avoid:
 - chart 0.2.5 defaults to an image repo that does not exist
   (`ghcr.io/JeffResc/...`, uppercase -> MANIFEST_UNKNOWN); the chart's image
   default must be tested by CI
 - its image tag is a multi-arch index with `unknown/unknown` attestation
-  entries; orac's zot pull-through cache cannot sync such indexes and returns a
-  deterministic 404, so consumers must pin single-platform digests. Publish
-  per-platform digests in release notes so pinning is easy.
-- orac pins the current operator to amd64; a real arm64 build removes that.
+  entries, which some registry mirrors and pull-through caches cannot sync,
+  forcing consumers to pin single-platform digests. Publish per-platform
+  digests in release notes so pinning is easy.
+- arm64 users of the current operator have no native image; a real arm64
+  build removes that.
 
 ## Implementation Plan
 - [ ] Tag-triggered workflow (semver `vX.Y.Z`): build linux/amd64 + linux/arm64
@@ -37,7 +38,7 @@ Lessons from JeffResc to avoid:
 
 ## Dependencies
 - Requires: TASK-06 (for chart knobs)
-- Blocks: orac gitops cutover bead
+- Blocks: migration from JeffResc (TASK-09)
 
 ## Completion Checklist
 - [ ] v0.1.0 (or first parity tag) published: image + chart pullable anonymously

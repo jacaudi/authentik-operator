@@ -63,7 +63,7 @@ This loads `.agent/DEVELOPMENT-README.md` (your project navigator) which provide
 - NEVER skip reading DEVELOPMENT-README.md navigator
 
 ### General Violations
-- Never commit secrets/API keys/.env files (use 1Password/Vault and sync)
+- Never commit secrets/API keys/.env files (keep them in a secrets manager)
 - Don't delete tests without replacement
 - Don't edit generated files by hand
 
@@ -88,22 +88,6 @@ This loads `.agent/DEVELOPMENT-README.md` (your project navigator) which provide
 - System docs: ~5k tokens (when relevant)
 - SOPs: ~2k tokens (if required)
 - **Total**: ~12k vs ~150k loading everything
-
----
-
-## Project Management Integration
-
-[Configure based on your setup - remove this section if not using PM integration]
-
-**Configured Tool**: [Linear / GitHub Issues / Jira / GitLab / None]
-
-**Workflow**:
-1. Read ticket via PM tool
-2. Generate implementation plan → `.agent/tasks/`
-3. Implement features
-4. Update system docs if architecture changes
-5. Complete → "Archive TASK-XX documentation" (auto-closes ticket)
-6. Notify team (if chat integration configured)
 
 ---
 

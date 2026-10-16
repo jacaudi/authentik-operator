@@ -1,7 +1,7 @@
 name: OpenSSF Scorecard
 
-# Scorecard only supports public repositories; this is a no-op on a
-# private fork and runs once the code lives upstream.
+# Scorecard only supports public repositories; this is a no-op on private
+# copies of the repo.
 on:
   push:
     branches: [main]

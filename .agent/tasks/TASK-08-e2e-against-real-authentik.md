@@ -12,11 +12,11 @@ real server.
 
 ## Implementation Plan
 - [ ] Extend `test/e2e` (kind) to install the official Authentik Helm chart at
-      pinned versions: current orac version (2026.2.x) AND latest (>= 2026.8)
+      pinned versions: an older supported release (2026.2.x) AND latest (>= 2026.8)
 - [ ] Bootstrap an API token non-interactively for the test
 - [ ] Scenarios:
-  - [ ] OAuthProvider + Application + Secret; assert rendered keys for the
-        orac template shape (`.ClientID .ClientSecret .IssuerURL .AuthURL
+  - [ ] OAuthProvider + Application + Secret; assert rendered keys for a
+        typical template (`.ClientID .ClientSecret .IssuerURL .AuthURL
         .TokenURL .UserInfoURL`)
   - [ ] a full OIDC authorization-code login succeeds (guards #279 grant_types)
   - [ ] adoption of a pre-created app + `<slug>-provider` keeps client_id/secret

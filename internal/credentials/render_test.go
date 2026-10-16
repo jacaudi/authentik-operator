@@ -56,7 +56,7 @@ func TestAllowedTemplates(t *testing.T) {
 		key  string
 		want string
 	}{
-		"orac style":     {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n", "OIDC_CLIENT_SECRET", clientSecret},
+		"env var style":  {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n", "OIDC_CLIENT_SECRET", clientSecret},
 		"scalars":        {"PORT: 8080\n", "PORT", "8080"},
 		"if/else":        {"{{ if eq .Slug \"app\" }}A: yes{{ else }}A: no{{ end }}\n", "A", "yes"},
 		"printf quote":   {"NAME: {{ printf \"%q\" .Name }}\n", "NAME", "App"},
