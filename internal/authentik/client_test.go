@@ -216,15 +216,19 @@ func TestRetry(t *testing.T) {
 		{"GET gives up after max retries", http.MethodGet, 503, 10, 4, false},
 		{"POST not retried on 503", http.MethodPost, 503, 1, 1, false},
 		{"POST retried on 429", http.MethodPost, 429, 2, 3, true},
+		{"PATCH retried on 503 with its body", http.MethodPatch, 503, 2, 3, true},
+		{"PUT retried on 503 with its body", http.MethodPut, 503, 2, 3, true},
+		{"DELETE retried on 503", http.MethodDelete, 503, 2, 3, true},
 		{"GET not retried on 400", http.MethodGet, 400, 1, 1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			hasBody := tc.method == http.MethodPost || tc.method == http.MethodPatch || tc.method == http.MethodPut
 			var calls atomic.Int32
 			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 				n := calls.Add(1)
 				body, _ := io.ReadAll(r.Body)
-				if r.Method == http.MethodPost && !strings.Contains(string(body), "replayed") {
+				if hasBody && !strings.Contains(string(body), "replayed") {
 					t.Errorf("attempt %d: body not replayed: %q", n, body)
 				}
 				if n <= tc.failures {
@@ -235,7 +239,7 @@ func TestRetry(t *testing.T) {
 				w.WriteHeader(200)
 			})
 			var body io.Reader
-			if tc.method == http.MethodPost {
+			if hasBody {
 				body = strings.NewReader(`{"name":"replayed"}`)
 			}
 			req, _ := http.NewRequestWithContext(t.Context(), tc.method, c.BaseURL()+"/api/v3/x/", body)
