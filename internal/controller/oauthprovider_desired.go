@@ -84,8 +84,7 @@ func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 
 // desiredOAuth2Provider resolves every reference in the spec and returns the
 // full request the provider should match. Spec defaults are applied by the
-// API server; the fallbacks here only cover objects created before a
-// default existed.
+// API server, so every defaulted field is read as is.
 func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2ProviderRequest, error) {
 	s := p.Spec
@@ -116,13 +115,11 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 
 	redirects := make([]api.RedirectURIRequest, 0, len(s.RedirectURIs))
 	for _, u := range s.RedirectURIs {
-		r := api.RedirectURIRequest{
-			Url:          u.URL,
-			MatchingMode: api.MatchingModeEnum(orDefault(string(u.MatchingMode), "strict")),
-		}
-		t := api.RedirectURITypeEnum(orDefault(string(u.Type), "authorization"))
-		r.RedirectUriType = &t
-		redirects = append(redirects, r)
+		redirects = append(redirects, api.RedirectURIRequest{
+			Url:             u.URL,
+			MatchingMode:    api.MatchingModeEnum(u.MatchingMode),
+			RedirectUriType: new(api.RedirectURITypeEnum(u.Type)),
+		})
 	}
 
 	req := api.NewOAuth2ProviderRequest(providerName(p), authz, invalidation, redirects)
@@ -137,12 +134,8 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 		req.SetAuthenticationFlowNil()
 	}
 
-	scopes := s.Scopes
-	if scopes == nil {
-		scopes = []string{"openid", "profile", "email"}
-	}
-	mappings := make([]string, 0, len(scopes)+len(s.PropertyMappings))
-	for _, name := range scopes {
+	mappings := make([]string, 0, len(s.Scopes)+len(s.PropertyMappings))
+	for _, name := range s.Scopes {
 		m, err := c.ScopeMappingByScopeName(ctx, name)
 		if err != nil {
 			return nil, asReferenceError(err)
@@ -167,31 +160,23 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	slices.Sort(mappings)
 	req.PropertyMappings = slices.Compact(mappings)
 
-	req.SetClientType(api.ClientTypeEnum(orDefault(string(s.ClientType), "confidential")))
-	grants := s.GrantTypes
-	if len(grants) == 0 {
-		grants = []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
-	}
-	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(grants))
-	for _, g := range grants {
+	req.SetClientType(api.ClientTypeEnum(s.ClientType))
+	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(s.GrantTypes))
+	for _, g := range s.GrantTypes {
 		req.GrantTypes = append(req.GrantTypes, api.GrantTypeEnum(g))
 	}
 	slices.Sort(req.GrantTypes)
 	req.SetClientId(expectedClientID(p))
 
-	req.SetAccessCodeValidity(orDefault(s.AccessCodeValidity, "minutes=1"))
-	req.SetAccessTokenValidity(orDefault(s.AccessTokenValidity, "minutes=5"))
-	req.SetRefreshTokenValidity(orDefault(s.RefreshTokenValidity, "days=30"))
-	req.SetRefreshTokenThreshold(orDefault(s.RefreshTokenThreshold, "seconds=0"))
-	req.SetSubMode(api.SubModeEnum(orDefault(string(s.SubMode), "hashed_user_id")))
-	req.SetIssuerMode(api.IssuerModeEnum(orDefault(string(s.IssuerMode), "per_provider")))
-	includeClaims := true
-	if s.IncludeClaimsInIDToken != nil {
-		includeClaims = *s.IncludeClaimsInIDToken
-	}
-	req.SetIncludeClaimsInIdToken(includeClaims)
+	req.SetAccessCodeValidity(s.AccessCodeValidity)
+	req.SetAccessTokenValidity(s.AccessTokenValidity)
+	req.SetRefreshTokenValidity(s.RefreshTokenValidity)
+	req.SetRefreshTokenThreshold(s.RefreshTokenThreshold)
+	req.SetSubMode(api.SubModeEnum(s.SubMode))
+	req.SetIssuerMode(api.IssuerModeEnum(s.IssuerMode))
+	req.SetIncludeClaimsInIdToken(*s.IncludeClaimsInIDToken)
 
-	signing, err := certPK(orDefault(s.SigningKey, "authentik Self-signed Certificate"))
+	signing, err := certPK(s.SigningKey)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +192,7 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	}
 
 	req.SetLogoutUri(s.LogoutURI)
-	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(orDefault(string(s.LogoutMethod), "backchannel")))
+	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
 	return req, nil
 }
 
@@ -348,11 +333,4 @@ func nullable(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-func orDefault(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }

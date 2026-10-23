@@ -31,7 +31,8 @@ func applicationSlug(a *authentikiov1alpha1.AuthentikApplication) string {
 }
 
 // desiredApplication builds the full request the application should match.
-// providerPK is 0 for an application without a provider.
+// providerPK is 0 for an application without a provider. Spec defaults are
+// applied by the API server, so every defaulted field is read as is.
 func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK int32) *api.ApplicationRequest {
 	s := a.Spec
 	req := api.NewApplicationRequest(s.Name, applicationSlug(a))
@@ -41,21 +42,13 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 		req.SetProviderNil()
 	}
 	req.SetGroup(s.Group)
-	req.SetPolicyEngineMode(api.PolicyEngineMode(orDefault(string(s.PolicyEngineMode), "any")))
+	req.SetPolicyEngineMode(api.PolicyEngineMode(s.PolicyEngineMode))
 	req.SetMetaLaunchUrl(s.MetaLaunchURL)
 	req.SetMetaDescription(s.MetaDescription)
 	req.SetMetaPublisher(s.MetaPublisher)
 	req.SetMetaIcon(s.MetaIcon)
-	openInNewTab := true
-	if s.OpenInNewTab != nil {
-		openInNewTab = *s.OpenInNewTab
-	}
-	req.SetOpenInNewTab(openInNewTab)
-	hide := false
-	if s.MetaHide != nil {
-		hide = *s.MetaHide
-	}
-	req.SetMetaHide(hide)
+	req.SetOpenInNewTab(*s.OpenInNewTab)
+	req.SetMetaHide(*s.MetaHide)
 	return req
 }
 

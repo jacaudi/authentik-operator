@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,7 +74,7 @@ func credentialsSecretName(p *authentikiov1alpha1.AuthentikOAuthProvider) string
 	if p.Spec.Secret == nil {
 		return ""
 	}
-	return orDefault(p.Spec.Secret.Name, p.Name+"-oauth")
+	return cmp.Or(p.Spec.Secret.Name, p.Name+"-oauth")
 }
 
 // syncSecret renders the credentials Secret after the provider itself is in

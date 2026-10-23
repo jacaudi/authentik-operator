@@ -236,8 +236,7 @@ func (r *AuthentikApplicationReconciler) providerPK(ctx context.Context,
 	if err := r.Get(ctx, types.NamespacedName{Namespace: a.Namespace, Name: ref.Name}, &p); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.setReady(a, metav1.ConditionFalse, reasonProviderNotFound,
-				fmt.Sprintf("%s %s/%s not found", orDefault(string(ref.Kind), string(authentikiov1alpha1.ProviderKindOAuth)),
-					a.Namespace, ref.Name))
+				fmt.Sprintf("%s %s/%s not found", ref.Kind, a.Namespace, ref.Name))
 			return 0, false, nil
 		}
 		return 0, false, err
