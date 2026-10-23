@@ -61,7 +61,8 @@ func (c *Client) CreateOAuth2Provider(ctx context.Context, req api.OAuth2Provide
 
 // PatchOAuth2Provider updates only the fields set in req, so fields the
 // operator does not manage (e.g. JWT federation, client secret) are kept.
-func (c *Client) PatchOAuth2Provider(ctx context.Context, pk int32, req api.PatchedOAuth2ProviderRequest) (*api.OAuth2Provider, error) {
+func (c *Client) PatchOAuth2Provider(ctx context.Context, pk int32,
+	req api.PatchedOAuth2ProviderRequest) (*api.OAuth2Provider, error) {
 	p, resp, err := c.api.ProvidersAPI.ProvidersOauth2PartialUpdate(ctx, pk).PatchedOAuth2ProviderRequest(req).Execute()
 	if err := Check(resp, err); err != nil {
 		return nil, err

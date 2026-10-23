@@ -74,13 +74,19 @@ func (v Vars) data() map[string]string {
 // not help until the spec changes. Messages never contain rendered content.
 type TemplateError struct{ Err error }
 
+// Error returns the message, prefixed so callers can tell a template
+// problem from a transient one.
 func (e *TemplateError) Error() string { return "credentials template: " + e.Err.Error() }
+
+// Unwrap returns the underlying validation or rendering error.
 func (e *TemplateError) Unwrap() error { return e.Err }
 
 // IsTemplateError reports whether err is a *TemplateError.
 func IsTemplateError(err error) bool {
-	_, ok := errors.AsType[*TemplateError](err)
-	return ok
+	// errors.As rather than errors.AsType: errcheck reads AsType's first
+	// result (a *TemplateError, which is an error) as a discarded error.
+	var te *TemplateError
+	return errors.As(err, &te)
 }
 
 // Render returns the Secret data for vars, using tmpl if set and the
@@ -173,20 +179,26 @@ func Parse(tmpl string) (*template.Template, error) {
 	return t, nil
 }
 
-var (
-	allowedFuncs = map[string]bool{
-		"eq": true, "ne": true, "lt": true, "le": true, "gt": true, "ge": true,
-		"and": true, "or": true, "not": true, "print": true, "printf": true,
+// predicateFunc reports whether name is an allowed function whose result
+// reveals something about its arguments without printing them;
+// .ClientSecret may not be an argument of one.
+func predicateFunc(name string) bool {
+	switch name {
+	case "eq", "ne", "lt", "le", "gt", "ge", "and", "or", "not":
+		return true
+	default:
+		return false
 	}
-	// Functions whose result reveals something about their arguments
-	// without printing them; .ClientSecret may not be an argument.
-	predicateFuncs = map[string]bool{
-		"eq": true, "ne": true, "lt": true, "le": true, "gt": true, "ge": true,
-		"and": true, "or": true, "not": true,
-	}
-	// printf formats without width or precision (no %0999999999d).
-	safePrintf = regexp.MustCompile(`^([^%]|%[sqv%])*$`)
-)
+}
+
+// allowedFunc reports whether templates may call name.
+func allowedFunc(name string) bool {
+	return predicateFunc(name) || name == "print" || name == "printf"
+}
+
+// safePrintf matches printf formats without width or precision (no
+// %0999999999d).
+var safePrintf = regexp.MustCompile(`^([^%]|%[sqv%])*$`)
 
 // validateTemplate allows only constructs whose cost is linear in the
 // template size: text, comments, actions, if/else. No range, with,
@@ -273,7 +285,7 @@ func (v *validator) walkCommand(cmd *parse.CommandNode, predicate bool) error {
 		return nil
 	}
 	if id, ok := cmd.Args[0].(*parse.IdentifierNode); ok {
-		if !allowedFuncs[id.Ident] {
+		if !allowedFunc(id.Ident) {
 			return fmt.Errorf("function %q is not allowed%s", id.Ident, v.at(cmd))
 		}
 		if id.Ident == "printf" {
@@ -285,7 +297,7 @@ func (v *validator) walkCommand(cmd *parse.CommandNode, predicate bool) error {
 				return fmt.Errorf("printf format must be a literal using only %%s, %%q, %%v%s", v.at(cmd))
 			}
 		}
-		predicate = predicate || predicateFuncs[id.Ident]
+		predicate = predicate || predicateFunc(id.Ident)
 		for _, a := range cmd.Args[1:] {
 			if err := v.walkArg(a, predicate); err != nil {
 				return err
@@ -344,7 +356,8 @@ func parseOutput(out []byte) (map[string]string, error) {
 		k, v := m.Content[i], m.Content[i+1]
 		entry := i/2 + 1
 		if k.Kind != yaml.ScalarNode || v.Kind != yaml.ScalarNode {
-			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): keys and values must be plain strings", entry, k.Line)}
+			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): keys and values must be plain strings",
+				entry, k.Line)}
 		}
 		if _, dup := kv[k.Value]; dup {
 			return nil, &TemplateError{Err: fmt.Errorf("entry %d (line %d): duplicate key", entry, k.Line)}
@@ -425,6 +438,7 @@ var errOutputTooLarge = errors.New("output too large")
 
 type limitedBuffer struct {
 	bytes.Buffer
+
 	max int
 }
 

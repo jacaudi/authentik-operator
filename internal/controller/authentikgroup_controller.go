@@ -28,9 +28,10 @@ import (
 	"github.com/jacaudi/authentik-operator/internal/connection"
 )
 
-// AuthentikGroupReconciler reconciles a AuthentikGroup object
+// AuthentikGroupReconciler reconciles a AuthentikGroup object.
 type AuthentikGroupReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 	// Connections resolves the Authentik client for spec.authentikRef.
 	Connections *connection.Resolver

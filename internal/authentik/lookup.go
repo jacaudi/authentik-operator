@@ -59,13 +59,14 @@ func (c *Client) ScopeMappingByScopeName(ctx context.Context, scopeName string) 
 		return nil, err
 	}
 	var matches, managed []api.ScopeMapping
-	for _, m := range all {
+	for i := range all {
+		m := &all[i]
 		if m.ScopeName != scopeName {
 			continue
 		}
-		matches = append(matches, m)
+		matches = append(matches, *m)
 		if m.Managed.IsSet() && m.Managed.Get() != nil && *m.Managed.Get() != "" {
-			managed = append(managed, m)
+			managed = append(managed, *m)
 		}
 	}
 	if len(matches) > 1 && len(managed) == 1 {
@@ -77,7 +78,8 @@ func (c *Client) ScopeMappingByScopeName(ctx context.Context, scopeName string) 
 // CertificateByName returns the certificate-key pair with the given name.
 func (c *Client) CertificateByName(ctx context.Context, name string) (*api.CertificateKeyPair, error) {
 	all, err := ListAll(func(page int32) ([]api.CertificateKeyPair, api.Pagination, *http.Response, error) {
-		res, resp, err := c.api.CryptoAPI.CryptoCertificatekeypairsList(ctx).Name(name).Page(page).PageSize(PageSize).Execute()
+		res, resp, err := c.api.CryptoAPI.CryptoCertificatekeypairsList(ctx).
+			Name(name).Page(page).PageSize(PageSize).Execute()
 		if res == nil {
 			return nil, api.Pagination{}, resp, err
 		}
@@ -92,7 +94,8 @@ func (c *Client) CertificateByName(ctx context.Context, name string) (*api.Certi
 // PropertyMappingByName returns the property mapping (any type) with the given name.
 func (c *Client) PropertyMappingByName(ctx context.Context, name string) (*api.PropertyMapping, error) {
 	all, err := ListAll(func(page int32) ([]api.PropertyMapping, api.Pagination, *http.Response, error) {
-		res, resp, err := c.api.PropertymappingsAPI.PropertymappingsAllList(ctx).Name(name).Page(page).PageSize(PageSize).Execute()
+		res, resp, err := c.api.PropertymappingsAPI.PropertymappingsAllList(ctx).
+			Name(name).Page(page).PageSize(PageSize).Execute()
 		if res == nil {
 			return nil, api.Pagination{}, resp, err
 		}

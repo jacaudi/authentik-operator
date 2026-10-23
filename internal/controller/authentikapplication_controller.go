@@ -55,9 +55,10 @@ const (
 	indexProviderRef = ".spec.providerRef.name"
 )
 
-// AuthentikApplicationReconciler reconciles a AuthentikApplication object
+// AuthentikApplicationReconciler reconciles a AuthentikApplication object.
 type AuthentikApplicationReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 	// Connections resolves the Authentik client for spec.authentikRef.
 	Connections *connection.Resolver
@@ -264,7 +265,8 @@ func (r *AuthentikApplicationReconciler) providerPK(ctx context.Context,
 
 // finalize deletes the application this resource created, then releases the
 // finalizer. Same connection-loss handling as the provider reconciler.
-func (r *AuthentikApplicationReconciler) finalize(ctx context.Context, a *authentikiov1alpha1.AuthentikApplication) error {
+func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication) error {
 	if !controllerutil.ContainsFinalizer(a, FinalizerName) {
 		return nil
 	}
@@ -327,7 +329,8 @@ func (r *AuthentikApplicationReconciler) deleteOwnedApplication(ctx context.Cont
 	return nil
 }
 
-func (r *AuthentikApplicationReconciler) writeError(a *authentikiov1alpha1.AuthentikApplication, err error) (ctrl.Result, error) {
+func (r *AuthentikApplicationReconciler) writeError(a *authentikiov1alpha1.AuthentikApplication,
+	err error) (ctrl.Result, error) {
 	switch {
 	case staleProviderPK(err):
 		// The provider resource still reports a pk that Authentik no longer
@@ -350,7 +353,8 @@ func (r *AuthentikApplicationReconciler) writeError(a *authentikiov1alpha1.Authe
 	}
 }
 
-func (r *AuthentikApplicationReconciler) authentikError(a *authentikiov1alpha1.AuthentikApplication, err error) (ctrl.Result, error) {
+func (r *AuthentikApplicationReconciler) authentikError(a *authentikiov1alpha1.AuthentikApplication,
+	err error) (ctrl.Result, error) {
 	r.setReady(a, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 	return ctrl.Result{}, err
 }
@@ -371,6 +375,7 @@ func (r *AuthentikApplicationReconciler) setReady(a *authentikiov1alpha1.Authent
 	})
 }
 
+//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
 func (r *AuthentikApplicationReconciler) event(a *authentikiov1alpha1.AuthentikApplication,
 	eventType, reason, action, note string, args ...any) {
 	if r.Recorder != nil {
@@ -400,7 +405,8 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikApplication{}).
-		Watches(&authentikiov1alpha1.AuthentikOAuthProvider{}, handler.EnqueueRequestsFromMapFunc(r.applicationsForProvider)).
+		Watches(&authentikiov1alpha1.AuthentikOAuthProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.applicationsForProvider)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikapplication").
 		Complete(r)
@@ -408,14 +414,16 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 
 // providerRefIndex indexes applications by the provider they reference.
 func providerRefIndex(o client.Object) []string {
-	if ref := o.(*authentikiov1alpha1.AuthentikApplication).Spec.ProviderRef; ref != nil {
-		return []string{ref.Name}
+	a, ok := o.(*authentikiov1alpha1.AuthentikApplication)
+	if !ok || a.Spec.ProviderRef == nil {
+		return nil
 	}
-	return nil
+	return []string{a.Spec.ProviderRef.Name}
 }
 
 // applicationsForProvider maps a provider to the applications referencing it.
-func (r *AuthentikApplicationReconciler) applicationsForProvider(ctx context.Context, o client.Object) []reconcile.Request {
+func (r *AuthentikApplicationReconciler) applicationsForProvider(ctx context.Context,
+	o client.Object) []reconcile.Request {
 	var list authentikiov1alpha1.AuthentikApplicationList
 	if err := r.List(ctx, &list, client.InNamespace(o.GetNamespace()),
 		client.MatchingFields{indexProviderRef: o.GetName()}); err != nil {

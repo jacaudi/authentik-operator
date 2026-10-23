@@ -24,7 +24,7 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// AuthentikUserSpec defines the desired state of AuthentikUser
+// AuthentikUserSpec defines the desired state of AuthentikUser.
 type AuthentikUserSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
@@ -68,7 +68,7 @@ type AuthentikUserStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// AuthentikUser is the Schema for the authentikusers API
+// AuthentikUser is the Schema for the authentikusers API.
 type AuthentikUser struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -87,11 +87,12 @@ type AuthentikUser struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikUserList contains a list of AuthentikUser
+// AuthentikUserList contains a list of AuthentikUser.
 type AuthentikUserList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikUser `json:"items"`
+
+	Items []AuthentikUser `json:"items"`
 }
 
 func init() {

@@ -84,8 +84,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		wait := t.backoff(attempt, resp)
 		if resp != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-			_ = resp.Body.Close()
+			discardBody(resp)
 		}
 		timer := time.NewTimer(wait)
 		select {
@@ -142,7 +141,15 @@ func (t *retryTransport) backoff(attempt int, resp *http.Response) time.Duration
 		d = min(base<<attempt, maxBackoff)
 	}
 	// Full jitter in [d/2, d).
-	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1)) //nolint:gosec // G404: jitter needs no cryptographic randomness
+}
+
+// discardBody drains and closes the body of a response that is about to be
+// retried, so the connection can be reused. The response is thrown away, so
+// its read and close errors are too.
+func discardBody(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) //nolint:errcheck // response is discarded
+	_ = resp.Body.Close()                                         //nolint:errcheck // response is discarded
 }
 
 func isIdempotent(method string) bool {
@@ -172,6 +179,7 @@ func rewind(req *http.Request) (*http.Request, error) {
 
 type cancelOnClose struct {
 	io.ReadCloser
+
 	cancel context.CancelFunc
 }
 

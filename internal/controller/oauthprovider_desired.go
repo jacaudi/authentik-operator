@@ -216,7 +216,8 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 // Fields the spec does not manage (client secret, JWT federation) are never
 // touched; every managed field has a default, so removing it from the spec
 // resets it.
-func oauth2ProviderPatch(want *api.OAuth2ProviderRequest, got *api.OAuth2Provider) (api.PatchedOAuth2ProviderRequest, []string) {
+func oauth2ProviderPatch(want *api.OAuth2ProviderRequest,
+	got *api.OAuth2Provider) (api.PatchedOAuth2ProviderRequest, []string) {
 	var (
 		patch   api.PatchedOAuth2ProviderRequest
 		changed []string

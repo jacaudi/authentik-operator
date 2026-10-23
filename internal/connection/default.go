@@ -42,7 +42,7 @@ type DefaultOptions struct {
 const (
 	EnvURL         = "AUTHENTIK_URL"
 	EnvExternalURL = "AUTHENTIK_EXTERNAL_URL"
-	EnvToken       = "AUTHENTIK_TOKEN"
+	EnvToken       = "AUTHENTIK_TOKEN" //nolint:gosec // G101: the variable's name, not a credential
 )
 
 // DefaultConfig builds the default connection config, or returns nil when
@@ -54,24 +54,14 @@ func DefaultConfig(o DefaultOptions, getenv func(string) string) (*authentik.Con
 		}
 		return nil, nil
 	}
-	if o.ExternalURL != "" {
-		u, err := url.Parse(o.ExternalURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
-			u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("default Authentik connection: external URL %q must be an http(s) URL "+
-				"without userinfo, query or fragment", o.ExternalURL)
-		}
+	if o.ExternalURL != "" && !isPlainHTTPURL(o.ExternalURL) {
+		return nil, fmt.Errorf("default Authentik connection: external URL %q must be an http(s) URL "+
+			"without userinfo, query or fragment", o.ExternalURL)
 	}
 
-	var token string
-	if o.TokenFile != "" {
-		b, err := os.ReadFile(o.TokenFile)
-		if err != nil {
-			return nil, fmt.Errorf("default Authentik connection: read token file: %w", err)
-		}
-		token = strings.TrimSpace(string(b))
-	} else {
-		token = strings.TrimSpace(getenv(EnvToken))
+	token, err := readToken(o.TokenFile, getenv)
+	if err != nil {
+		return nil, err
 	}
 	if token == "" {
 		return nil, fmt.Errorf("default Authentik connection: URL set but no token (set %s or the token file)", EnvToken)
@@ -90,4 +80,28 @@ func DefaultConfig(o DefaultOptions, getenv func(string) string) (*authentik.Con
 		return nil, fmt.Errorf("default Authentik connection: %w", err)
 	}
 	return cfg, nil
+}
+
+// isPlainHTTPURL reports whether raw is an http(s) URL with a host and
+// without userinfo, query or fragment.
+func isPlainHTTPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" &&
+		u.User == nil && u.RawQuery == "" && u.Fragment == ""
+}
+
+// readToken returns the trimmed token from file if set, else from the
+// AUTHENTIK_TOKEN environment variable.
+func readToken(file string, getenv func(string) string) (string, error) {
+	if file == "" {
+		return strings.TrimSpace(getenv(EnvToken)), nil
+	}
+	b, err := os.ReadFile(file) //nolint:gosec // G304: the operator's own --authentik-token-file flag
+	if err != nil {
+		return "", fmt.Errorf("default Authentik connection: read token file: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }

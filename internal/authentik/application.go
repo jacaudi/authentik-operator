@@ -46,7 +46,8 @@ func (c *Client) CreateApplication(ctx context.Context, req api.ApplicationReque
 }
 
 // PatchApplication updates only the fields set in req.
-func (c *Client) PatchApplication(ctx context.Context, slug string, req api.PatchedApplicationRequest) (*api.Application, error) {
+func (c *Client) PatchApplication(ctx context.Context, slug string,
+	req api.PatchedApplicationRequest) (*api.Application, error) {
 	a, resp, err := c.api.CoreAPI.CoreApplicationsPartialUpdate(ctx, slug).PatchedApplicationRequest(req).Execute()
 	if err := Check(resp, err); err != nil {
 		return nil, err

@@ -131,7 +131,7 @@ func TestPingSendsBearerToken(t *testing.T) {
 		}
 		writeJSON(t, w, 200, map[string]any{"user": user, "users": []any{user}})
 	})
-	user, err := c.Ping(context.Background())
+	user, err := c.Ping(t.Context())
 	if err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestListAllFollowsPages(t *testing.T) {
 		writeJSON(t, w, 200, page([]map[string]any{flow(fmt.Sprintf("f%d", p))}, p, next, 3))
 	})
 	flows, err := ListAll(func(p int32) ([]api.Flow, api.Pagination, *http.Response, error) {
-		res, resp, err := c.API().FlowsAPI.FlowsInstancesList(context.Background()).Page(p).PageSize(PageSize).Execute()
+		res, resp, err := c.API().FlowsAPI.FlowsInstancesList(t.Context()).Page(p).PageSize(PageSize).Execute()
 		if res == nil {
 			return nil, api.Pagination{}, resp, err
 		}
@@ -178,7 +178,7 @@ func TestErrorClassification(t *testing.T) {
 			writeJSON(t, w, 400, map[string]any{"slug": []string{"flow with this slug already exists."}})
 		}
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := c.PropertyMappingByUUID(ctx, "missing")
 	if !IsNotFound(err) || StatusCode(err) != 404 {
@@ -232,7 +232,7 @@ func TestRetry(t *testing.T) {
 			if tc.method == http.MethodPost {
 				body = strings.NewReader(`{"name":"replayed"}`)
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), tc.method, c.BaseURL()+"/api/v3/x/", body)
+			req, _ := http.NewRequestWithContext(t.Context(), tc.method, c.BaseURL()+"/api/v3/x/", body)
 			resp, err := c.API().GetConfig().HTTPClient.Do(req)
 			if err != nil {
 				t.Fatalf("Do: %v", err)
@@ -253,7 +253,7 @@ func TestRetryHonoursContext(t *testing.T) {
 		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(503)
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := c.PropertyMappingByUUID(ctx, "x")
@@ -277,7 +277,7 @@ func TestFlowBySlug(t *testing.T) {
 			writeJSON(t, w, 200, page(nil, 1, 0, 0))
 		}
 	})
-	ctx := context.Background()
+	ctx := t.Context()
 	f, err := c.FlowBySlug(ctx, "login")
 	if err != nil || f.Slug != "login" {
 		t.Fatalf("FlowBySlug(login) = %v, %v", f, err)
@@ -295,7 +295,7 @@ func TestRateLimit(t *testing.T) {
 		func(cfg *Config) { cfg.RPS = 20; cfg.burst = 1 })
 	start := time.Now()
 	for range 5 {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, c.BaseURL()+"/api/v3/x/", nil)
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, c.BaseURL()+"/api/v3/x/", http.NoBody)
 		resp, err := c.API().GetConfig().HTTPClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -320,7 +320,7 @@ func TestRedirectsNotFollowed(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, other.URL+"/steal", http.StatusFound)
 	})
-	_, err := c.PropertyMappingByUUID(context.Background(), "x")
+	_, err := c.PropertyMappingByUUID(t.Context(), "x")
 	if leaked.Load() {
 		t.Fatal("token was sent to the redirect target")
 	}
@@ -334,7 +334,7 @@ func TestErrorBodyOnlyFor400(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("internal secret page"))
 	})
-	_, err := c.PropertyMappingByUUID(context.Background(), "x")
+	_, err := c.PropertyMappingByUUID(t.Context(), "x")
 	if StatusCode(err) != 403 || strings.Contains(err.Error(), "secret page") {
 		t.Fatalf("403 body surfaced in error: %v", err)
 	}
@@ -356,7 +356,10 @@ func TestConflictVsValidation(t *testing.T) {
 
 func TestConfigRedactsToken(t *testing.T) {
 	cfg := Config{URL: "https://ak", Token: testToken}
-	for _, s := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg), fmt.Sprint(&cfg)} {
+	// The verbs are the point: every fmt rendering of Config must redact.
+	//nolint:gocritic // redundantSprint
+	for _, s := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg),
+		fmt.Sprint(&cfg)} {
 		if strings.Contains(s, testToken) {
 			t.Fatalf("token leaked: %s", s)
 		}
@@ -387,7 +390,7 @@ func TestTLS(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
 	t.Cleanup(srv.Close)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
-	ctx := context.Background()
+	ctx := t.Context()
 
 	untrusted, err := New(Config{URL: srv.URL, Token: testToken, MaxRetries: -1})
 	if err != nil {

@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AuthentikUser is the Schema for the authentikusers API
+        description: AuthentikUser is the Schema for the authentikusers API.
         properties:
           apiVersion:
             description: |-

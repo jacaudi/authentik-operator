@@ -109,7 +109,8 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		}
 	}
 
-	reconcileAndGetCondition := func(name string) (reconcile.Result, *metav1.Condition, *authentikiov1alpha1.AuthentikDeployment) {
+	reconcileAndGetCondition := func(name string) (reconcile.Result, *metav1.Condition,
+		*authentikiov1alpha1.AuthentikDeployment) {
 		key := types.NamespacedName{Name: name, Namespace: namespace}
 		res, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())

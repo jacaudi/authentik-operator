@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AuthentikGroup is the Schema for the authentikgroups API
+        description: AuthentikGroup is the Schema for the authentikgroups API.
         properties:
           apiVersion:
             description: |-

@@ -27,6 +27,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,6 +73,7 @@ type Request struct {
 // Server is a fake Authentik.
 type Server struct {
 	*httptest.Server
+
 	Token string
 	// SetupURLHost, when set, is used instead of the request's Host to
 	// build setup_urls (simulates Authentik configured with another host).
@@ -275,7 +277,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	var body map[string]any
 	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodPut) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{fieldDetail: "JSON parse error - " + err.Error()})
+			return
+		}
 	}
 
 	s.mu.Lock()
@@ -291,10 +296,23 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v3")
 	switch {
 	case path == "/core/users/me/":
-		u := map[string]any{"pk": 1, "username": "akadmin", fieldName: "admin", "is_active": true, "is_superuser": true,
-			"is_current": true, "groups": []any{}, "roles": []any{}, "avatar": "", "uid": "u",
-			"settings": map[string]any{}, "system_permissions": []string{}}
-		writeJSON(w, 200, map[string]any{"user": u, "users": []any{u}})
+		writeJSON(w, 200, me())
+	case strings.HasPrefix(path, "/flows/"), strings.HasPrefix(path, "/propertymappings/"),
+		strings.HasPrefix(path, "/crypto/"):
+		s.handleLookups(w, path, q)
+	case strings.HasPrefix(path, "/core/applications/"):
+		s.handleApplications(w, r, path, body)
+	case strings.HasPrefix(path, "/providers/oauth2/"):
+		s.handleProviders(w, r, path, body)
+	default:
+		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+	}
+}
+
+// handleLookups serves the read-only seeded objects: flows, scope mappings,
+// property mappings and certificates.
+func (s *Server) handleLookups(w http.ResponseWriter, path string, q url.Values) {
+	switch {
 	case path == "/flows/instances/":
 		writeJSON(w, 200, page(filter(s.flows, fieldSlug, q.Get(fieldSlug))))
 	case path == "/propertymappings/provider/scope/":
@@ -303,22 +321,39 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, page(filter(s.mappings, fieldName, q.Get(fieldName))))
 	case strings.HasPrefix(path, "/propertymappings/all/"):
 		id := strings.Trim(strings.TrimPrefix(path, "/propertymappings/all/"), "/")
-		for _, m := range s.mappings {
-			if m["pk"] == id {
-				writeJSON(w, 200, m)
-				return
-			}
+		if m := s.mappingByPK(id); m != nil {
+			writeJSON(w, 200, m)
+			return
 		}
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 	case path == "/crypto/certificatekeypairs/":
 		writeJSON(w, 200, page(filter(s.certs, fieldName, q.Get(fieldName))))
-	case strings.HasPrefix(path, "/core/applications/"):
-		s.handleApplications(w, r, path, body)
-	case strings.HasPrefix(path, "/providers/oauth2/"):
-		s.handleProviders(w, r, path, body)
 	default:
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 	}
+}
+
+// me is the token owner returned by /core/users/me/.
+func me() map[string]any {
+	u := map[string]any{"pk": 1, "username": "akadmin", fieldName: "admin", "is_active": true, "is_superuser": true,
+		"is_current": true, "groups": []any{}, "roles": []any{}, "avatar": "", "uid": "u",
+		"settings": map[string]any{}, "system_permissions": []string{}}
+	return map[string]any{"user": u, "users": []any{u}}
+}
+
+func (s *Server) mappingByPK(id string) map[string]any {
+	for _, m := range s.mappings {
+		if m["pk"] == id {
+			return m
+		}
+	}
+	return nil
+}
+
+// providerPK parses the {pk} segment of a /providers/oauth2/{pk}/... path.
+func providerPK(rest string) (int32, bool) {
+	pk, err := strconv.ParseInt(strings.Trim(rest, "/"), 10, 32)
+	return int32(pk), err == nil
 }
 
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path string, body map[string]any) {
@@ -334,39 +369,44 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 	case path == "/providers/oauth2/" && r.Method == http.MethodPost:
 		s.createProvider(w, body)
 	case strings.HasSuffix(path, "/setup_urls/") && r.Method == http.MethodGet:
-		pk, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(path, "/providers/oauth2/"), "/setup_urls/"))
-		p, ok := s.providers[int32(pk)]
-		if !ok {
+		pk, ok := providerPK(strings.TrimSuffix(strings.TrimPrefix(path, "/providers/oauth2/"), "/setup_urls/"))
+		p, found := s.providers[pk]
+		if !ok || !found {
 			writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 			return
 		}
 		writeJSON(w, 200, s.setupURLs(r, p))
 	case strings.HasPrefix(path, "/providers/oauth2/"):
-		pk, err := strconv.Atoi(strings.Trim(strings.TrimPrefix(path, "/providers/oauth2/"), "/"))
-		p, ok := s.providers[int32(pk)]
-		if err != nil || !ok {
+		pk, ok := providerPK(strings.TrimPrefix(path, "/providers/oauth2/"))
+		p, found := s.providers[pk]
+		if !ok || !found {
 			writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 			return
 		}
-		s.assignApplication(p)
-		switch r.Method {
-		case http.MethodGet:
-			writeJSON(w, 200, p)
-		case http.MethodPatch:
-			if errs := s.validate(body, int32(pk)); len(errs) > 0 {
-				writeJSON(w, 400, errs)
-				return
-			}
-			maps.Copy(p, body)
-			writeJSON(w, 200, p)
-		case http.MethodDelete:
-			s.deleteProviderLocked(int32(pk))
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
+		s.handleProvider(w, r, pk, p, body)
 	default:
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+	}
+}
+
+// handleProvider serves /providers/oauth2/{pk}/ for one stored provider.
+func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request, pk int32, p, body map[string]any) {
+	s.assignApplication(p)
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, p)
+	case http.MethodPatch:
+		if errs := s.validate(body, pk); len(errs) > 0 {
+			writeJSON(w, 400, errs)
+			return
+		}
+		maps.Copy(p, body)
+		writeJSON(w, 200, p)
+	case http.MethodDelete:
+		s.deleteProviderLocked(pk)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
@@ -375,7 +415,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request, path st
 func (s *Server) assignApplication(p map[string]any) {
 	p["assigned_application_slug"], p["assigned_application_name"] = nil, nil
 	for _, a := range s.apps {
-		if pk, ok := a["provider"].(float64); ok && int32(pk) == p["pk"].(int32) {
+		if pk, ok := a["provider"].(float64); ok && int32(pk) == p["pk"] {
 			p["assigned_application_slug"], p["assigned_application_name"] = a[fieldSlug], a[fieldName]
 		}
 	}
@@ -458,14 +498,13 @@ func (s *Server) validate(body map[string]any, self int32) map[string]any {
 			}
 		}
 	}
-	exists := func(items []map[string]any, pk any) bool {
-		for _, it := range items {
-			if it["pk"] == pk {
-				return true
-			}
-		}
-		return false
-	}
+	s.validateReferences(body, errs)
+	return errs
+}
+
+// validateReferences adds an error for every referenced flow, key or
+// property mapping that does not exist.
+func (s *Server) validateReferences(body, errs map[string]any) {
 	for _, f := range []string{fieldAuthz, fieldInval, "authentication_flow"} {
 		if v, ok := body[f]; ok && v != nil && !exists(s.flows, v) {
 			errs[f] = []string{fmt.Sprintf("Invalid pk %q - object does not exist.", v)}
@@ -483,7 +522,15 @@ func (s *Server) validate(body map[string]any, self int32) map[string]any {
 			}
 		}
 	}
-	return errs
+}
+
+func exists(items []map[string]any, pk any) bool {
+	for _, it := range items {
+		if it["pk"] == pk {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleApplications(w http.ResponseWriter, r *http.Request, path string, body map[string]any) {
@@ -551,7 +598,8 @@ func (s *Server) createApplication(w http.ResponseWriter, body map[string]any) {
 		return
 	}
 	a := s.completeApplication(body)
-	s.apps[a[fieldSlug].(string)] = a
+	slug, _ := a[fieldSlug].(string)
+	s.apps[slug] = a
 	if s.loseNextAppCreate {
 		s.loseNextAppCreate = false
 		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: "upstream timed out"})
@@ -696,15 +744,22 @@ func page(results []map[string]any) map[string]any {
 	}
 }
 
+// clone deep-copies m through JSON, which also normalises the stored
+// values to what a client would decode (numbers as float64, etc.).
 func clone(m map[string]any) map[string]any {
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		panic("fakeauthentik: stored object is not JSON: " + err.Error())
+	}
 	var out map[string]any
-	_ = json.Unmarshal(b, &out)
+	if err := json.Unmarshal(b, &out); err != nil {
+		panic("fakeauthentik: stored object is not JSON: " + err.Error())
+	}
 	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) //nolint:errcheck // headers are sent; a failed write surfaces in the client
 }

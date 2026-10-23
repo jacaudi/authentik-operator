@@ -131,7 +131,7 @@ func TestForRef(t *testing.T) {
 		seen = append(seen, c)
 		return authentik.New(c)
 	}}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := r.ForRef(ctx, ns, ref("ok"))
 	if err != nil {
@@ -176,7 +176,8 @@ func TestForbiddenAndCAKeyDefault(t *testing.T) {
 		secret("ca", map[string]string{"ca.crt": "not a pem"}),
 		deployment("forbidden", conn("locked")),
 	).WithInterceptorFuncs(interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption) error {
 			if key.Name == "locked" {
 				return apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, key.Name, errors.New("rbac"))
 			}
@@ -184,7 +185,7 @@ func TestForbiddenAndCAKeyDefault(t *testing.T) {
 		},
 	}).Build()
 	r := &Resolver{Reader: reader}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Empty key in code falls back to ca.crt (not token); the PEM is then
 	// rejected by the client, proving the right key was read.
@@ -198,7 +199,7 @@ func TestForbiddenAndCAKeyDefault(t *testing.T) {
 
 func TestForRefDefault(t *testing.T) {
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	r := &Resolver{Reader: reader}
 	if _, err := r.ForRef(ctx, ns, nil); Reason(err) != ReasonNoConnection {
@@ -220,7 +221,7 @@ func TestClientCacheRebuildsOnRotation(t *testing.T) {
 		builds++
 		return authentik.New(c)
 	}}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	a, _ := r.ForRef(ctx, ns, ref("d"))
 	b, _ := r.ForRef(ctx, ns, ref("d"))
@@ -249,7 +250,7 @@ func TestInvalidConfigReason(t *testing.T) {
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(deployment("bad", bad), secret("tok", map[string]string{tokenKey: "x"})).Build()
 	r := &Resolver{Reader: reader}
-	_, err := r.ForRef(context.Background(), ns, ref("bad"))
+	_, err := r.ForRef(t.Context(), ns, ref("bad"))
 	if Reason(err) != ReasonInvalidConfig {
 		t.Fatalf("reason %q, err %v", Reason(err), err)
 	}
@@ -300,9 +301,10 @@ func TestExternalURL(t *testing.T) {
 	ext := conn("tok")
 	ext.ExternalURL = ssoURL + "/"
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(deployment("ext", ext), deployment("plain", conn("tok")), secret("tok", map[string]string{tokenKey: "x"})).Build()
+		WithObjects(deployment("ext", ext), deployment("plain", conn("tok")),
+			secret("tok", map[string]string{tokenKey: "x"})).Build()
 	r := &Resolver{Reader: reader, Default: &authentik.Config{URL: "https://internal.example.com", Token: "t"}}
-	ctx := context.Background()
+	ctx := t.Context()
 
 	for name, want := range map[string]string{"ext": ssoURL, "plain": "https://ak.example.com"} {
 		res, err := r.ForRef(ctx, ns, ref(name))

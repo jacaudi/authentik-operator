@@ -56,7 +56,8 @@ func TestAllowedTemplates(t *testing.T) {
 		key  string
 		want string
 	}{
-		"env var style":  {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n", "OIDC_CLIENT_SECRET", clientSecret},
+		"env var style": {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n",
+			"OIDC_CLIENT_SECRET", clientSecret},
 		"scalars":        {"PORT: 8080\n", "PORT", "8080"},
 		"if/else":        {"{{ if eq .Slug \"app\" }}A: yes{{ else }}A: no{{ end }}\n", "A", "yes"},
 		"printf quote":   {"NAME: {{ printf \"%q\" .Name }}\n", "NAME", "App"},
@@ -79,14 +80,14 @@ func TestAllowedTemplates(t *testing.T) {
 // Templates that could hang a worker or exhaust memory are rejected at
 // parse time, before execution.
 func TestUnsafeTemplatesRejected(t *testing.T) {
-	recursive := ""
+	var recursive strings.Builder
 	for i := 1; i <= 60; i++ {
-		recursive += "{{define \"t" + string(rune('a'+i%26)) + "\"}}{{end}}"
+		recursive.WriteString("{{define \"t" + string(rune('a'+i%26)) + "\"}}{{end}}")
 	}
 	for name, tmpl := range map[string]string{
 		"range int":     "{{range 100000000000}}{{end}}",
 		"range output":  "{{range 100000000000}}{{$.ClientSecret}}{{end}}",
-		"define":        recursive + "A: b",
+		"define":        recursive.String() + "A: b",
 		"template call": "{{template \"x\"}}",
 		"with":          "{{with .Name}}A: b{{end}}",
 		"variable":      "{{$x := .Name}}A: b",

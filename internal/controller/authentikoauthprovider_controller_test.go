@@ -468,7 +468,8 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			},
 		}}
 		Expect(k8sClient.Create(ctx, u)).To(Succeed())
-		p := &authentikiov1alpha1.AuthentikOAuthProvider{ObjectMeta: metav1.ObjectMeta{Name: "no-scopes", Namespace: namespace}}
+		p := &authentikiov1alpha1.AuthentikOAuthProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-scopes", Namespace: namespace}}
 		DeferCleanup(func() {
 			cur := get(p)
 			cur.Finalizers = nil

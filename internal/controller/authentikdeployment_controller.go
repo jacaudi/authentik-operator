@@ -52,9 +52,10 @@ const (
 	maxConcurrentReconciles = 4
 )
 
-// AuthentikDeploymentReconciler reconciles a AuthentikDeployment object
+// AuthentikDeploymentReconciler reconciles a AuthentikDeployment object.
 type AuthentikDeploymentReconciler struct {
 	client.Client
+
 	Scheme      *runtime.Scheme
 	Connections *connection.Resolver
 }
