@@ -50,22 +50,26 @@ func TestDefaultKeys(t *testing.T) {
 	}
 }
 
+// allowedTemplates are templates within the safe subset, with one key each
+// to check; they also seed FuzzRender.
+var allowedTemplates = map[string]struct {
+	tmpl string
+	key  string
+	want string
+}{
+	"env var style": {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n",
+		"OIDC_CLIENT_SECRET", clientSecret},
+	"scalars":        {"PORT: 8080\n", "PORT", "8080"},
+	"if/else":        {"{{ if eq .Slug \"app\" }}A: yes{{ else }}A: no{{ end }}\n", "A", "yes"},
+	"printf quote":   {"NAME: {{ printf \"%q\" .Name }}\n", "NAME", "App"},
+	"pipeline":       {"N: {{ .Name | printf \"%s-x\" }}\n", "N", "App-x"},
+	"comment":        {"{{/* c */}}A: b\n", "A", "b"},
+	"null is empty":  {"A:\n", "A", ""},
+	"secret printed": {"S: {{ print .ClientSecret }}\n", "S", clientSecret},
+}
+
 func TestAllowedTemplates(t *testing.T) {
-	for name, tc := range map[string]struct {
-		tmpl string
-		key  string
-		want string
-	}{
-		"env var style": {"OIDC_CLIENT_ID: {{ .ClientID }}\nOIDC_CLIENT_SECRET: {{ .ClientSecret }}\n",
-			"OIDC_CLIENT_SECRET", clientSecret},
-		"scalars":        {"PORT: 8080\n", "PORT", "8080"},
-		"if/else":        {"{{ if eq .Slug \"app\" }}A: yes{{ else }}A: no{{ end }}\n", "A", "yes"},
-		"printf quote":   {"NAME: {{ printf \"%q\" .Name }}\n", "NAME", "App"},
-		"pipeline":       {"N: {{ .Name | printf \"%s-x\" }}\n", "N", "App-x"},
-		"comment":        {"{{/* c */}}A: b\n", "A", "b"},
-		"null is empty":  {"A:\n", "A", ""},
-		"secret printed": {"S: {{ print .ClientSecret }}\n", "S", clientSecret},
-	} {
+	for name, tc := range allowedTemplates {
 		got, err := Render(tc.tmpl, vars)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -77,27 +81,34 @@ func TestAllowedTemplates(t *testing.T) {
 	}
 }
 
-// Templates that could hang a worker or exhaust memory are rejected at
-// parse time, before execution.
-func TestUnsafeTemplatesRejected(t *testing.T) {
-	var recursive strings.Builder
+// unsafeTemplates could hang a worker or exhaust memory; they must be
+// rejected at parse time, before execution. They also seed FuzzRender.
+var unsafeTemplates = map[string]string{
+	"range int":     "{{range 100000000000}}{{end}}",
+	"range output":  "{{range 100000000000}}{{$.ClientSecret}}{{end}}",
+	"define":        manyDefines() + "A: b",
+	"template call": "{{template \"x\"}}",
+	"with":          "{{with .Name}}A: b{{end}}",
+	"variable":      "{{$x := .Name}}A: b",
+	"printf width":  "A: {{printf \"%0999999999d\" 1}}",
+	"printf dyn":    "A: {{printf .Name 1}}",
+	"bad func":      "A: {{len .Name}}",
+	"call":          "A: {{call .Name}}",
+	"nested field":  "A: {{.Name.X}}",
+	"dot":           "A: {{.}}",
+}
+
+// manyDefines returns 60 define blocks (at most one template is allowed).
+func manyDefines() string {
+	var b strings.Builder
 	for i := 1; i <= 60; i++ {
-		recursive.WriteString("{{define \"t" + string(rune('a'+i%26)) + "\"}}{{end}}")
+		b.WriteString("{{define \"t" + string(rune('a'+i%26)) + "\"}}{{end}}")
 	}
-	for name, tmpl := range map[string]string{
-		"range int":     "{{range 100000000000}}{{end}}",
-		"range output":  "{{range 100000000000}}{{$.ClientSecret}}{{end}}",
-		"define":        recursive.String() + "A: b",
-		"template call": "{{template \"x\"}}",
-		"with":          "{{with .Name}}A: b{{end}}",
-		"variable":      "{{$x := .Name}}A: b",
-		"printf width":  "A: {{printf \"%0999999999d\" 1}}",
-		"printf dyn":    "A: {{printf .Name 1}}",
-		"bad func":      "A: {{len .Name}}",
-		"call":          "A: {{call .Name}}",
-		"nested field":  "A: {{.Name.X}}",
-		"dot":           "A: {{.}}",
-	} {
+	return b.String()
+}
+
+func TestUnsafeTemplatesRejected(t *testing.T) {
+	for name, tmpl := range unsafeTemplates {
 		done := make(chan error, 1)
 		go func() { _, err := Render(tmpl, vars); done <- err }()
 		select {
@@ -125,19 +136,23 @@ func TestClientSecretCannotBeTested(t *testing.T) {
 	}
 }
 
+// outputErrorTemplates render (or fail to parse) into something that is
+// not a valid Secret. They also seed FuzzRender.
+var outputErrorTemplates = map[string]string{
+	"parse":          "A: {{ .ClientID ",
+	"missing key":    "A: {{ .ClientIDX }}",
+	"not a map":      "- a\n- b\n",
+	"nested value":   "A:\n  B: c\n",
+	"no keys":        "# nothing\n",
+	"invalid key":    "bad key: v\n",
+	"duplicate key":  "A: x\nA: y\n",
+	"multi document": "A: b\n---\nC: d\n",
+	"alias":          "A: &x v\nB: *x\n",
+	"too large":      "A: {{ printf \"%s%s%s%s\" .Name .Name .Name .Name }}" + strings.Repeat("x", MaxOutput),
+}
+
 func TestOutputErrors(t *testing.T) {
-	for name, tmpl := range map[string]string{
-		"parse":          "A: {{ .ClientID ",
-		"missing key":    "A: {{ .ClientIDX }}",
-		"not a map":      "- a\n- b\n",
-		"nested value":   "A:\n  B: c\n",
-		"no keys":        "# nothing\n",
-		"invalid key":    "bad key: v\n",
-		"duplicate key":  "A: x\nA: y\n",
-		"multi document": "A: b\n---\nC: d\n",
-		"alias":          "A: &x v\nB: *x\n",
-		"too large":      "A: {{ printf \"%s%s%s%s\" .Name .Name .Name .Name }}" + strings.Repeat("x", MaxOutput),
-	} {
+	for name, tmpl := range outputErrorTemplates {
 		_, err := Render(tmpl, vars)
 		if !IsTemplateError(err) {
 			t.Errorf("%s: err = %v, want TemplateError", name, err)
