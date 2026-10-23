@@ -1,0 +1,11 @@
+# zizmor configuration (read by the `audit` job in ci.yaml).
+rules:
+  # zizmor asks for GitHub's `uses: $/...` self-repository syntax. actionlint
+  # 1.7.12 (which `task ci` runs) rejects that form, and the fleet local-refs
+  # check (`task repo:actions:local-refs`) only resolves `./...`. Revisit when
+  # actionlint accepts `$/`.
+  self-repository:
+    ignore:
+      - ci.yaml
+      - ci-test.yml
+      - release-republish.yml

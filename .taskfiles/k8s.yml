@@ -1,0 +1,28 @@
+# Kubernetes manifests — render the install bundle and validate it. Repo-specific (kubebuilder); not a fleet template.
+version: '3'
+
+tasks:
+  ci:
+    desc: All manifest checks
+    cmds:
+      - task: manifests
+
+  manifests:
+    desc: Render config/default with kustomize and validate it with kubeconform
+    cmds:
+      # The Makefile owns the kustomize version and installs it into bin/ (gitignored).
+      - make kustomize
+      # `kustomize build`, NOT `make build-installer`: build-installer runs
+      # `kustomize edit set image`, which rewrites config/manager/kustomization.yaml
+      # and leaves the tree dirty, so `make verify` (and the developer) would see
+      # drift. The rendered resources are identical apart from the image ref.
+      - |
+        set -eu
+        # Our own CRD kinds have no published schema (-ignore-missing-schemas);
+        # everything else (the CRDs themselves, RBAC, Deployment, ...) is strict.
+        bin/kustomize build config/default \
+          | go run "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}" \
+              -strict -summary -ignore-missing-schemas
+    env:
+      # renovate: datasource=go depName=github.com/yannh/kubeconform
+      KUBECONFORM_VERSION: v0.8.0

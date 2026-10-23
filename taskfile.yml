@@ -8,6 +8,10 @@ includes:
   go:
     taskfile: .taskfiles/go.yml
 
+  # Repo-specific: kustomize + kubeconform over config/default.
+  k8s:
+    taskfile: .taskfiles/k8s.yml
+
 tasks:
   default:
     desc: List all tasks
@@ -19,12 +23,14 @@ tasks:
     cmds:
       - task: repo:ci
       - task: go:ci
+      - task: k8s:ci
 
   lint:
     desc: Static checks only
     cmds:
       - task: repo:ci
       - task: go:lint
+      - task: k8s:ci
 
   test:
     desc: Tests only
