@@ -95,7 +95,9 @@ type AuthentikOAuthProviderReconciler struct {
 //
 // Identity: the provider is tracked by status.providerPk once this resource
 // created it. A pre-existing provider with the same name is never taken
-// over -- that is reported as a Conflict (opt-in adoption is TASK-05).
+// over -- that is reported as a Conflict (opt-in adoption is TASK-05) --
+// except when status.pendingCreate shows this resource's own create was in
+// flight and the provider carries the client ID this resource sends.
 func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var p authentikiov1alpha1.AuthentikOAuthProvider
 	if err := r.Get(ctx, req.NamespacedName, &p); err != nil {
@@ -121,17 +123,26 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	orig := p.Status.DeepCopy()
-	result, syncErr := r.sync(ctx, &p)
-	if err := r.patchStatus(ctx, &p, orig); err != nil {
+	persist := func() error {
+		if err := r.patchStatus(ctx, &p, orig); err != nil {
+			return err
+		}
+		orig = p.Status.DeepCopy()
+		return nil
+	}
+	result, syncErr := r.sync(ctx, &p, persist)
+	if err := persist(); err != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
 	return result, syncErr
 }
 
 // sync does the work and records the outcome in p.Status. It returns an
-// error only for transient failures that should back off and retry.
+// error only for transient failures that should back off and retry. persist
+// writes the status immediately; it records the pending-create marker
+// before the create request is sent.
 func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider) (ctrl.Result, error) {
+	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
 
@@ -182,8 +193,10 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	if got == nil {
 		existing, err := c.FindOAuth2ProviderByName(ctx, want.Name)
 		switch {
-		case err == nil && p.Spec.ClientID == "" && existing.GetClientId() == derivedClientID(p):
-			// Ours: a previous create succeeded but its outcome was lost.
+		case err == nil && p.Status.PendingCreate == want.Name && existing.GetClientId() == expectedClientID(p):
+			// Ours: a previous create succeeded but its outcome was lost. The
+			// marker proves a create was sent; the client ID that it was this
+			// one that landed (a pinned ID could also be someone else's).
 			log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
 			p.Status.ProviderPK = existing.Pk
 			p.Status.ClientID = existing.GetClientId()
@@ -202,8 +215,15 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	}
 
 	if got == nil {
+		p.Status.PendingCreate = want.Name
+		if err := persist(); err != nil {
+			return ctrl.Result{}, err
+		}
 		created, err := c.CreateOAuth2Provider(ctx, *want)
 		if err != nil {
+			if code := authentik.StatusCode(err); code >= 400 && code < 500 {
+				p.Status.PendingCreate = "" // definitely not created
+			}
 			return r.writeError(p, err)
 		}
 		// Record ownership before anything else can fail, so the next
@@ -225,6 +245,7 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 		got = updated
 	}
 
+	p.Status.PendingCreate = ""
 	p.Status.ClientID = got.GetClientId()
 	p.Status.ObservedGeneration = p.Generation
 	r.setReady(p, metav1.ConditionTrue, reasonSynced,
