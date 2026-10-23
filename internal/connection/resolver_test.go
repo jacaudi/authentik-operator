@@ -133,12 +133,12 @@ func TestForRef(t *testing.T) {
 	}}
 	ctx := context.Background()
 
-	res, err := r.ForRef(ctx, ns, ref("ok"))
+	_, err := r.ForRef(ctx, ns, ref("ok"))
 	if err != nil {
 		t.Fatalf("ok: %v", err)
 	}
-	if res.Source != ns+"/ok" || seen[0].Token != "abc" {
-		t.Fatalf("ok: source %q token %q", res.Source, seen[0].Token)
+	if seen[0].Token != "abc" {
+		t.Fatalf("ok: token %q", seen[0].Token)
 	}
 
 	for name, wantReason := range map[string]string{
@@ -207,7 +207,7 @@ func TestForRefDefault(t *testing.T) {
 
 	r.Default = &authentik.Config{URL: "https://default.example.com", Token: "t"}
 	res, err := r.ForRef(ctx, ns, nil)
-	if err != nil || res.Source != "default" || res.Client.BaseURL() != "https://default.example.com" {
+	if err != nil || res.Client.BaseURL() != "https://default.example.com" {
 		t.Fatalf("default: %+v, %v", res, err)
 	}
 }

@@ -292,7 +292,7 @@ func TestFlowBySlug(t *testing.T) {
 
 func TestRateLimit(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) },
-		func(cfg *Config) { cfg.RPS = 20; cfg.Burst = 1 })
+		func(cfg *Config) { cfg.RPS = 20; cfg.burst = 1 })
 	start := time.Now()
 	for range 5 {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, c.BaseURL()+"/api/v3/x/", nil)

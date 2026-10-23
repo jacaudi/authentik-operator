@@ -30,9 +30,9 @@ a Secret.
       errors are retried only for idempotent methods (never replay a POST that may
       have applied); 429 is retried for any method. 30s per-attempt timeout.
 - [x] Lookups by stable identifier (`FlowBySlug`, `ScopeMappingByScopeName`,
-      `ScopeMappingByManaged`, `CertificateByName`, `PropertyMappingByName`,
-      `PropertyMappingByUUID`; exact match required, >1 match is `ErrAmbiguous`): flows by slug, scope mappings by `scope_name`
-      (or managed name), certificates by name, property mappings by UUID or name.
+      `CertificateByName`, `PropertyMappingByName`,
+      `PropertyMappingByUUID`; exact match required, >1 match is `ErrAmbiguous`): flows by slug, scope mappings by `scope_name`,
+      certificates by name, property mappings by UUID or name.
       Never by display name alone (renames orphan CRs -- upstream defect).
 
 ### Phase 2: connection model -- DECIDED: (b) with (a) as fallback (see scope.md)
