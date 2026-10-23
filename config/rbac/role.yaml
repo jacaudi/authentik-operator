@@ -19,7 +19,6 @@ rules:
   - create
   - delete
   - get
-  - patch
   - update
 - apiGroups:
   - authentik.io

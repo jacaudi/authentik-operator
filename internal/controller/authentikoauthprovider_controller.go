@@ -86,7 +86,7 @@ type AuthentikOAuthProviderReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikcredentialstemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
