@@ -1,7 +1,7 @@
 # TASK-10: Beyond parity -- SAML, groups/users, AuthentikDeployment
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: post-parity
 

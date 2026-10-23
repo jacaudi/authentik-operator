@@ -1,7 +1,7 @@
 # TASK-03: AuthentikApplication kind
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Completed (backchannelProviders deferred)
 - Milestone: parity-with-jeffresc-v0.2.5
 

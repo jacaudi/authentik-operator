@@ -1,7 +1,7 @@
 # TASK-07: Release pipeline -- multi-arch image and OCI Helm chart
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: parity-with-jeffresc-v0.2.5 (a cutover needs a release to pin)
 

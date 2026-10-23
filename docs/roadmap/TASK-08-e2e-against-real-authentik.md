@@ -1,7 +1,7 @@
 # TASK-08: End-to-end tests against a real Authentik
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: parity-with-jeffresc-v0.2.5
 

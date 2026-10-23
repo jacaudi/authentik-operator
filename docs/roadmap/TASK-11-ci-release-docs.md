@@ -1,7 +1,7 @@
 # TASK-11: CI, release pipeline and documentation site
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: In Progress
 - Milestone: parity-with-jeffresc-v0.2.5 (a cutover needs a pinnable release)
 - Supersedes the pipeline parts of TASK-07 (chart *values* stay in TASK-07,

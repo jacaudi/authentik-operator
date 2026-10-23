@@ -1,7 +1,7 @@
 # TASK-02: AuthentikOAuthProvider kind (full OAuth2/OIDC provider)
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Completed (e2e against real Authentik remains TASK-08)
 - Milestone: parity-with-jeffresc-v0.2.5
 

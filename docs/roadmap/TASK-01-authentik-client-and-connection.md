@@ -1,7 +1,7 @@
 # TASK-01: Authentik API client and connection model
 
 ## Ticket
-- Ticket: none (Navigator-only; project_management = none)
+- Ticket: none
 - Status: Completed
 - Milestone: parity-with-jeffresc-v0.2.5
 

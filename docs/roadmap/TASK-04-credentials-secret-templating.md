@@ -1,7 +1,7 @@
 # TASK-04: Credentials Secret with Go-template rendering
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Completed (per-namespace RBAC overlay, secret rotation and template webhook are follow-ups)
 - Milestone: parity-with-jeffresc-v0.2.5
 
