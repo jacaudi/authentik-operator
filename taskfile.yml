@@ -1,0 +1,71 @@
+# THE CI CONTRACT — generated per repo; `task ci` is what CI runs and what you run locally. Rationale: github-actions-align/templates/README.md#taskfiles
+version: '3'
+
+includes:
+  repo:
+    taskfile: .taskfiles/repo.yml
+
+  go:
+    taskfile: .taskfiles/go.yml
+
+tasks:
+  default:
+    desc: List all tasks
+    cmds:
+      - task --list
+
+  ci:
+    desc: Everything CI runs. Run this before pushing.
+    cmds:
+      - task: repo:ci
+      - task: go:ci
+
+  lint:
+    desc: Static checks only
+    cmds:
+      - task: repo:ci
+      - task: go:lint
+
+  test:
+    desc: Tests only
+    cmds:
+      - task: go:test
+
+  build:
+    desc: Build artefacts
+    cmds:
+      - task: go:build
+
+  # Runs locally: IMAGE=ghcr.io/jacaudi/authentik-operator@sha256:... task smoke
+  smoke:
+    desc: Boot the built image and assert the manager binary runs
+    requires:
+      vars: [IMAGE]
+    # Accepts BOTH `IMAGE=… task smoke` and `task smoke IMAGE=…`. Without this,
+    # the CLI form satisfies `requires` but leaves $IMAGE empty in the shell.
+    env:
+      IMAGE: '{{.IMAGE}}'
+    cmds:
+      - |
+        set -eu
+        echo "smoke testing ${IMAGE}"
+        # The manager needs a cluster before it serves anything, so booting it
+        # is the assertion: entrypoint, target platform and the distroless base
+        # are right when `--help` (Go's flag package exits 0) returns.
+        # ponytail: boot-only ceiling. The kind e2e suite (make test-e2e)
+        # rebuilds its own image and cannot take ${IMAGE} until it honours an
+        # IMG override; once it does, run it here.
+        docker run --rm "${IMAGE}" --help
+        echo "ok: image boots"
+
+  # Wraps the kubebuilder install-manifest generator; attach dist/install.yaml
+  # to the Release once ci-artifact is wired. Note: `kustomize edit set image`
+  # rewrites config/manager/kustomization.yaml, so the tree is dirty afterwards.
+  artifact:
+    desc: Generate dist/install.yaml to attach to the GitHub Release
+    requires:
+      vars: [VERSION]
+    env:
+      VERSION: '{{.VERSION}}'
+    cmds:
+      - make build-installer IMG=ghcr.io/jacaudi/authentik-operator:{{.VERSION}}
