@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      kubernetes:
+        patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      # The Authentik API client is pinned to the Authentik version the
+      # operator is tested against; review these bumps on their own.
+      authentik:
+        patterns: ["goauthentik.io/*"]
+      go-dependencies:
+        patterns: ["*"]
+        exclude-patterns: ["k8s.io/*", "sigs.k8s.io/*", "goauthentik.io/*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week before proposing a new release: limits exposure to a
+    # compromised version published upstream.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build(deps)"

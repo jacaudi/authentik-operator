@@ -5,4 +5,5 @@ resources:
 - v1alpha1_authentikuser.yaml
 - v1alpha1_authentikgroup.yaml
 - v1alpha1_authentikoauthprovider.yaml
+- v1alpha1_authentikcredentialstemplate.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

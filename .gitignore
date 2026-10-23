@@ -3,3 +3,16 @@ source/
 bin/
 cover.out
 docs/prompts/
+
+# Navigator context markers
+.context-markers/
+
+# Navigator temporary files
+.agent/.nav-temp/
+
+# Navigator per-session runtime state
+.agent/.nav-read-counter.json
+.agent/.nav-runtime-state.json
+.agent/.nav-runtime-state.lock
+.agent/.nav-workflow-state.json
+.agent/.features-shown-*
