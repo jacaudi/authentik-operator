@@ -36,23 +36,15 @@ const (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// referenceError is a spec reference (flow, scope, key, mapping) that does
-// not resolve to exactly one Authentik object. It is a user error: reported
-// in the Ready condition, retried on the slow interval.
-type referenceError struct {
-	reason string
-	err    error
-}
-
-func (e *referenceError) Error() string { return e.err.Error() }
-func (e *referenceError) Unwrap() error { return e.err }
-
-func asReferenceError(err error) error {
+// referenceError reports a spec reference (flow, scope, key, mapping) that
+// does not resolve to exactly one Authentik object under the matching
+// condition reason; any other error is returned as is.
+func referenceError(err error) error {
 	switch {
 	case errors.Is(err, authentik.ErrNotFound):
-		return &referenceError{reason: reasonReferenceNotFound, err: err}
+		return condErr(reasonReferenceNotFound, err)
 	case errors.Is(err, authentik.ErrAmbiguous):
-		return &referenceError{reason: reasonReferenceAmbiguous, err: err}
+		return condErr(reasonReferenceAmbiguous, err)
 	default:
 		return err
 	}
@@ -101,14 +93,14 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	flowPK := func(slug string) (string, error) {
 		f, err := c.FlowBySlug(ctx, slug)
 		if err != nil {
-			return "", asReferenceError(err)
+			return "", referenceError(err)
 		}
 		return f.Pk, nil
 	}
 	certPK := func(name string) (string, error) {
 		k, err := c.CertificateByName(ctx, name)
 		if err != nil {
-			return "", asReferenceError(err)
+			return "", referenceError(err)
 		}
 		return k.Pk, nil
 	}
@@ -143,31 +135,10 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 		req.SetAuthenticationFlowNil()
 	}
 
-	mappings := make([]string, 0, len(s.Scopes)+len(s.PropertyMappings))
-	for _, name := range s.Scopes {
-		m, err := c.ScopeMappingByScopeName(ctx, name)
-		if err != nil {
-			return nil, asReferenceError(err)
-		}
-		mappings = append(mappings, m.Pk)
+	req.PropertyMappings, err = propertyMappingPKs(ctx, c, &p.Spec)
+	if err != nil {
+		return nil, err
 	}
-	for _, ref := range s.PropertyMappings {
-		var (
-			m   *api.PropertyMapping
-			err error
-		)
-		if uuidPattern.MatchString(ref) {
-			m, err = c.PropertyMappingByUUID(ctx, ref)
-		} else {
-			m, err = c.PropertyMappingByName(ctx, ref)
-		}
-		if err != nil {
-			return nil, asReferenceError(fmt.Errorf("property mapping %q: %w", ref, err))
-		}
-		mappings = append(mappings, m.Pk)
-	}
-	slices.Sort(mappings)
-	req.PropertyMappings = slices.Compact(mappings)
 
 	req.SetClientType(api.ClientTypeEnum(s.ClientType))
 	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(s.GrantTypes))
@@ -203,6 +174,37 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	req.SetLogoutUri(s.LogoutURI)
 	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
 	return req, nil
+}
+
+// propertyMappingPKs resolves the scope mappings and property mappings the
+// spec names to a sorted, de-duplicated list of pks.
+func propertyMappingPKs(ctx context.Context, c *authentik.Client,
+	s *authentikiov1alpha1.AuthentikOAuthProviderSpec) ([]string, error) {
+	mappings := make([]string, 0, len(s.Scopes)+len(s.PropertyMappings))
+	for _, name := range s.Scopes {
+		m, err := c.ScopeMappingByScopeName(ctx, name)
+		if err != nil {
+			return nil, referenceError(err)
+		}
+		mappings = append(mappings, m.Pk)
+	}
+	for _, ref := range s.PropertyMappings {
+		var (
+			m   *api.PropertyMapping
+			err error
+		)
+		if uuidPattern.MatchString(ref) {
+			m, err = c.PropertyMappingByUUID(ctx, ref)
+		} else {
+			m, err = c.PropertyMappingByName(ctx, ref)
+		}
+		if err != nil {
+			return nil, referenceError(fmt.Errorf("property mapping %q: %w", ref, err))
+		}
+		mappings = append(mappings, m.Pk)
+	}
+	slices.Sort(mappings)
+	return slices.Compact(mappings), nil
 }
 
 // oauth2ProviderPatch compares desired with actual field by field and
