@@ -77,6 +77,7 @@ make test       # Run unit tests
 - Kubernetes YAML: one object per file, named `<kind>-<name>.yaml`.
 - Design decisions live in `docs/design/scope.md`; the roadmap and per-task notes in `docs/roadmap/TASK-*.md`.
 - Commit format and the ASCII-only rule are in `CONTRIBUTING.md`.
+- The `toolchain` line in `go.mod` is an exact pin bumped by hand: Dependabot does not update it (dependabot-core#13520). The nightly govulncheck job in `security.yml` fails on stdlib advisories; bump the pin when it does.
 
 ## CLI Commands Cheat Sheet
 
