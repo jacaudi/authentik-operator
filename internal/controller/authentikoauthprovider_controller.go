@@ -158,7 +158,7 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	if pk := p.Status.ProviderPK; pk != 0 {
 		got, err = c.GetOAuth2Provider(ctx, pk)
 		switch {
-		case err == nil && got.GetClientId() != p.Status.ClientID:
+		case err == nil && !ownsProvider(p, got):
 			// The pk now names a different provider: the connection was
 			// pointed at another Authentik, a database was restored, or the
 			// client ID was changed outside the operator. Never modify it.
@@ -304,7 +304,7 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 		return nil
 	case err != nil:
 		return err
-	case got.GetClientId() != p.Status.ClientID:
+	case !ownsProvider(p, got):
 		log.Info("OAuth2 provider pk no longer belongs to this resource; not deleting it", "pk", pk)
 		r.event(p, corev1.EventTypeWarning, "NotDeleted", "Delete",
 			"OAuth2 provider pk %d has a different client ID than this resource created; left in place", pk)

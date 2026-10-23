@@ -517,6 +517,46 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		Expect(fake.Provider(get(p).Status.ProviderPK)["client_id"]).To(Equal("grafana"))
 	})
 
+	// clientIDChangedStatusLost pins a new client ID, syncs it to Authentik,
+	// then rewinds status.clientId as if that status write had been lost.
+	clientIDChangedStatusLost := func(name string) (*authentikiov1alpha1.AuthentikOAuthProvider, int32) {
+		p := newProvider(name)
+		create(p)
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		pk := get(p).Status.ProviderPK
+
+		cur := get(p)
+		cur.Spec.ClientID = "grafana"
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		_, err = reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Provider(pk)["client_id"]).To(Equal("grafana"))
+
+		cur = get(p)
+		cur.Status.ClientID = "k8s-" + string(cur.UID)
+		Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		return p, pk
+	}
+
+	It("keeps ownership after a clientId change whose status write was lost", func() {
+		p, _ := clientIDChangedStatusLost("clientid-change")
+
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(p).Status.ClientID).To(Equal("grafana"))
+	})
+
+	It("still deletes its provider after a clientId change whose status write was lost", func() {
+		p, pk := clientIDChangedStatusLost("clientid-change-delete")
+
+		Expect(k8sClient.Delete(ctx, get(p))).To(Succeed())
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Provider(pk)).To(BeNil())
+	})
+
 	It("reports a rename onto an existing provider name as Conflict", func() {
 		fake.SeedProvider("occupied")
 		p := newProvider("rename-collision")

@@ -74,6 +74,15 @@ func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	return derivedClientID(p)
 }
 
+// ownsProvider reports whether got is the provider this resource created:
+// its client ID is the one recorded in status, or the one the spec asks for.
+// The second covers a spec.clientId change whose PATCH was applied but whose
+// status write was lost; in steady state the two are the same ID.
+func ownsProvider(p *authentikiov1alpha1.AuthentikOAuthProvider, got *api.OAuth2Provider) bool {
+	id := got.GetClientId()
+	return id == p.Status.ClientID || id == expectedClientID(p)
+}
+
 // providerName is the provider's name in Authentik.
 func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	if p.Spec.Name != "" {
