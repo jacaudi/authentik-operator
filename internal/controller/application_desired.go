@@ -56,52 +56,20 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 // their names. The slug is immutable and never patched. Every managed field
 // has a default, so removing it from the spec resets it.
 func applicationPatch(want *api.ApplicationRequest, got *api.Application) (api.PatchedApplicationRequest, []string) {
-	var (
-		patch   api.PatchedApplicationRequest
-		changed []string
-	)
-	mark := func(f string) { changed = append(changed, f) }
-
-	if want.Name != got.Name {
-		patch.SetName(want.Name)
-		mark("name")
-	}
-	if int32OrZero(want.Provider.Get()) != int32OrZero(got.Provider.Get()) {
-		patch.Provider = want.Provider
-		mark("provider")
-	}
-	if want.GetGroup() != got.GetGroup() {
-		patch.SetGroup(want.GetGroup())
-		mark("group")
-	}
-	if want.GetPolicyEngineMode() != got.GetPolicyEngineMode() {
-		patch.SetPolicyEngineMode(want.GetPolicyEngineMode())
-		mark("policyEngineMode")
-	}
-	if want.GetMetaLaunchUrl() != got.GetMetaLaunchUrl() {
-		patch.SetMetaLaunchUrl(want.GetMetaLaunchUrl())
-		mark("metaLaunchUrl")
-	}
-	if want.GetMetaDescription() != got.GetMetaDescription() {
-		patch.SetMetaDescription(want.GetMetaDescription())
-		mark("metaDescription")
-	}
-	if want.GetMetaPublisher() != got.GetMetaPublisher() {
-		patch.SetMetaPublisher(want.GetMetaPublisher())
-		mark("metaPublisher")
-	}
-	if want.GetMetaIcon() != got.GetMetaIcon() {
-		patch.SetMetaIcon(want.GetMetaIcon())
-		mark("metaIcon")
-	}
-	if want.GetOpenInNewTab() != got.GetOpenInNewTab() {
-		patch.SetOpenInNewTab(want.GetOpenInNewTab())
-		mark("openInNewTab")
-	}
-	if want.GetMetaHide() != got.GetMetaHide() {
-		patch.SetMetaHide(want.GetMetaHide())
-		mark("metaHide")
-	}
+	var patch api.PatchedApplicationRequest
+	changed := changedFields([]managedField{
+		diff("name", want.Name, got.Name, patch.SetName),
+		{"provider", int32OrZero(want.Provider.Get()) == int32OrZero(got.Provider.Get()),
+			func() { patch.Provider = want.Provider }},
+		diff("group", want.GetGroup(), got.GetGroup(), patch.SetGroup),
+		diff("policyEngineMode", want.GetPolicyEngineMode(), got.GetPolicyEngineMode(), patch.SetPolicyEngineMode),
+		diff("metaLaunchUrl", want.GetMetaLaunchUrl(), got.GetMetaLaunchUrl(), patch.SetMetaLaunchUrl),
+		diff("metaDescription", want.GetMetaDescription(), got.GetMetaDescription(), patch.SetMetaDescription),
+		diff("metaPublisher", want.GetMetaPublisher(), got.GetMetaPublisher(), patch.SetMetaPublisher),
+		diff("metaIcon", want.GetMetaIcon(), got.GetMetaIcon(), patch.SetMetaIcon),
+		diff("openInNewTab", want.GetOpenInNewTab(), got.GetOpenInNewTab(), patch.SetOpenInNewTab),
+		diff("metaHide", want.GetMetaHide(), got.GetMetaHide(), patch.SetMetaHide),
+	})
 	return patch, changed
 }
 

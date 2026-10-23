@@ -52,6 +52,32 @@ func connectionGone(err error) bool {
 	return false
 }
 
+// managedField is one field a patch builder compares. apply copies the
+// desired value into the patch; it runs only when same is false.
+type managedField struct {
+	name  string
+	same  bool
+	apply func()
+}
+
+// diff is the managedField for a plain comparable value with a setter.
+// Fields that need a bespoke comparison build the struct directly.
+func diff[T comparable](name string, want, got T, set func(T)) managedField {
+	return managedField{name: name, same: want == got, apply: func() { set(want) }}
+}
+
+// changedFields applies every field that differs and returns their names.
+func changedFields(fields []managedField) []string {
+	var changed []string
+	for _, f := range fields {
+		if !f.same {
+			f.apply()
+			changed = append(changed, f.name)
+		}
+	}
+	return changed
+}
+
 // sameAuthentikRef reports whether two objects use the same connection.
 func sameAuthentikRef(a, b *authentikiov1alpha1.AuthentikRef) bool {
 	if a == nil || b == nil {

@@ -212,92 +212,38 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 // resets it.
 func oauth2ProviderPatch(want *api.OAuth2ProviderRequest,
 	got *api.OAuth2Provider) (api.PatchedOAuth2ProviderRequest, []string) {
-	var (
-		patch   api.PatchedOAuth2ProviderRequest
-		changed []string
-	)
-	mark := func(field string) { changed = append(changed, field) }
-
-	if want.Name != got.Name {
-		patch.SetName(want.Name)
-		mark("name")
-	}
-	if want.AuthorizationFlow != got.AuthorizationFlow {
-		patch.SetAuthorizationFlow(want.AuthorizationFlow)
-		mark("authorizationFlow")
-	}
-	if want.InvalidationFlow != got.InvalidationFlow {
-		patch.SetInvalidationFlow(want.InvalidationFlow)
-		mark("invalidationFlow")
-	}
-	if nullable(want.AuthenticationFlow.Get()) != nullable(got.AuthenticationFlow.Get()) {
-		patch.AuthenticationFlow = want.AuthenticationFlow
-		mark("authenticationFlow")
-	}
-	if !sameSet(want.PropertyMappings, got.PropertyMappings) {
-		patch.PropertyMappings = want.PropertyMappings
-		mark("propertyMappings")
-	}
-	if want.GetClientType() != got.GetClientType() {
-		patch.SetClientType(want.GetClientType())
-		mark("clientType")
-	}
-	if !sameSet(want.GrantTypes, got.GrantTypes) {
-		patch.GrantTypes = want.GrantTypes
-		mark("grantTypes")
-	}
-	if want.GetClientId() != got.GetClientId() {
-		patch.SetClientId(want.GetClientId())
-		mark("clientId")
-	}
-	if want.GetAccessCodeValidity() != got.GetAccessCodeValidity() {
-		patch.SetAccessCodeValidity(want.GetAccessCodeValidity())
-		mark("accessCodeValidity")
-	}
-	if want.GetAccessTokenValidity() != got.GetAccessTokenValidity() {
-		patch.SetAccessTokenValidity(want.GetAccessTokenValidity())
-		mark("accessTokenValidity")
-	}
-	if want.GetRefreshTokenValidity() != got.GetRefreshTokenValidity() {
-		patch.SetRefreshTokenValidity(want.GetRefreshTokenValidity())
-		mark("refreshTokenValidity")
-	}
-	if want.GetRefreshTokenThreshold() != got.GetRefreshTokenThreshold() {
-		patch.SetRefreshTokenThreshold(want.GetRefreshTokenThreshold())
-		mark("refreshTokenThreshold")
-	}
-	if want.GetIncludeClaimsInIdToken() != got.GetIncludeClaimsInIdToken() {
-		patch.SetIncludeClaimsInIdToken(want.GetIncludeClaimsInIdToken())
-		mark("includeClaimsInIdToken")
-	}
-	if nullable(want.SigningKey.Get()) != nullable(got.SigningKey.Get()) {
-		patch.SigningKey = want.SigningKey
-		mark("signingKey")
-	}
-	if nullable(want.EncryptionKey.Get()) != nullable(got.EncryptionKey.Get()) {
-		patch.EncryptionKey = want.EncryptionKey
-		mark("encryptionKey")
-	}
-	if !sameRedirects(want.RedirectUris, got.RedirectUris) {
-		patch.RedirectUris = want.RedirectUris
-		mark("redirectUris")
-	}
-	if want.GetLogoutUri() != got.GetLogoutUri() {
-		patch.SetLogoutUri(want.GetLogoutUri())
-		mark("logoutUri")
-	}
-	if want.GetLogoutMethod() != got.GetLogoutMethod() {
-		patch.SetLogoutMethod(want.GetLogoutMethod())
-		mark("logoutMethod")
-	}
-	if want.GetSubMode() != got.GetSubMode() {
-		patch.SetSubMode(want.GetSubMode())
-		mark("subMode")
-	}
-	if want.GetIssuerMode() != got.GetIssuerMode() {
-		patch.SetIssuerMode(want.GetIssuerMode())
-		mark("issuerMode")
-	}
+	var patch api.PatchedOAuth2ProviderRequest
+	changed := changedFields([]managedField{
+		diff("name", want.Name, got.Name, patch.SetName),
+		diff("authorizationFlow", want.AuthorizationFlow, got.AuthorizationFlow, patch.SetAuthorizationFlow),
+		diff("invalidationFlow", want.InvalidationFlow, got.InvalidationFlow, patch.SetInvalidationFlow),
+		{"authenticationFlow", nullable(want.AuthenticationFlow.Get()) == nullable(got.AuthenticationFlow.Get()),
+			func() { patch.AuthenticationFlow = want.AuthenticationFlow }},
+		{"propertyMappings", sameSet(want.PropertyMappings, got.PropertyMappings),
+			func() { patch.PropertyMappings = want.PropertyMappings }},
+		diff("clientType", want.GetClientType(), got.GetClientType(), patch.SetClientType),
+		{"grantTypes", sameSet(want.GrantTypes, got.GrantTypes), func() { patch.GrantTypes = want.GrantTypes }},
+		diff("clientId", want.GetClientId(), got.GetClientId(), patch.SetClientId),
+		diff("accessCodeValidity", want.GetAccessCodeValidity(), got.GetAccessCodeValidity(), patch.SetAccessCodeValidity),
+		diff("accessTokenValidity", want.GetAccessTokenValidity(), got.GetAccessTokenValidity(),
+			patch.SetAccessTokenValidity),
+		diff("refreshTokenValidity", want.GetRefreshTokenValidity(), got.GetRefreshTokenValidity(),
+			patch.SetRefreshTokenValidity),
+		diff("refreshTokenThreshold", want.GetRefreshTokenThreshold(), got.GetRefreshTokenThreshold(),
+			patch.SetRefreshTokenThreshold),
+		diff("includeClaimsInIdToken", want.GetIncludeClaimsInIdToken(), got.GetIncludeClaimsInIdToken(),
+			patch.SetIncludeClaimsInIdToken),
+		{"signingKey", nullable(want.SigningKey.Get()) == nullable(got.SigningKey.Get()),
+			func() { patch.SigningKey = want.SigningKey }},
+		{"encryptionKey", nullable(want.EncryptionKey.Get()) == nullable(got.EncryptionKey.Get()),
+			func() { patch.EncryptionKey = want.EncryptionKey }},
+		{"redirectUris", sameRedirects(want.RedirectUris, got.RedirectUris),
+			func() { patch.RedirectUris = want.RedirectUris }},
+		diff("logoutUri", want.GetLogoutUri(), got.GetLogoutUri(), patch.SetLogoutUri),
+		diff("logoutMethod", want.GetLogoutMethod(), got.GetLogoutMethod(), patch.SetLogoutMethod),
+		diff("subMode", want.GetSubMode(), got.GetSubMode(), patch.SetSubMode),
+		diff("issuerMode", want.GetIssuerMode(), got.GetIssuerMode(), patch.SetIssuerMode),
+	})
 	return patch, changed
 }
 
