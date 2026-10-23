@@ -5,11 +5,11 @@ go 1.26.0
 toolchain go1.26.9
 
 require (
-	github.com/onsi/ginkgo/v2 v2.27.4
-	github.com/onsi/gomega v1.39.0
-	go.yaml.in/yaml/v3 v3.0.4
+	github.com/onsi/ginkgo/v2 v2.33.1
+	github.com/onsi/gomega v1.40.0
+	go.yaml.in/yaml/v3 v3.0.5
 	goauthentik.io/api/v3 v3.2026080.3
-	golang.org/x/time v0.15.0
+	golang.org/x/time v0.16.0
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
@@ -51,7 +51,7 @@ require (
 	github.com/google/cel-go v0.29.2 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect
+	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
