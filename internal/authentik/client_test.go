@@ -82,6 +82,7 @@ func flow(slug string) map[string]any {
 }
 
 func TestNormalizeURL(t *testing.T) {
+	t.Parallel()
 	const (
 		base    = "https://ak.example.com"
 		subpath = "http://ak.svc:9000/authentik"
@@ -108,12 +109,14 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestNewRequiresToken(t *testing.T) {
+	t.Parallel()
 	if _, err := New(Config{URL: "https://authentik.example.com"}); err == nil {
 		t.Fatal("expected error without token")
 	}
 }
 
 func TestPingSendsBearerToken(t *testing.T) {
+	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v3/core/users/me/" {
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -141,6 +144,7 @@ func TestPingSendsBearerToken(t *testing.T) {
 }
 
 func TestListAllFollowsPages(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -170,6 +174,7 @@ func TestListAllFollowsPages(t *testing.T) {
 }
 
 func TestErrorClassification(t *testing.T) {
+	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v3/propertymappings/all/missing/":
@@ -198,6 +203,7 @@ func TestErrorClassification(t *testing.T) {
 }
 
 func TestRetry(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		method    string
@@ -249,23 +255,28 @@ func TestRetry(t *testing.T) {
 }
 
 func TestRetryHonoursContext(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
 		w.Header().Set("Retry-After", "5")
 		w.WriteHeader(503)
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
-	start := time.Now()
 	_, err := c.PropertyMappingByUUID(ctx, "x")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want deadline exceeded", err)
 	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatal("retry ignored context cancellation")
+	// The deadline expires during the 5s Retry-After wait, so a transport
+	// that honours it never sends the second attempt. No wall clock needed.
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("got %d attempts, want 1: retry ignored context cancellation", n)
 	}
 }
 
 func TestFlowBySlug(t *testing.T) {
+	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("slug") {
 		case "login":
@@ -291,6 +302,7 @@ func TestFlowBySlug(t *testing.T) {
 }
 
 func TestRateLimit(t *testing.T) {
+	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) },
 		func(cfg *Config) { cfg.RPS = 20; cfg.burst = 1 })
 	start := time.Now()
@@ -309,6 +321,7 @@ func TestRateLimit(t *testing.T) {
 }
 
 func TestRedirectsNotFollowed(t *testing.T) {
+	t.Parallel()
 	var leaked atomic.Bool
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
@@ -330,6 +343,7 @@ func TestRedirectsNotFollowed(t *testing.T) {
 }
 
 func TestErrorBodyOnlyFor400(t *testing.T) {
+	t.Parallel()
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("internal secret page"))
@@ -341,6 +355,7 @@ func TestErrorBodyOnlyFor400(t *testing.T) {
 }
 
 func TestConflictVsValidation(t *testing.T) {
+	t.Parallel()
 	dup := &APIError{StatusCode: 400, Body: `{"slug":["flow with this slug already exists."]}`}
 	bad := &APIError{StatusCode: 400, Body: `{"name":["This field is required."]}`}
 	if !IsConflict(dup) || IsValidation(dup) {
@@ -355,27 +370,39 @@ func TestConflictVsValidation(t *testing.T) {
 }
 
 func TestConfigRedactsToken(t *testing.T) {
+	t.Parallel()
 	cfg := Config{URL: "https://ak", Token: testToken}
 	// The verbs are the point: every fmt rendering of Config must redact.
 	//nolint:gocritic // redundantSprint
-	for _, s := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg),
-		fmt.Sprint(&cfg)} {
-		if strings.Contains(s, testToken) {
-			t.Fatalf("token leaked: %s", s)
-		}
+	renderings := map[string]string{
+		"%v": fmt.Sprintf("%v", cfg), "%+v": fmt.Sprintf("%+v", cfg), "%#v": fmt.Sprintf("%#v", cfg),
+		"Sprint(&cfg)": fmt.Sprint(&cfg),
+	}
+	for name, s := range renderings {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if strings.Contains(s, testToken) {
+				t.Fatalf("token leaked: %s", s)
+			}
+		})
 	}
 }
 
 func TestBackoffLargeAttemptDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	rt := &retryTransport{}
 	for _, a := range []int{0, 5, 35, 64, 1000} {
-		if d := rt.backoff(a, nil); d <= 0 || d > maxBackoff {
-			t.Fatalf("attempt %d: backoff %v", a, d)
-		}
+		t.Run(strconv.Itoa(a), func(t *testing.T) {
+			t.Parallel()
+			if d := rt.backoff(a, nil); d <= 0 || d > maxBackoff {
+				t.Fatalf("attempt %d: backoff %v", a, d)
+			}
+		})
 	}
 }
 
 func TestListAllStopsOnNonAdvancingNext(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	items, err := ListAll(func(page int32) ([]int, api.Pagination, *http.Response, error) {
 		calls++
@@ -387,6 +414,7 @@ func TestListAllStopsOnNonAdvancingNext(t *testing.T) {
 }
 
 func TestTLS(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) }))
 	t.Cleanup(srv.Close)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
@@ -404,13 +432,15 @@ func TestTLS(t *testing.T) {
 		"ca bundle": {URL: srv.URL, Token: testToken, CABundle: caPEM},
 		"insecure":  {URL: srv.URL, Token: testToken, InsecureSkipVerify: true},
 	} {
-		c, err := New(cfg)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if _, err := c.PropertyMappingByUUID(ctx, "x"); !IsNotFound(err) {
-			t.Fatalf("%s: expected 404 over verified TLS, got %v", name, err)
-		}
+		t.Run(name, func(t *testing.T) {
+			c, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.PropertyMappingByUUID(t.Context(), "x"); !IsNotFound(err) {
+				t.Fatalf("expected 404 over verified TLS, got %v", err)
+			}
+		})
 	}
 
 	if _, err := New(Config{URL: srv.URL, Token: testToken, CABundle: []byte("not pem")}); err == nil {

@@ -93,6 +93,7 @@ func ref(name string) *authentikiov1alpha1.AuthentikRef {
 }
 
 func TestForRef(t *testing.T) {
+	t.Parallel()
 	scheme := newScheme(t)
 	objs := make([]client.Object, 0, 9)
 	objs = append(objs,
@@ -165,6 +166,7 @@ func TestForRef(t *testing.T) {
 }
 
 func TestForbiddenAndCAKeyDefault(t *testing.T) {
+	t.Parallel()
 	scheme := newScheme(t)
 	withCA := conn("tok")
 	withCA.CABundle = &authentikiov1alpha1.CABundleSource{
@@ -198,6 +200,7 @@ func TestForbiddenAndCAKeyDefault(t *testing.T) {
 }
 
 func TestForRefDefault(t *testing.T) {
+	t.Parallel()
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	ctx := t.Context()
 
@@ -214,6 +217,7 @@ func TestForRefDefault(t *testing.T) {
 }
 
 func TestClientCacheRebuildsOnRotation(t *testing.T) {
+	t.Parallel()
 	tok := secret("tok", map[string]string{tokenKey: "one"})
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(deployment("d", conn("tok")), tok).Build()
 	builds := 0
@@ -245,6 +249,7 @@ func TestClientCacheRebuildsOnRotation(t *testing.T) {
 }
 
 func TestInvalidConfigReason(t *testing.T) {
+	t.Parallel()
 	bad := conn("tok")
 	bad.URL = "ftp://nope"
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
@@ -261,6 +266,7 @@ func TestInvalidConfigReason(t *testing.T) {
 }
 
 func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{}
 	getenv := func(k string) string { return env[k] }
 
@@ -298,6 +304,7 @@ func TestDefaultConfig(t *testing.T) {
 const ssoURL = "https://sso.example.com"
 
 func TestExternalURL(t *testing.T) {
+	t.Parallel()
 	ext := conn("tok")
 	ext.ExternalURL = ssoURL + "/"
 	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
@@ -324,6 +331,7 @@ func TestExternalURL(t *testing.T) {
 }
 
 func TestDefaultConfigExternalURL(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{EnvToken: "t"}
 	getenv := func(k string) string { return env[k] }
 	if _, err := DefaultConfig(DefaultOptions{URL: defaultAKURL, ExternalURL: ssoURL}, getenv); err != nil {

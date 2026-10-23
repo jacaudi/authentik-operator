@@ -32,6 +32,7 @@ var vars = Vars{
 }
 
 func TestDefaultKeys(t *testing.T) {
+	t.Parallel()
 	got, err := Render("", vars)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +70,7 @@ var allowedTemplates = map[string]struct {
 }
 
 func TestAllowedTemplates(t *testing.T) {
+	t.Parallel()
 	for name, tc := range allowedTemplates {
 		got, err := Render(tc.tmpl, vars)
 		if err != nil {
@@ -108,22 +110,27 @@ func manyDefines() string {
 }
 
 func TestUnsafeTemplatesRejected(t *testing.T) {
+	t.Parallel()
 	for name, tmpl := range unsafeTemplates {
-		done := make(chan error, 1)
-		go func() { _, err := Render(tmpl, vars); done <- err }()
-		select {
-		case err := <-done:
-			if !IsTemplateError(err) {
-				t.Errorf("%s: err = %v, want TemplateError", name, err)
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			done := make(chan error, 1)
+			go func() { _, err := Render(tmpl, vars); done <- err }()
+			select {
+			case err := <-done:
+				if !IsTemplateError(err) {
+					t.Errorf("err = %v, want TemplateError", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("render did not return")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%s: render did not return", name)
-		}
+		})
 	}
 }
 
 // The render must not become an oracle on the client secret.
 func TestClientSecretCannotBeTested(t *testing.T) {
+	t.Parallel()
 	for _, tmpl := range []string{
 		"{{if lt .ClientSecret \"m\"}}{{.Missing}}{{end}}A: b",
 		"A: {{eq .ClientSecret \"x\"}}",
@@ -152,6 +159,7 @@ var outputErrorTemplates = map[string]string{
 }
 
 func TestOutputErrors(t *testing.T) {
+	t.Parallel()
 	for name, tmpl := range outputErrorTemplates {
 		_, err := Render(tmpl, vars)
 		if !IsTemplateError(err) {
@@ -161,6 +169,7 @@ func TestOutputErrors(t *testing.T) {
 }
 
 func TestErrorsNeverContainTheSecret(t *testing.T) {
+	t.Parallel()
 	for _, tmpl := range []string{
 		"A: {{ .ClientSecret }}\n  : : [\n",                // YAML parse error on the secret's line
 		"\"{{ .ClientSecret }} x\": y\n",                   // invalid key containing the secret
@@ -175,38 +184,47 @@ func TestErrorsNeverContainTheSecret(t *testing.T) {
 
 // A value containing a newline cannot add keys when quoted with printf %q.
 func TestQuotedValuesCannotInjectKeys(t *testing.T) {
+	t.Parallel()
 	v := vars
 	v.Name = `x: y, INJECTED: "z" #c`
 	for _, tmpl := range []string{"NAME: {{ printf \"%q\" .Name }}\n", "{NAME: {{ printf \"%q\" .Name }}}"} {
-		got, err := Render(tmpl, v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 1 || string(got["NAME"]) != v.Name {
-			t.Fatalf("%s: got %q", tmpl, got)
-		}
+		t.Run(tmpl, func(t *testing.T) {
+			t.Parallel()
+			got, err := Render(tmpl, v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || string(got["NAME"]) != v.Name {
+				t.Fatalf("got %q", got)
+			}
+		})
 	}
 }
 
 func TestControlCharactersRejected(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(*Vars){
 		"newline in client ID": func(v *Vars) { v.ClientID = "x\nINJECTED: y" },
 		"newline in name":      func(v *Vars) { v.Name = "x\nINJECTED: y" },
 		"DEL in secret":        func(v *Vars) { v.ClientSecret = clientSecret + "\x7f" },
 	} {
-		v := vars
-		mutate(&v)
-		_, err := Render("ID: {{ .ClientID }}\n", v)
-		if !IsTemplateError(err) || !strings.Contains(err.Error(), "control characters") {
-			t.Fatalf("%s: got %v", name, err)
-		}
-		if strings.Contains(err.Error(), "INJECTED") || strings.Contains(err.Error(), clientSecret) {
-			t.Fatalf("%s: error echoes the value: %v", name, err)
-		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			v := vars
+			mutate(&v)
+			_, err := Render("ID: {{ .ClientID }}\n", v)
+			if !IsTemplateError(err) || !strings.Contains(err.Error(), "control characters") {
+				t.Fatalf("got %v", err)
+			}
+			if strings.Contains(err.Error(), "INJECTED") || strings.Contains(err.Error(), clientSecret) {
+				t.Fatalf("error echoes the value: %v", err)
+			}
+		})
 	}
 }
 
 func TestCheck(t *testing.T) {
+	t.Parallel()
 	for tmpl, wantErr := range map[string]string{
 		"":                                    "",
 		"ID: {{ .ClientID }}":                 "",
@@ -227,6 +245,7 @@ func TestCheck(t *testing.T) {
 }
 
 func TestRewrite(t *testing.T) {
+	t.Parallel()
 	in := "http://authentik-server.authentik.svc.cluster.local"
 	ext := "https://sso.example.com"
 	for u, want := range map[string]string{

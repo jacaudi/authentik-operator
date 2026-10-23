@@ -185,6 +185,10 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		Expect(cond.Reason).To(Equal("ManagedModeNotImplemented"))
 	})
 
+	It("defaults the ping timeout to 15s", func() {
+		Expect((&AuthentikDeploymentReconciler{}).pingTimeout()).To(Equal(15 * time.Second))
+	})
+
 	It("reports ConnectionFailed within the ping timeout for an unresponsive Authentik", func() {
 		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
@@ -194,10 +198,12 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 		d := connectOnly("connect-hang", "ak-token-hang")
 		d.Spec.Connection.URL = hang.URL
 		create(d)
+		reconciler.PingTimeout = 200 * time.Millisecond
 
 		start := time.Now()
 		_, cond, _ := reconcileAndGetCondition("connect-hang")
-		Expect(time.Since(start)).To(BeNumerically("<", pingTimeout+5*time.Second))
+		// Well under the 15s default: the configured timeout is what bounds the ping.
+		Expect(time.Since(start)).To(BeNumerically("<", 5*time.Second))
 		Expect(cond.Reason).To(Equal("ConnectionFailed"))
 	})
 
