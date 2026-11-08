@@ -52,6 +52,35 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 	return req
 }
 
+// adoptionViewApplication narrows want, the full desired state, to what
+// adoption may write: the fields the spec sets. Optional fields the spec
+// leaves empty (group, the meta* strings) and the provider link when
+// providerRef is unset keep the adopted application's own value. Fields
+// with a CRD default (policyEngineMode, openInNewTab, metaHide) are always
+// written; see APIAdoptionSpec.
+func adoptionViewApplication(a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest,
+	got *api.Application) {
+	s := a.Spec
+	if s.ProviderRef == nil {
+		want.Provider = got.Provider
+	}
+	if s.Group == "" {
+		want.SetGroup(got.GetGroup())
+	}
+	if s.MetaLaunchURL == "" {
+		want.SetMetaLaunchUrl(got.GetMetaLaunchUrl())
+	}
+	if s.MetaDescription == "" {
+		want.SetMetaDescription(got.GetMetaDescription())
+	}
+	if s.MetaPublisher == "" {
+		want.SetMetaPublisher(got.GetMetaPublisher())
+	}
+	if s.MetaIcon == "" {
+		want.SetMetaIcon(got.GetMetaIcon())
+	}
+}
+
 // applicationPatch returns a patch with only the fields that differ, plus
 // their names. The slug is immutable and never patched. Every managed field
 // has a default, so removing it from the spec resets it.
