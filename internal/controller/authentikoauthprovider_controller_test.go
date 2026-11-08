@@ -127,7 +127,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			authentikiov1alpha1.OAuthGrantType("refresh_token")))
 		Expect(s.Scopes).To(ConsistOf("openid", "profile", "email"))
 		Expect(s.ClientType).To(BeEquivalentTo("confidential"))
-		Expect(s.SigningKey).To(Equal(fakeauthentik.SigningKeyName))
+		Expect(s.SigningKey).To(BeEmpty(), "signingKey has no schema default; the controller picks one on create")
 		Expect(s.RedirectURIs[0].MatchingMode).To(BeEquivalentTo("strict"))
 		Expect(*s.IncludeClaimsInIDToken).To(BeTrue())
 	})

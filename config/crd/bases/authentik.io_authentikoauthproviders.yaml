@@ -83,9 +83,22 @@ spec:
                   them. The defaulted fields adoption will write are: scopes, clientType,
                   grantTypes, accessCodeValidity, accessTokenValidity,
                   refreshTokenValidity, refreshTokenThreshold, subMode,
-                  includeClaimsInIdToken, issuerMode, signingKey, logoutMethod, and the
+                  includeClaimsInIdToken, issuerMode, logoutMethod, and the
                   matchingMode and type of each redirect URI.
                 properties:
+                  createIfMissing:
+                    default: false
+                    description: |-
+                      createIfMissing lets a resource with adoption enabled create the
+                      object when none is found to adopt. When false (the default) a miss is
+                      reported as AdoptionTargetNotFound and nothing is written, so a
+                      migrating user can never mint new client credentials by a typo in the
+                      name, slug or pk. A disaster-recovery re-bootstrap (the Authentik
+                      database was lost, nothing exists to adopt) sets it to true
+                      deliberately. With adoption disabled the resource creates as usual,
+                      and a resource that created its object itself recreates it if it
+                      vanishes, whatever this says.
+                    type: boolean
                   dryRun:
                     default: false
                     description: |-
@@ -93,7 +106,9 @@ spec:
                       (reason AdoptionDryRun) and an event, which fields adoption would
                       change. Nothing is written to Authentik, and no credentials Secret is
                       rendered. Set it back to false to adopt for real. Only meaningful
-                      with enabled true.
+                      with enabled true. dryRun gates only the initial takeover (and the
+                      decision to create when createIfMissing is set): once the object is
+                      adopted, spec edits are applied live whatever dryRun says.
                     type: boolean
                   enabled:
                     default: false
@@ -106,9 +121,9 @@ spec:
                       match selects the existing provider by name or pk. When unset, the
                       provider named like this resource's desired name (spec.name, else
                       metadata.name) is the candidate and, if there is none, a new provider
-                      is created. When set, the match must exist: a missing provider is an
-                      error (reason AdoptionTargetNotFound), never a create, so a migration
-                      cannot silently mint new credentials.
+                      is created only if createIfMissing is set. A missing match is otherwise
+                      an error (reason AdoptionTargetNotFound), never a create, so a
+                      migration cannot silently mint new credentials.
                     properties:
                       name:
                         description: name is the provider's exact name in Authentik.
@@ -343,9 +358,12 @@ spec:
                     type: object
                 type: object
               signingKey:
-                default: authentik Self-signed Certificate
-                description: signingKey is the name of the certificate-key pair used
-                  to sign tokens.
+                description: |-
+                  signingKey is the name of the certificate-key pair used to sign tokens.
+                  Not defaulted in the schema, so an existing provider can be adopted
+                  without rewriting its key: when empty, a NEW provider is created with
+                  "authentik Self-signed Certificate", and an ADOPTED provider keeps
+                  whatever it has (including no signing key).
                 minLength: 1
                 type: string
               subMode:

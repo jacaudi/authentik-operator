@@ -51,17 +51,17 @@ const (
 // EffectiveDeletionPolicy resolves an optional spec.deletionPolicy: an
 // explicit value wins; otherwise Delete for a Created object and Retain for
 // an Adopted one (release, not delete -- the same contract as
-// AuthentikDeployment adoption). An undecided provenance with a recorded
-// object is a resource from before provenance existed, which could only have
-// created it, so it counts as Created.
+// AuthentikDeployment adoption). An undecided provenance also resolves to
+// Retain: if the operator cannot say it created the object, it must not
+// delete it.
 func EffectiveDeletionPolicy(spec DeletionPolicy, prov Provenance) DeletionPolicy {
 	switch {
 	case spec != "":
 		return spec
-	case prov == ProvenanceAdopted:
-		return DeletionPolicyRetain
-	default:
+	case prov == ProvenanceCreated:
 		return DeletionPolicyDelete
+	default:
+		return DeletionPolicyRetain
 	}
 }
 
@@ -93,10 +93,25 @@ type APIAdoptionSpec struct {
 	// (reason AdoptionDryRun) and an event, which fields adoption would
 	// change. Nothing is written to Authentik, and no credentials Secret is
 	// rendered. Set it back to false to adopt for real. Only meaningful
-	// with enabled true.
+	// with enabled true. dryRun gates only the initial takeover (and the
+	// decision to create when createIfMissing is set): once the object is
+	// adopted, spec edits are applied live whatever dryRun says.
 	// +kubebuilder:default=false
 	// +optional
 	DryRun bool `json:"dryRun,omitempty"`
+
+	// createIfMissing lets a resource with adoption enabled create the
+	// object when none is found to adopt. When false (the default) a miss is
+	// reported as AdoptionTargetNotFound and nothing is written, so a
+	// migrating user can never mint new client credentials by a typo in the
+	// name, slug or pk. A disaster-recovery re-bootstrap (the Authentik
+	// database was lost, nothing exists to adopt) sets it to true
+	// deliberately. With adoption disabled the resource creates as usual,
+	// and a resource that created its object itself recreates it if it
+	// vanishes, whatever this says.
+	// +kubebuilder:default=false
+	// +optional
+	CreateIfMissing bool `json:"createIfMissing,omitempty"`
 }
 
 // ProviderAdoptionSpec is APIAdoptionSpec plus the means to pick which
@@ -107,9 +122,9 @@ type ProviderAdoptionSpec struct {
 	// match selects the existing provider by name or pk. When unset, the
 	// provider named like this resource's desired name (spec.name, else
 	// metadata.name) is the candidate and, if there is none, a new provider
-	// is created. When set, the match must exist: a missing provider is an
-	// error (reason AdoptionTargetNotFound), never a create, so a migration
-	// cannot silently mint new credentials.
+	// is created only if createIfMissing is set. A missing match is otherwise
+	// an error (reason AdoptionTargetNotFound), never a create, so a
+	// migration cannot silently mint new credentials.
 	// +optional
 	Match *ProviderMatch `json:"match,omitempty"`
 }

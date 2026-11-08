@@ -20,8 +20,12 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/connection"
@@ -140,4 +144,59 @@ func sameAuthentikRef(a, b *authentikiov1alpha1.AuthentikRef) bool {
 		return a == nil && b == nil
 	}
 	return a.Name == b.Name
+}
+
+// sameConnection reports whether two objects, each in its own namespace,
+// use the same Authentik: both the operator default, or the same
+// AuthentikDeployment.
+func sameConnection(nsA string, a *authentikiov1alpha1.AuthentikRef, nsB string,
+	b *authentikiov1alpha1.AuthentikRef) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return nsA == nsB && a.Name == b.Name
+}
+
+const (
+	maxChangeValueLen   = 100
+	maxChangeMessageLen = 2000
+)
+
+// describeChanges renders "field: old -> new" for every field a patch sets,
+// reading the old value from the object as Authentik has it. The names are
+// Authentik's API field names. Values are compact JSON, truncated; the
+// client secret is never shown (it is never in a patch, and is skipped
+// regardless).
+func describeChanges(patch, current any) string {
+	toMap := func(v any) map[string]any {
+		var m map[string]any
+		raw, err := json.Marshal(v)
+		if err != nil || json.Unmarshal(raw, &m) != nil {
+			return nil
+		}
+		return m
+	}
+	render := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return "?"
+		}
+		if r := []rune(string(raw)); len(r) > maxChangeValueLen {
+			return string(r[:maxChangeValueLen]) + "..."
+		}
+		return string(raw)
+	}
+	pm, cm := toMap(patch), toMap(current)
+	parts := make([]string, 0, len(pm))
+	for _, k := range slices.Sorted(maps.Keys(pm)) {
+		if k == "client_secret" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s -> %s", k, render(cm[k]), render(pm[k])))
+	}
+	msg := strings.Join(parts, "; ")
+	if r := []rune(msg); len(r) > maxChangeMessageLen {
+		msg = string(r[:maxChangeMessageLen]) + "..."
+	}
+	return msg
 }

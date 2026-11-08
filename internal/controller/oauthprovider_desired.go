@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -33,6 +34,12 @@ const (
 	reasonReferenceNotFound  = "ReferenceNotFound"
 	reasonReferenceAmbiguous = "ReferenceAmbiguous"
 )
+
+// defaultSigningKeyName is the certificate-key pair a new provider signs
+// with when spec.signingKey is empty. It is applied here rather than as a
+// schema default so that adopting a provider with another (or no) signing
+// key does not rewrite it.
+const defaultSigningKeyName = "authentik Self-signed Certificate"
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -77,7 +84,7 @@ func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 // write: the fields the spec sets. Where the spec says nothing, the adopted
 // provider's own value stands -- the client ID (unless spec.clientId is
 // set), the name (unless spec.name is set) and the optional authenticationFlow,
-// encryptionKey and logoutUri. Fields with a CRD default are always "set"
+// encryptionKey, logoutUri and signingKey. Fields with a CRD default are always "set"
 // (the API server fills them), so they stay in want; see APIAdoptionSpec.
 func adoptionView(p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
 	got *api.OAuth2Provider) {
@@ -96,6 +103,9 @@ func adoptionView(p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth
 	}
 	if s.LogoutURI == "" {
 		want.SetLogoutUri(got.GetLogoutUri())
+	}
+	if s.SigningKey == "" {
+		want.SigningKey = got.SigningKey
 	}
 }
 
@@ -189,7 +199,7 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	req.SetIssuerMode(api.IssuerModeEnum(s.IssuerMode))
 	req.SetIncludeClaimsInIdToken(*s.IncludeClaimsInIDToken)
 
-	signing, err := certPK(s.SigningKey)
+	signing, err := certPK(cmp.Or(s.SigningKey, defaultSigningKeyName))
 	if err != nil {
 		return nil, err
 	}

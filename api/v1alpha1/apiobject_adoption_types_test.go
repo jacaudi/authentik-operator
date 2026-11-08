@@ -11,7 +11,7 @@ func TestEffectiveDeletionPolicy(t *testing.T) {
 	}{
 		{"created defaults to delete", "", ProvenanceCreated, DeletionPolicyDelete},
 		{"adopted defaults to retain", "", ProvenanceAdopted, DeletionPolicyRetain},
-		{"undecided (legacy) defaults to delete", "", "", DeletionPolicyDelete},
+		{"undecided defaults to retain", "", "", DeletionPolicyRetain},
 		{"explicit retain on created", DeletionPolicyRetain, ProvenanceCreated, DeletionPolicyRetain},
 		{"explicit delete on adopted", DeletionPolicyDelete, ProvenanceAdopted, DeletionPolicyDelete},
 	}

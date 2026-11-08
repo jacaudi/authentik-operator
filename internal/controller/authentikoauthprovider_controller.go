@@ -233,12 +233,13 @@ func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, 
 	if err != nil || target == nil {
 		return nil, err
 	}
-	return r.adoptProvider(p, want, target, persist)
+	return r.adoptProvider(ctx, p, want, target, persist)
 }
 
 // observeTracked looks up the provider recorded in status.providerPk. It
 // returns it when it is still this resource's own, or nil to carry on
-// looking when it no longer exists (status is then cleared).
+// looking when a provider this resource created no longer exists (its pk
+// and client ID are then cleared; a vanished adopted one is an error).
 func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2Provider, error) {
 	log := logf.FromContext(ctx)
@@ -251,22 +252,25 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 		// client ID was changed outside the operator. Never modify it.
 		return nil, condErrf(reasonConflict,
 			"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
-				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
+				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk, "+
+				"status.provenance and status.clientId",
 			pk, got.GetClientId(), p.Status.ClientID)
 	case err == nil:
-		if p.Status.Provenance == "" {
-			// Tracked since before provenance existed, when only a
-			// create could produce a pk.
-			p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
-		}
 		return got, nil
 	case authentik.IsNotFound(err):
+		if p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted {
+			// Recreating would mint new credentials, which is what adopting
+			// avoided. The pk stays in status so this is not forgotten.
+			return nil, condErrf(reasonAdoptionTargetNotFound,
+				"the adopted OAuth2 provider pk %d no longer exists in Authentik; not recreating it (that would "+
+					"issue new client credentials). Restore it, or clear status.providerPk, status.provenance and "+
+					"status.clientId and set spec.adoption.createIfMissing to create a new one", pk)
+		}
 		log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
 		r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
 			"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
 		p.Status.ProviderPK = 0
 		p.Status.ClientID = ""
-		p.Status.Provenance = "" // decided afresh below
 	default:
 		return nil, err
 	}
@@ -286,6 +290,26 @@ func providerConflict(name string, existing *api.OAuth2Provider, err error) erro
 		msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
 	}
 	return condErr(reasonConflict, errors.New(msg))
+}
+
+// missingProvider decides what a miss means when adoption is enabled and no
+// provider matched: nil to create (a provider this resource created itself
+// that vanished, or createIfMissing), otherwise an error that writes nothing.
+func (r *AuthentikOAuthProviderReconciler) missingProvider(p *authentikiov1alpha1.AuthentikOAuthProvider,
+	which string) error {
+	switch {
+	case p.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
+		return nil
+	case !p.Spec.Adoption.CreateIfMissing:
+		return condErrf(reasonAdoptionTargetNotFound, "no OAuth2 provider %s exists in Authentik to adopt; nothing "+
+			"was written. Fix spec.adoption.match, or set spec.adoption.createIfMissing to create one", which)
+	case p.Spec.Adoption.DryRun:
+		return condErrf(reasonAdoptionDryRun, "dry run: no existing OAuth2 provider %s; a new one would be "+
+			"created; nothing was written", which)
+	}
+	r.event(p, corev1.EventTypeNormal, "NothingToAdopt", "Create",
+		"Creating a new OAuth2 provider because nothing was found to adopt (%s)", which)
+	return nil
 }
 
 // providerLookup is the result of looking a provider up by the desired name.
@@ -325,11 +349,8 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 	case errors.Is(err, authentik.ErrAmbiguous):
 		return nil, condErrf(reasonConflict, "several OAuth2 providers %s exist in Authentik; "+
 			"select one with spec.adoption.match.pk", which)
-	case authentik.IsNotFound(err) && m == nil:
-		return nil, nil
 	case authentik.IsNotFound(err):
-		return nil, condErrf(reasonAdoptionTargetNotFound,
-			"spec.adoption.match: no OAuth2 provider %s exists in Authentik", which)
+		return nil, r.missingProvider(p, which)
 	default:
 		return nil, err
 	}
@@ -337,18 +358,26 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 
 // adoptProvider takes over target: in dry-run mode it only reports what
 // would change; otherwise it records the decision in status (before any
-// write, so a crash cannot lose it).
-func (r *AuthentikOAuthProviderReconciler) adoptProvider(p *authentikiov1alpha1.AuthentikOAuthProvider,
-	want *api.OAuth2ProviderRequest, target *api.OAuth2Provider, persist func() error) (*api.OAuth2Provider, error) {
+// write, so a crash cannot lose it). Another resource already tracking the
+// same Authentik provider is a Conflict.
+func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest, target *api.OAuth2Provider,
+	persist func() error) (*api.OAuth2Provider, error) {
+	if other, err := r.otherTracking(ctx, p, target.Pk); err != nil {
+		return nil, err
+	} else if other != "" {
+		return nil, condErrf(reasonConflict, "OAuth2 provider pk %d is already managed by %s; "+
+			"two resources cannot manage one provider", target.Pk, other)
+	}
 	if p.Spec.Adoption.DryRun {
 		view := *want
 		adoptionView(p, &view, target)
-		_, changed := oauth2ProviderPatch(&view, target)
+		patch, changed := oauth2ProviderPatch(&view, target)
 		msg := fmt.Sprintf("dry run: would adopt OAuth2 provider %q (pk %d); ", target.Name, target.Pk)
 		if len(changed) == 0 {
 			msg += "would change no fields"
 		} else {
-			msg += "would change: " + strings.Join(changed, ", ")
+			msg += "would change " + describeChanges(patch, target)
 		}
 		msg += "; nothing was written. Set spec.adoption.dryRun to false to adopt"
 		if cond := meta.FindStatusCondition(p.Status.Conditions, ConditionReady); cond == nil ||
@@ -367,6 +396,24 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(p *authentikiov1alpha1.
 	r.event(p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
 		target.Name, target.Pk)
 	return target, nil
+}
+
+// otherTracking names another provider resource (namespace/name) that
+// already tracks pk on the same connection, or "".
+func (r *AuthentikOAuthProviderReconciler) otherTracking(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, error) {
+	var list authentikiov1alpha1.AuthentikOAuthProviderList
+	if err := r.List(ctx, &list); err != nil {
+		return "", fmt.Errorf("list AuthentikOAuthProviders: %w", err)
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.UID != p.UID && o.Status.ProviderPK == pk && o.DeletionTimestamp.IsZero() &&
+			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
+			return o.Namespace + "/" + o.Name, nil
+		}
+	}
+	return "", nil
 }
 
 // createProvider creates the provider, recording status.pendingCreate first
@@ -434,8 +481,13 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 	if pk := p.Status.ProviderPK; pk != 0 && authentikiov1alpha1.EffectiveDeletionPolicy(
 		p.Spec.DeletionPolicy, p.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining OAuth2 provider in Authentik", "pk", pk)
-		r.event(p, corev1.EventTypeNormal, "Retained", "Delete",
-			"OAuth2 provider pk %d left in Authentik (deletionPolicy Retain)", pk)
+		if p.Status.Provenance == "" && p.Spec.DeletionPolicy == "" {
+			r.event(p, corev1.EventTypeWarning, "Retained", "Delete",
+				"OAuth2 provider pk %d left in Authentik: provenance unknown; retaining", pk)
+		} else {
+			r.event(p, corev1.EventTypeNormal, "Retained", "Delete",
+				"OAuth2 provider pk %d left in Authentik (deletionPolicy Retain)", pk)
+		}
 	} else if pk != 0 {
 		resolved, err := resolveForDeletion(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 		switch {

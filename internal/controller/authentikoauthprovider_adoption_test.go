@@ -73,6 +73,11 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			jsonName: name, "client_id": legacyID, "client_secret": legacySecret,
 			"logout_uri": legacyLogout, "authentication_flow": fakeauthentik.FlowAuthenticationPK,
 			"encryption_key": fakeauthentik.EncryptionKeyPK,
+			// Differ from the defaulted spec (hashed_user_id, the three
+			// scope mappings) so adoption visibly rewrites them; the
+			// signing key is an unrelated cert that must survive.
+			"sub_mode": "user_email", "property_mappings": []any{fakeauthentik.MappingCustomPK},
+			"signing_key": fakeauthentik.EncryptionKeyPK,
 		})
 	}
 
@@ -184,6 +189,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(got["encryption_key"]).To(Equal(fakeauthentik.EncryptionKeyPK))
 		Expect(got["client_id"]).To(Equal(legacyID))
 		Expect(got["client_secret"]).To(Equal(legacySecret))
+		Expect(got["signing_key"]).To(Equal(fakeauthentik.EncryptionKeyPK), "an unset signingKey keeps the existing one")
 		// The spec's redirect URI and flows are applied.
 		Expect(got["redirect_uris"]).To(ConsistOf(HaveKeyWithValue("url", "https://grafana.example.com/cb")))
 
@@ -191,9 +197,13 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(writes).To(HaveLen(1))
 		Expect(writes[0].Method).To(Equal(http.MethodPatch))
 		for _, untouched := range []string{"client_id", "client_secret", "name", "logout_uri",
-			"authentication_flow", "encryption_key"} {
+			"authentication_flow", "encryption_key", "signing_key"} {
 			Expect(writes[0].Body).NotTo(HaveKey(untouched))
 		}
+		// Defaulted fields differ from the existing values, so they ARE written.
+		Expect(writes[0].Body).To(HaveKeyWithValue("sub_mode", "hashed_user_id"))
+		Expect(writes[0].Body).To(HaveKey("property_mappings"))
+		Expect(got["sub_mode"]).To(Equal("hashed_user_id"))
 	})
 
 	It("renames an adopted provider only when spec.name is set", func() {
@@ -242,11 +252,79 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(fake.Requests(true)).To(BeEmpty())
 	})
 
-	It("creates normally when adoption is enabled without a match and nothing exists", func() {
+	It("does not create when adoption is enabled and nothing matches, unless createIfMissing", func() {
 		p := newProvider("nothing-yet", adopting(nil, false))
+		mustReconcile(p)
+		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		Expect(fake.ProviderCount()).To(BeZero())
+		Expect(fake.Requests(true)).To(BeEmpty())
+
+		cur := get(p)
+		cur.Spec.Adoption.CreateIfMissing = true
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 		mustReconcile(p)
 		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		Expect(fake.ProviderCount()).To(Equal(1))
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("nothing was found to adopt")))
+	})
+
+	It("creates with the default signing key when signingKey is unset", func() {
+		p := newProvider("default-key", nil)
+		mustReconcile(p)
+		Expect(fake.Provider(get(p).Status.ProviderPK)["signing_key"]).To(Equal(fakeauthentik.SigningKeyPK))
+	})
+
+	It("does not create on a missing explicit match even with createIfMissing false, and creates with it true", func() {
+		p := newProvider("typo", adopting(&authentikiov1alpha1.ProviderMatch{Name: "typo-provider"}, false))
+		mustReconcile(p)
+		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		Expect(fake.ProviderCount()).To(BeZero())
+	})
+
+	It("refuses to adopt a provider another resource already tracks", func() {
+		pk := seedLegacy("shared")
+		first := newProvider("first", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+		mustReconcile(first)
+		Expect(get(first).Status.ProviderPK).To(Equal(pk))
+
+		second := newProvider("second", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+		mustReconcile(second)
+		Expect(ready(second).Reason).To(Equal(reasonConflict))
+		Expect(ready(second).Message).To(ContainSubstring("first"))
+		Expect(get(second).Status.ProviderPK).To(BeZero())
+		Expect(get(second).Status.Provenance).To(BeEmpty())
+	})
+
+	It("never recreates an adopted provider that vanished, and keeps its pk", func() {
+		pk := seedLegacy("vanish")
+		p := newProvider("vanish", adopting(nil, false))
+		mustReconcile(p)
+		fake.DeleteProvider(pk)
+		before := len(fake.Requests(true))
+
+		mustReconcile(p)
+		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		Expect(fake.ProviderCount()).To(BeZero())
+		Expect(fake.Requests(true)).To(HaveLen(before))
+		Expect(get(p).Status.ProviderPK).To(Equal(pk))
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+	})
+
+	It("never deletes a provider whose provenance is undecided", func() {
+		pk := seedLegacy("unknown")
+		p := newProvider("unknown", nil)
+		mustReconcile(p) // Conflict: adds the finalizer
+		cur := get(p)
+		cur.Status.ProviderPK = pk
+		cur.Status.ClientID = legacyID
+		Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		drainEvents(recorder)
+
+		Expect(k8sClient.Delete(ctx, get(p))).To(Succeed())
+		mustReconcile(p)
+		Expect(gone(p)).To(BeTrue())
+		Expect(fake.Provider(pk)).NotTo(BeNil())
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("provenance unknown")))
 	})
 
 	It("renders the credentials Secret from the existing client ID and secret, byte for byte", func() {
@@ -311,7 +389,12 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			cond := ready(p)
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal(reasonAdoptionDryRun))
-			Expect(cond.Message).To(ContainSubstring("redirectUris"))
+			Expect(cond.Message).To(ContainSubstring("redirect_uris"))
+			Expect(cond.Message).To(ContainSubstring("sub_mode: "))
+			Expect(cond.Message).To(ContainSubstring("user_email"))
+			Expect(cond.Message).To(ContainSubstring("hashed_user_id"))
+			Expect(cond.Message).NotTo(ContainSubstring("client_secret"))
+			Expect(cond.Message).NotTo(ContainSubstring("signing_key"))
 			Expect(cond.Message).NotTo(ContainSubstring(legacySecret))
 			Expect(get(p).Status.Provenance).To(BeEmpty())
 			Expect(get(p).Status.ProviderPK).To(BeZero())
@@ -325,6 +408,30 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 			Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 			Expect(fake.Provider(pk)["redirect_uris"]).To(ConsistOf(HaveKeyWithValue("url", "https://dry.example.com/cb")))
+		})
+	})
+
+	Context("dry run with nothing to adopt", func() {
+		It("creates nothing and reports a would-create when createIfMissing is set", func() {
+			p := newProvider("dry-miss", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				adopting(nil, true)(s)
+				s.Adoption.CreateIfMissing = true
+				s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "dry-miss-creds"}
+			})
+			mustReconcile(p)
+			Expect(fake.Requests(true)).To(BeEmpty())
+			Expect(ready(p).Reason).To(Equal(reasonAdoptionDryRun))
+			Expect(ready(p).Message).To(ContainSubstring("a new one would be created"))
+			var s corev1.Secret
+			err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "dry-miss-creds"}, &s)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("reports AdoptionTargetNotFound when createIfMissing is false", func() {
+			p := newProvider("dry-miss2", adopting(nil, true))
+			mustReconcile(p)
+			Expect(fake.Requests(true)).To(BeEmpty())
+			Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
 		})
 	})
 
@@ -376,7 +483,10 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 
 	Context("pendingCreate recovery", func() {
 		It("classifies a recovered own create as Created even with adoption enabled", func() {
-			p := newProvider("lost", adopting(nil, false))
+			p := newProvider("lost", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				adopting(nil, false)(s)
+				s.Adoption.CreateIfMissing = true
+			})
 			fake.LoseNextCreate()
 			_, err := reconcileOnce(p)
 			Expect(err).To(HaveOccurred())

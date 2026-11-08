@@ -180,7 +180,6 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 					"If this resource should manage a new application, clear status.applicationUid",
 				a.Status.Slug, got.Pk, uid)
 		case err == nil:
-			markLegacyCreated(a)
 			return got, nil
 		case !authentik.IsNotFound(err):
 			return nil, err
@@ -193,7 +192,6 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	existing, err := c.GetApplication(ctx, slug)
 	switch {
 	case err == nil && a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID:
-		markLegacyCreated(a)
 		return existing, nil // the earlier 404 was transient
 	case err == nil && a.Status.PendingCreate == slug:
 		// Checked before adoption so a recovered own create is never
@@ -204,30 +202,75 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
 		return existing, nil
 	case err == nil && a.Spec.Adoption.Enabled:
-		return r.adoptApplication(a, want, existing, persist)
+		return r.adoptApplication(ctx, a, want, existing, persist)
 	case err == nil:
 		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
 			"created by this resource; set spec.adoption.enabled to adopt it", slug)
 	case authentik.IsNotFound(err):
-		return nil, nil
+		return nil, r.missingApplication(a, slug)
 	default:
 		return nil, err
 	}
 }
 
+// missingApplication decides what a miss means: nil to create (adoption
+// disabled, an application this resource created that vanished, or
+// createIfMissing), otherwise an error that writes nothing.
+func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alpha1.AuthentikApplication,
+	slug string) error {
+	switch {
+	case !a.Spec.Adoption.Enabled || a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
+		return nil
+	case !a.Spec.Adoption.CreateIfMissing:
+		return condErrf(reasonAdoptionTargetNotFound, "no application with slug %q exists in Authentik to adopt; "+
+			"nothing was written. Fix the slug, or set spec.adoption.createIfMissing to create one", slug)
+	case a.Spec.Adoption.DryRun:
+		return condErrf(reasonAdoptionDryRun, "dry run: no existing application with slug %q; a new one would be "+
+			"created; nothing was written", slug)
+	}
+	r.event(a, corev1.EventTypeNormal, "NothingToAdopt", "Create",
+		"Creating a new application because nothing was found to adopt (slug %q)", slug)
+	return nil
+}
+
+// otherTracking names another application resource (namespace/name) that
+// already tracks uid on the same connection, or "".
+func (r *AuthentikApplicationReconciler) otherTracking(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, uid string) (string, error) {
+	var list authentikiov1alpha1.AuthentikApplicationList
+	if err := r.List(ctx, &list); err != nil {
+		return "", fmt.Errorf("list AuthentikApplications: %w", err)
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.UID != a.UID && o.Status.ApplicationUID == uid && o.DeletionTimestamp.IsZero() &&
+			sameConnection(o.Namespace, o.Spec.AuthentikRef, a.Namespace, a.Spec.AuthentikRef) {
+			return o.Namespace + "/" + o.Name, nil
+		}
+	}
+	return "", nil
+}
+
 // adoptApplication takes over target: in dry-run mode it only reports what
 // would change; otherwise it records the decision in status first.
-func (r *AuthentikApplicationReconciler) adoptApplication(a *authentikiov1alpha1.AuthentikApplication,
-	want *api.ApplicationRequest, target *api.Application, persist func() error) (*api.Application, error) {
+func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest, target *api.Application,
+	persist func() error) (*api.Application, error) {
+	if other, err := r.otherTracking(ctx, a, target.Pk); err != nil {
+		return nil, err
+	} else if other != "" {
+		return nil, condErrf(reasonConflict, "application %q is already managed by %s; "+
+			"two resources cannot manage one application", target.Slug, other)
+	}
 	if a.Spec.Adoption.DryRun {
 		view := *want
 		adoptionViewApplication(a, &view, target)
-		_, changed := applicationPatch(&view, target)
+		patch, changed := applicationPatch(&view, target)
 		msg := fmt.Sprintf("dry run: would adopt application %q; ", target.Slug)
 		if len(changed) == 0 {
 			msg += "would change no fields"
 		} else {
-			msg += "would change: " + strings.Join(changed, ", ")
+			msg += "would change " + describeChanges(patch, target)
 		}
 		msg += "; nothing was written. Set spec.adoption.dryRun to false to adopt"
 		if cond := meta.FindStatusCondition(a.Status.Conditions, ConditionReady); cond == nil ||
@@ -245,14 +288,6 @@ func (r *AuthentikApplicationReconciler) adoptApplication(a *authentikiov1alpha1
 	}
 	r.event(a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)
 	return target, nil
-}
-
-// markLegacyCreated backfills provenance for a resource tracked since before
-// provenance existed, when only a create could produce a uid.
-func markLegacyCreated(a *authentikiov1alpha1.AuthentikApplication) {
-	if a.Status.Provenance == "" {
-		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
-	}
 }
 
 // createApplication creates the application, recording status.pendingCreate
@@ -348,8 +383,13 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 	if a.Status.ApplicationUID != "" && authentikiov1alpha1.EffectiveDeletionPolicy(
 		a.Spec.DeletionPolicy, a.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining Application in Authentik", "slug", a.Status.Slug)
-		r.event(a, corev1.EventTypeNormal, "Retained", "Delete",
-			"Application %q left in Authentik (deletionPolicy Retain)", a.Status.Slug)
+		if a.Status.Provenance == "" && a.Spec.DeletionPolicy == "" {
+			r.event(a, corev1.EventTypeWarning, "Retained", "Delete",
+				"Application %q left in Authentik: provenance unknown; retaining", a.Status.Slug)
+		} else {
+			r.event(a, corev1.EventTypeNormal, "Retained", "Delete",
+				"Application %q left in Authentik (deletionPolicy Retain)", a.Status.Slug)
+		}
 	} else if a.Status.ApplicationUID != "" {
 		resolved, err := resolveForDeletion(ctx, r.Connections, a.Namespace, a.Spec.AuthentikRef)
 		switch {

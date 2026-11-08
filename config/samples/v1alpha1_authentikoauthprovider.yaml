@@ -29,7 +29,7 @@ spec:
   # clientType: confidential
   # subMode: hashed_user_id
   # issuerMode: per_provider
-  # signingKey: authentik Self-signed Certificate
+  # signingKey: unset = "authentik Self-signed Certificate" on create, kept on adopt
   #
   # Adopt a provider that already exists (for example one created by another
   # operator) instead of failing with a Conflict. Start with dryRun: true; the
@@ -42,4 +42,5 @@ spec:
   #   dryRun: true
   #   match:
   #     name: grafana-provider   # or: pk: 7
+  #   createIfMissing: false     # true only to create when nothing matches
   # deletionPolicy: Retain       # default for an adopted provider

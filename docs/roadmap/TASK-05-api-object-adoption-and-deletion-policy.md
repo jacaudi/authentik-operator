@@ -53,4 +53,9 @@ credentials are rotated. Adopting the existing provider keeps them.
   Group and User have no reconcile logic yet; add the shared
   `APIAdoptionSpec`, `DeletionPolicy` and `Provenance` types when they do.
 - Contract: docs/design/scope.md, section "API-object adoption".
-- Not done: detecting two resources adopting the same Authentik object.
+- Review follow-ups: dryRun never creates; `adoption.createIfMissing`
+  (default false) gates creating when nothing is found to adopt; undecided
+  provenance retains; a vanished adopted object is never recreated; two
+  resources cannot adopt one object (cache-lag race remains); `signingKey`
+  has no schema default (empty = default cert on create, keep on adopt);
+  dry-run reports old -> new values.

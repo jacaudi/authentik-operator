@@ -129,7 +129,10 @@ type AuthentikApplicationSpec struct {
 	// providerRef is unset) as they are. The defaulted fields it will write
 	// are: policyEngineMode, openInNewTab and metaHide. When providerRef is
 	// set, the application's provider link is set to that provider (normally
-	// the adopted provider, so a no-op). See APIAdoptionSpec.
+	// the adopted provider, so a no-op). Because the application waits for
+	// its providerRef to be Ready, that provider must itself be adopted
+	// (adoption.dryRun off) before this application can complete adoption.
+	// See APIAdoptionSpec.
 	// +optional
 	Adoption APIAdoptionSpec `json:"adoption,omitzero"`
 
@@ -184,8 +187,8 @@ type AuthentikApplicationStatus struct {
 // +kubebuilder:validation:XValidation:rule="has(self.spec.slug) || self.metadata.name.matches('^[-a-zA-Z0-9_]{1,50}$')",message="metadata.name is not a valid slug (letters, digits, - and _; max 50); set spec.slug"
 // +kubebuilder:validation:XValidation:rule="(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug) ? oldSelf.spec.slug : oldSelf.metadata.name)",message="slug is immutable (it is the application's identity in Authentik URLs)"
 // +kubebuilder:printcolumn:name="Slug",type=string,JSONPath=".status.slug"
-// +kubebuilder:printcolumn:name="Provenance",type=string,JSONPath=".status.provenance"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Provenance",type=string,JSONPath=".status.provenance"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 

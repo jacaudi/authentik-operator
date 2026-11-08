@@ -23,4 +23,5 @@ spec:
   # adoption:
   #   enabled: true
   #   dryRun: true
+  #   createIfMissing: false   # true only to create when nothing matches
   # deletionPolicy: Retain   # default for an adopted application

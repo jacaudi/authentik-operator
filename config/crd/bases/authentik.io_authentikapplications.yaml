@@ -18,11 +18,11 @@ spec:
     - jsonPath: .status.slug
       name: Slug
       type: string
-    - jsonPath: .status.provenance
-      name: Provenance
-      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
+      type: string
+    - jsonPath: .status.provenance
+      name: Provenance
       type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: Reason
@@ -67,8 +67,24 @@ spec:
                   providerRef is unset) as they are. The defaulted fields it will write
                   are: policyEngineMode, openInNewTab and metaHide. When providerRef is
                   set, the application's provider link is set to that provider (normally
-                  the adopted provider, so a no-op). See APIAdoptionSpec.
+                  the adopted provider, so a no-op). Because the application waits for
+                  its providerRef to be Ready, that provider must itself be adopted
+                  (adoption.dryRun off) before this application can complete adoption.
+                  See APIAdoptionSpec.
                 properties:
+                  createIfMissing:
+                    default: false
+                    description: |-
+                      createIfMissing lets a resource with adoption enabled create the
+                      object when none is found to adopt. When false (the default) a miss is
+                      reported as AdoptionTargetNotFound and nothing is written, so a
+                      migrating user can never mint new client credentials by a typo in the
+                      name, slug or pk. A disaster-recovery re-bootstrap (the Authentik
+                      database was lost, nothing exists to adopt) sets it to true
+                      deliberately. With adoption disabled the resource creates as usual,
+                      and a resource that created its object itself recreates it if it
+                      vanishes, whatever this says.
+                    type: boolean
                   dryRun:
                     default: false
                     description: |-
@@ -76,7 +92,9 @@ spec:
                       (reason AdoptionDryRun) and an event, which fields adoption would
                       change. Nothing is written to Authentik, and no credentials Secret is
                       rendered. Set it back to false to adopt for real. Only meaningful
-                      with enabled true.
+                      with enabled true. dryRun gates only the initial takeover (and the
+                      decision to create when createIfMissing is set): once the object is
+                      adopted, spec edits are applied live whatever dryRun says.
                     type: boolean
                   enabled:
                     default: false

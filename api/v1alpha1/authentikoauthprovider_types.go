@@ -195,7 +195,10 @@ type AuthentikOAuthProviderSpec struct {
 	IssuerMode OAuthIssuerMode `json:"issuerMode,omitempty"`
 
 	// signingKey is the name of the certificate-key pair used to sign tokens.
-	// +kubebuilder:default="authentik Self-signed Certificate"
+	// Not defaulted in the schema, so an existing provider can be adopted
+	// without rewriting its key: when empty, a NEW provider is created with
+	// "authentik Self-signed Certificate", and an ADOPTED provider keeps
+	// whatever it has (including no signing key).
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	SigningKey string `json:"signingKey,omitempty"`
@@ -234,7 +237,7 @@ type AuthentikOAuthProviderSpec struct {
 	// them. The defaulted fields adoption will write are: scopes, clientType,
 	// grantTypes, accessCodeValidity, accessTokenValidity,
 	// refreshTokenValidity, refreshTokenThreshold, subMode,
-	// includeClaimsInIdToken, issuerMode, signingKey, logoutMethod, and the
+	// includeClaimsInIdToken, issuerMode, logoutMethod, and the
 	// matchingMode and type of each redirect URI.
 	// +optional
 	Adoption ProviderAdoptionSpec `json:"adoption,omitzero"`
