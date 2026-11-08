@@ -85,6 +85,96 @@ The spec field was chosen over an annotation on the target because the decision
 belongs to whoever owns the CR, and it stays visible in one place in Git rather
 than on a live object the operator is about to take over.
 
+## API-object adoption (TASK-05)
+
+`AuthentikOAuthProvider` and `AuthentikApplication` follow the same contract as
+`AuthentikDeployment` adoption above -- explicit, opt-in, release rather than
+delete -- applied to objects inside Authentik. (Group and User are stubs and
+get it when they get a controller.) Migrating from another operator is the use
+case: a provider recreated instead of adopted gets a new client ID and secret
+and every consuming app breaks.
+
+```yaml
+spec:
+  adoption:
+    enabled: true     # default false
+    dryRun: false     # default false; report the diff, write nothing
+    match:            # providers only; exactly one of name or pk
+      name: grafana-provider
+  deletionPolicy: Retain   # optional: Delete | Retain
+```
+
+`APIAdoptionSpec` is a separate type from the deployment's `AdoptionSpec`
+because API objects need `dryRun` and a way to find the target, which
+Kubernetes-object adoption does not.
+
+### Behavior
+
+- **Without `enabled`**, an existing object with the target identity is a
+  `Conflict` (the message names `spec.adoption.enabled`). Nothing is written.
+- **Identity.** An application is matched by slug. A provider is matched by
+  `match.name` or `match.pk`; with no `match` the candidate is the provider
+  named like the resource (`spec.name`, else `metadata.name`), and a missing
+  one is simply created. With an explicit `match`, a missing target is an
+  error (`AdoptionTargetNotFound`) and never a create, so a migration cannot
+  silently mint new credentials. `match.name` may differ from the desired
+  name: the JeffResc provider `<slug>-provider` is adopted with
+  `match: {name: <slug>-provider}`. Several providers with one name is a
+  `Conflict`; select by `match.pk`.
+- **Provenance** is recorded in `status.provenance` (`Created` | `Adopted`)
+  next to the object's pk, because Authentik objects cannot carry
+  annotations. Empty means undecided: a fresh resource that finds an existing
+  object is never assumed to have created it. The decision is written to
+  status before any write to Authentik. A create whose response was lost is
+  recovered through `status.pendingCreate` (plus, for providers, the client ID
+  the operator sent) and classified `Created`, even with adoption enabled.
+  Resources tracked before provenance existed count as `Created`.
+- **What adoption writes.** A PATCH of the fields the spec sets; everything
+  else on the object is left alone. A provider's `client_id` and
+  `client_secret` are never changed unless `spec.clientId` is set; the
+  credentials Secret is rendered from the values read from the API,
+  byte-for-byte. An adopted provider keeps its name unless `spec.name` is set,
+  and keeps `authenticationFlow`, `encryptionKey` and `logoutUri` if the spec
+  leaves them empty. An adopted application keeps `group`, `metaLaunchUrl`,
+  `metaDescription`, `metaPublisher` and `metaIcon` if the spec leaves them
+  empty, and its provider link if `providerRef` is unset; if `providerRef` is
+  set the link becomes that provider (a no-op when it is the adopted one).
+- **CRD-defaulted fields are "set".** The API server fills a
+  `+kubebuilder:default` before the operator sees the object, so it cannot
+  tell a default from a value you wrote, and adoption WILL write it. Set these
+  explicitly to the existing object's values (or accept the default) before
+  adopting:
+  - provider: `scopes` (replaces the property mappings), `clientType`,
+    `grantTypes`, `accessCodeValidity`, `accessTokenValidity`,
+    `refreshTokenValidity`, `refreshTokenThreshold`, `subMode`,
+    `includeClaimsInIdToken`, `issuerMode`, `signingKey`, `logoutMethod`, and
+    each redirect URI's `matchingMode` and `type`;
+  - application: `policyEngineMode`, `openInNewTab`, `metaHide`.
+
+  Required fields (flows, `redirectUris`, application `name`) are written too.
+- **Dry run.** With `dryRun: true` the operator finds the object, computes the
+  PATCH and reports the changed field names (never values) in
+  `Ready=False, reason AdoptionDryRun` and an event. It writes nothing to
+  Authentik and renders no Secret; `status.provenance` stays empty. Setting
+  `dryRun` back to false adopts.
+
+### Deletion policy
+
+`spec.deletionPolicy` is `Delete` or `Retain`. Unset, the effective policy is
+`Delete` for a `Created` object and `Retain` for an `Adopted` one: deleting
+the resource releases an object it did not make. `Retain` removes the
+finalizer and leaves the Authentik object. The credentials Secret is a
+Kubernetes object owned by the provider resource and is garbage-collected with
+it under either policy (the credentials stay readable in Authentik); copy it
+out first if workloads still mount it.
+
+### Not covered
+
+Two resources adopting the same Authentik object are not detected; Authentik
+itself limits a provider to one application. Provenance is sticky: turning
+`adoption.enabled` off later does not turn an `Adopted` object into a
+`Created` one.
+
 ## Decided: connection model (TASK-01)
 
 API objects (`AuthentikApplication`, `AuthentikOAuthProvider`, `AuthentikUser`,

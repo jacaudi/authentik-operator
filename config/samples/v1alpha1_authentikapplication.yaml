@@ -15,3 +15,12 @@ spec:
   metaLaunchUrl: https://grafana.example.com
   group: Monitoring
   # Defaults: policyEngineMode: any, openInNewTab: true, metaHide: false
+  #
+  # Adopt an application that already exists with this slug instead of
+  # failing with a Conflict. Only the fields set here are patched; group,
+  # meta* and the provider link (when providerRef is unset) are left alone,
+  # but the defaults above ARE written. Start with dryRun: true.
+  # adoption:
+  #   enabled: true
+  #   dryRun: true
+  # deletionPolicy: Retain   # default for an adopted application

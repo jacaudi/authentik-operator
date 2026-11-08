@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none
-- Status: Planned
+- Status: Completed
 - Milestone: parity-with-jeffresc-v0.2.5 (required for any migration)
 
 ## Context
@@ -20,22 +20,23 @@ Authentik issues a new client ID/secret and every consuming app breaks until its
 credentials are rotated. Adopting the existing provider keeps them.
 
 ## Implementation Plan
-- [ ] `spec.adoption.enabled` (default false) on every API kind, mirroring
+- [x] `spec.adoption.enabled` (default false) on every API kind (provider and
+      application; Group/User are stubs and have no controller yet), mirroring
       AuthentikDeployment. Without it, an existing object with the target
       identity is a `Conflict` condition, not an overwrite.
-- [ ] `spec.adoption.match` -- how to find the existing object: application by
+- [x] `spec.adoption.match` -- how to find the existing object: application by
       slug; provider by name or pk (so JeffResc's `<slug>-provider` can be targeted
       explicitly).
-- [ ] Provenance: Authentik objects cannot carry annotations, so record
+- [x] Provenance: Authentik objects cannot carry annotations, so record
       `status.provenance: Created|Adopted` (plus the object pk) and treat a CR
       with no status as "not yet decided" -- never infer Created on a fresh CR
       that found an existing object.
-- [ ] Adopt = take over only fields the spec sets; leave others untouched
+- [x] Adopt = take over only fields the spec sets; leave others untouched
       (PATCH, not full PUT). Credentials of an adopted confidential provider are
       read from the API and rendered into the Secret unchanged.
-- [ ] `spec.deletionPolicy: Delete|Retain` (default: Delete for Created,
+- [x] `spec.deletionPolicy: Delete|Retain` (default: Delete for Created,
       Retain for Adopted -- matches scope.md's release-vs-delete).
-- [ ] Optional dry-run: `spec.adoption.dryRun: true` reports the diff it would
+- [x] Optional dry-run: `spec.adoption.dryRun: true` reports the diff it would
       apply in status/events without writing.
 
 ## Dependencies
@@ -43,6 +44,13 @@ credentials are rotated. Adopting the existing provider keeps them.
 - Blocks: TASK-09
 
 ## Completion Checklist
-- [ ] Tests: conflict without adoption; adoption preserves client_id/client_secret;
+- [x] Tests: conflict without adoption; adoption preserves client_id/client_secret;
       Retain leaves the object on CR delete; dry-run writes nothing
-- [ ] scope.md extended with the API-object adoption contract
+- [x] scope.md extended with the API-object adoption contract
+
+## Notes
+- Implemented for AuthentikOAuthProvider and AuthentikApplication only.
+  Group and User have no reconcile logic yet; add the shared
+  `APIAdoptionSpec`, `DeletionPolicy` and `Provenance` types when they do.
+- Contract: docs/design/scope.md, section "API-object adoption".
+- Not done: detecting two resources adopting the same Authentik object.
