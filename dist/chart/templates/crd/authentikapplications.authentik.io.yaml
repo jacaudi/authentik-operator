@@ -1,0 +1,270 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: authentikapplications.authentik.io
+spec:
+  group: authentik.io
+  names:
+    kind: AuthentikApplication
+    listKind: AuthentikApplicationList
+    plural: authentikapplications
+    singular: authentikapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.slug
+      name: Slug
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AuthentikApplication is the Schema for the authentikapplications
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of AuthentikApplication
+            properties:
+              authentikRef:
+                description: |-
+                  authentikRef names the AuthentikDeployment (same namespace) whose
+                  connection this object is reconciled against. When omitted, the
+                  operator's default connection is used. Must match the referenced
+                  provider's authentikRef.
+                properties:
+                  name:
+                    description: |-
+                      name of an AuthentikDeployment in the same namespace. Cross-namespace
+                      references are deliberately not supported: the referenced deployment
+                      carries an API token, and referencing it grants its privileges.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              group:
+                description: group groups applications on the user's library page.
+                maxLength: 255
+                type: string
+              metaDescription:
+                description: metaDescription is shown on the library page.
+                type: string
+              metaHide:
+                default: false
+                description: metaHide hides the application from the user's library
+                  page.
+                type: boolean
+              metaIcon:
+                description: metaIcon is an icon URL (http(s)) or an Authentik-relative
+                  path.
+                maxLength: 2048
+                type: string
+              metaLaunchUrl:
+                description: |-
+                  metaLaunchUrl is the URL opened from the library page. Must be
+                  http(s). Defaults (in Authentik) to the provider's launch URL.
+                maxLength: 2048
+                pattern: ^https?://
+                type: string
+              metaPublisher:
+                description: metaPublisher is shown on the library page.
+                maxLength: 255
+                type: string
+              name:
+                description: |-
+                  name is the application's display name. Control characters (e.g.
+                  newlines) are not allowed: the name is available to credential
+                  Secret templates.
+                maxLength: 255
+                minLength: 1
+                pattern: ^[^\x00-\x1F\x7F]+$
+                type: string
+              openInNewTab:
+                default: true
+                description: openInNewTab opens the launch URL in a new tab.
+                type: boolean
+              policyEngineMode:
+                default: any
+                description: 'policyEngineMode: any (one passing policy grants access)
+                  or all.'
+                enum:
+                - all
+                - any
+                type: string
+              providerRef:
+                description: |-
+                  providerRef names the provider resource (same namespace) this
+                  application uses. The application waits until the provider is Ready.
+                  Optional: an application without a provider is a plain launcher link.
+                properties:
+                  kind:
+                    default: AuthentikOAuthProvider
+                    description: |-
+                      kind of the provider resource. Only AuthentikOAuthProvider is
+                      supported today.
+                    enum:
+                    - AuthentikOAuthProvider
+                    type: string
+                  name:
+                    description: name of the provider resource in this namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              slug:
+                description: |-
+                  slug is the application's identifier in Authentik URLs
+                  (/application/o/<slug>/). Defaults to metadata.name. The effective
+                  slug is immutable (setting it to metadata.name later is allowed).
+                maxLength: 50
+                pattern: ^[-a-zA-Z0-9_]+$
+                type: string
+            required:
+            - name
+            type: object
+            x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
+          status:
+            description: status defines the observed state of AuthentikApplication
+            properties:
+              applicationUid:
+                description: |-
+                  applicationUid is the Authentik primary key (UUID) of the application
+                  this resource created.
+                type: string
+              conditions:
+                description: |-
+                  conditions represent the current state of the resource. "Ready" is
+                  True once the application in Authentik matches the spec.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the spec generation last synced
+                  to Authentik.
+                format: int64
+                type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the slug while a create is in flight. It lets the
+                  next reconcile recognise its own application if the create's outcome
+                  was lost (timeout, failed status write) without trusting anything
+                  another resource could also claim.
+                type: string
+              providerPk:
+                description: providerPk is the primary key of the provider currently
+                  assigned.
+                format: int32
+                type: integer
+              slug:
+                description: slug is the application's slug in Authentik.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name is not a valid slug (letters, digits, - and _; max
+            50); set spec.slug
+          rule: has(self.spec.slug) || self.metadata.name.matches('^[-a-zA-Z0-9_]{1,50}$')
+        - message: slug is immutable (it is the application's identity in Authentik
+            URLs)
+          rule: '(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug)
+            ? oldSelf.spec.slug : oldSelf.metadata.name)'
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

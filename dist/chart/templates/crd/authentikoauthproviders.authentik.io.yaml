@@ -1,0 +1,412 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: authentikoauthproviders.authentik.io
+spec:
+  group: authentik.io
+  names:
+    kind: AuthentikOAuthProvider
+    listKind: AuthentikOAuthProviderList
+    plural: authentikoauthproviders
+    singular: authentikoauthprovider
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.clientId
+      name: Client ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='CredentialsReady')].status
+      name: Credentials
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AuthentikOAuthProvider is the Schema for the authentikoauthproviders
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of AuthentikOAuthProvider
+            properties:
+              accessCodeValidity:
+                default: minutes=1
+                description: accessCodeValidity, e.g. "minutes=1".
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
+                type: string
+              accessTokenValidity:
+                default: minutes=5
+                description: accessTokenValidity, e.g. "minutes=5".
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
+                type: string
+              authenticationFlow:
+                description: |-
+                  authenticationFlow is the slug of the flow used when an
+                  unauthenticated user accesses the application. Optional.
+                type: string
+              authentikRef:
+                description: |-
+                  authentikRef names the AuthentikDeployment (same namespace) whose
+                  connection this object is reconciled against. When omitted, the
+                  operator's default connection is used.
+                properties:
+                  name:
+                    description: |-
+                      name of an AuthentikDeployment in the same namespace. Cross-namespace
+                      references are deliberately not supported: the referenced deployment
+                      carries an API token, and referencing it grants its privileges.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              authorizationFlow:
+                description: authorizationFlow is the slug of the flow used when authorizing
+                  this provider.
+                minLength: 1
+                type: string
+              clientId:
+                description: |-
+                  clientId pins the client ID. When omitted, the operator uses a client
+                  ID derived from this resource's UID ("k8s-<uid>"), reported in
+                  status.clientId and never written back to spec. Client IDs are not
+                  secret; the derived one lets the operator recognise its own provider
+                  if a create's outcome was lost. Printable ASCII without spaces, so it
+                  cannot inject keys into a rendered credentials Secret.
+                maxLength: 255
+                pattern: ^[\x21-\x7E]+$
+                type: string
+              clientType:
+                default: confidential
+                description: clientType is confidential (has a client secret) or public.
+                enum:
+                - confidential
+                - public
+                type: string
+              encryptionKey:
+                description: |-
+                  encryptionKey is the name of a certificate-key pair used to encrypt
+                  tokens (JWE). Optional.
+                type: string
+              grantTypes:
+                default:
+                - authorization_code
+                - refresh_token
+                description: |-
+                  grantTypes lists the grant types the provider accepts. Always sent
+                  explicitly: Authentik 2026.8+ rejects logins for providers created
+                  with an empty list ("Invalid grant_type for provider").
+                items:
+                  description: OAuthGrantType is an OAuth2 grant type Authentik can
+                    allow for a provider.
+                  enum:
+                  - authorization_code
+                  - implicit
+                  - hybrid
+                  - refresh_token
+                  - client_credentials
+                  - password
+                  - urn:ietf:params:oauth:grant-type:device_code
+                  - urn:ietf:params:oauth:grant-type:token-exchange
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              includeClaimsInIdToken:
+                default: true
+                description: includeClaimsInIdToken includes user claims from scopes
+                  in the id_token.
+                type: boolean
+              invalidationFlow:
+                description: invalidationFlow is the slug of the flow used when ending
+                  the session.
+                minLength: 1
+                type: string
+              issuerMode:
+                default: per_provider
+                description: issuerMode selects how the iss claim is built.
+                enum:
+                - global
+                - per_provider
+                type: string
+              logoutMethod:
+                default: backchannel
+                description: |-
+                  logoutMethod is backchannel (server-to-server) or frontchannel
+                  (browser iframes; requires logoutUri).
+                enum:
+                - backchannel
+                - frontchannel
+                type: string
+              logoutUri:
+                description: logoutUri is notified on logout. Optional.
+                maxLength: 2048
+                minLength: 1
+                type: string
+              name:
+                description: name of the provider in Authentik. Defaults to metadata.name.
+                maxLength: 255
+                minLength: 1
+                type: string
+              propertyMappings:
+                description: propertyMappings lists additional property mappings by
+                  UUID or name.
+                items:
+                  type: string
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: set
+              redirectUris:
+                description: redirectUris lists the allowed redirect URIs.
+                items:
+                  description: RedirectURI is an allowed redirect URI.
+                  properties:
+                    matchingMode:
+                      default: strict
+                      description: matchingMode is strict (exact match) or regex.
+                      enum:
+                      - strict
+                      - regex
+                      type: string
+                    type:
+                      default: authorization
+                      description: type is authorization (default) or logout (post-logout
+                        redirect).
+                      enum:
+                      - authorization
+                      - logout
+                      type: string
+                    url:
+                      description: |-
+                        url is the redirect URI, or a regular expression when matchingMode is
+                        regex. Custom schemes (e.g. com.example.app:/callback) are allowed.
+                      maxLength: 2048
+                      minLength: 1
+                      type: string
+                  required:
+                  - url
+                  type: object
+                maxItems: 64
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+              refreshTokenThreshold:
+                default: seconds=0
+                description: |-
+                  refreshTokenThreshold: a refresh token valid for less than this is
+                  renewed on refresh; "seconds=0" renews on every refresh.
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
+                type: string
+              refreshTokenValidity:
+                default: days=30
+                description: refreshTokenValidity, e.g. "days=30".
+                pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
+                type: string
+              scopes:
+                default:
+                - openid
+                - profile
+                - email
+                description: |-
+                  scopes lists OAuth scope mappings by scope_name (e.g. openid, profile,
+                  email). When several mappings share a scope name, the managed
+                  (built-in) one is used.
+                items:
+                  type: string
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: set
+              secret:
+                description: |-
+                  secret, when set, renders the provider's client credentials and
+                  endpoint URLs into a Secret in this namespace (owned by this
+                  resource, deleted with it).
+                properties:
+                  name:
+                    description: |-
+                      name of the Secret. Defaults to "<metadata.name>-oauth". Renaming
+                      deletes the previously rendered Secret once the new one exists.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  templateRef:
+                    description: |-
+                      templateRef names the AuthentikCredentialsTemplate that renders the
+                      Secret. The template's namespaceSelector must match this namespace.
+                    properties:
+                      name:
+                        description: name of the AuthentikCredentialsTemplate.
+                        maxLength: 253
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
+                type: object
+              signingKey:
+                default: authentik Self-signed Certificate
+                description: signingKey is the name of the certificate-key pair used
+                  to sign tokens.
+                minLength: 1
+                type: string
+              subMode:
+                default: hashed_user_id
+                description: subMode selects the value of the sub claim.
+                enum:
+                - hashed_user_id
+                - user_id
+                - user_uuid
+                - user_username
+                - user_email
+                - user_upn
+                type: string
+            required:
+            - authorizationFlow
+            - invalidationFlow
+            - redirectUris
+            type: object
+            x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: logoutMethod frontchannel requires logoutUri
+              rule: '!has(self.logoutMethod) || self.logoutMethod != ''frontchannel''
+                || has(self.logoutUri)'
+          status:
+            description: status defines the observed state of AuthentikOAuthProvider
+            properties:
+              clientId:
+                description: |-
+                  clientId is the provider's client ID (generated by Authentik unless
+                  spec.clientId is set). The client secret is never written to status.
+                type: string
+              conditions:
+                description: |-
+                  conditions represent the current state of the resource. "Ready" is
+                  True once the provider in Authentik matches the spec.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: observedGeneration is the spec generation last synced
+                  to Authentik.
+                format: int64
+                type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the provider name while a create is in flight. It
+                  lets the next reconcile recognise its own provider if the create's
+                  outcome was lost (timeout, failed status write), which a pinned
+                  spec.clientId alone cannot prove: another provider could carry it.
+                type: string
+              providerPk:
+                description: |-
+                  providerPk is the primary key of the provider this resource created
+                  in Authentik. Set only for providers the operator created.
+                format: int32
+                type: integer
+              secretName:
+                description: secretName is the Secret this resource last rendered
+                  credentials into.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: metadata.name is too long for the default Secret name <name>-oauth;
+            set spec.secret.name
+          rule: '!has(self.spec.secret) || has(self.spec.secret.name) || size(self.metadata.name)
+            <= 247'
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

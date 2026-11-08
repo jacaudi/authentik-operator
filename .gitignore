@@ -60,3 +60,8 @@ config/**/*.local.yaml
 docs/refactor/
 docs/prompts/
 source/
+
+# Generated install bundle stays local; the Helm chart is source-controlled.
+!dist/
+dist/*
+!dist/chart/
