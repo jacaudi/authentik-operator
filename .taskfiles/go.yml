@@ -1,0 +1,65 @@
+# Go module — checks fail on drift, never fix it. Rationale: github-actions-align/templates/README.md#goyml
+#
+# Generated for a kubebuilder repo: lint, test, build and verify wrap the
+# Makefile so CI and laptops run one implementation (custom golangci-lint with
+# the logcheck plugin, envtest assets, -race, controller-gen). Only the task
+# names are the contract.
+version: '3'
+
+tasks:
+  ci:
+    desc: All Go checks
+    cmds:
+      - task: fmt:check
+      - task: tidy:check
+      - task: verify
+      - task: lint
+      - task: vuln
+      - task: test
+
+  lint:
+    desc: golangci-lint (custom binary with the logcheck plugin, built by make)
+    cmds:
+      - make lint-config
+      - make lint
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - golangci-lint fmt
+
+  fmt:check:
+    desc: Fail if sources are unformatted
+    cmds:
+      - golangci-lint fmt --diff
+
+  tidy:check:
+    desc: Fail if go.mod/go.sum are not tidy
+    cmds:
+      - go mod tidy -diff   # -diff exits non-zero; a bare `tidy` MUTATES go.mod in CI
+
+  verify:
+    desc: Fail if controller-gen output, formatting or go.mod are stale
+    cmds:
+      - make verify
+
+  vuln:
+    desc: Scan dependencies for known vulnerabilities
+    cmds:
+      # Installed pinned by the setup action; @latest would be a live fetch on
+      # every run in a pipeline whose whole thesis is pinning.
+      - |
+        set -eu
+        command -v govulncheck >/dev/null \
+          || { echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest" >&2; exit 1; }
+        govulncheck ./...
+
+  test:
+    desc: Unit and envtest suites with the race detector
+    cmds:
+      - make test
+
+  build:
+    desc: Build the manager binary into ./bin/
+    cmds:
+      - make build
