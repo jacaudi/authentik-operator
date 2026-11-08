@@ -23,3 +23,5 @@
 
 # Helm chart artifacts
 dist/chart/*.tgz
+tests/
+ci/
