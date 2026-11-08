@@ -58,12 +58,45 @@ func derivedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	return "k8s-" + string(p.UID)
 }
 
-// expectedClientID is the client ID the provider should have.
+// expectedClientID is the client ID the provider should have: the pinned
+// spec.clientId, else for an adopted provider the one it already has
+// (recorded in status when it was adopted; adoption never rewrites it), else
+// the derived one.
 func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
-	if p.Spec.ClientID != "" {
+	switch {
+	case p.Spec.ClientID != "":
 		return p.Spec.ClientID
+	case p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted && p.Status.ClientID != "":
+		return p.Status.ClientID
+	default:
+		return derivedClientID(p)
 	}
-	return derivedClientID(p)
+}
+
+// adoptionView narrows want, the full desired state, to what adoption may
+// write: the fields the spec sets. Where the spec says nothing, the adopted
+// provider's own value stands -- the client ID (unless spec.clientId is
+// set), the name (unless spec.name is set) and the optional authenticationFlow,
+// encryptionKey and logoutUri. Fields with a CRD default are always "set"
+// (the API server fills them), so they stay in want; see APIAdoptionSpec.
+func adoptionView(p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
+	got *api.OAuth2Provider) {
+	s := p.Spec
+	if s.ClientID == "" {
+		want.SetClientId(got.GetClientId())
+	}
+	if s.Name == "" {
+		want.Name = got.Name
+	}
+	if s.AuthenticationFlow == "" {
+		want.AuthenticationFlow = got.AuthenticationFlow
+	}
+	if s.EncryptionKey == "" {
+		want.EncryptionKey = got.EncryptionKey
+	}
+	if s.LogoutURI == "" {
+		want.SetLogoutUri(got.GetLogoutUri())
+	}
 }
 
 // ownsProvider reports whether got is the provider this resource created:

@@ -27,6 +27,16 @@ import (
 	"github.com/jacaudi/authentik-operator/internal/connection"
 )
 
+// Condition reasons shared by the kinds that support adoption.
+const (
+	// reasonAdoptionDryRun marks Ready=False while spec.adoption.dryRun
+	// reports what adoption would change.
+	reasonAdoptionDryRun = "AdoptionDryRun"
+	// reasonAdoptionTargetNotFound marks an explicit spec.adoption.match
+	// that names no existing object.
+	reasonAdoptionTargetNotFound = "AdoptionTargetNotFound"
+)
+
 // conditionError is a problem that retrying cannot fix: a reference that
 // does not resolve, a conflict with an object this resource does not own, a
 // connection that cannot be built from the cluster state. It is reported in

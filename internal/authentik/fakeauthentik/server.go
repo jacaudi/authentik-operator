@@ -172,6 +172,23 @@ func (s *Server) SeedProvider(name string) int32 {
 	return pk
 }
 
+// SeedProviderWith is SeedProvider with chosen fields (client_id,
+// client_secret, logout_uri, ...) layered over the defaults; fields not
+// given keep their defaults. The name must be among them.
+func (s *Server) SeedProviderWith(fields map[string]any) int32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pk := s.nextPK
+	s.nextPK++
+	in := map[string]any{
+		fieldName: "", fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
+		"redirect_uris": []any{},
+	}
+	maps.Copy(in, fields)
+	s.providers[pk] = s.completeProvider(pk, in)
+	return pk
+}
+
 // Application returns a copy of a stored application, or nil.
 func (s *Server) Application(slug string) map[string]any {
 	s.mu.Lock()
