@@ -36,6 +36,11 @@ import (
 	"github.com/jacaudi/authentik-operator/internal/connection"
 )
 
+const (
+	jsonSigningKey = "signing_key"
+	otherName      = "elsewhere"
+)
+
 var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	const (
 		namespace    = "default"
@@ -77,7 +82,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			// scope mappings) so adoption visibly rewrites them; the
 			// signing key is an unrelated cert that must survive.
 			"sub_mode": "user_email", "property_mappings": []any{fakeauthentik.MappingCustomPK},
-			"signing_key": fakeauthentik.EncryptionKeyPK,
+			jsonSigningKey: fakeauthentik.EncryptionKeyPK,
 		})
 	}
 
@@ -189,7 +194,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(got["encryption_key"]).To(Equal(fakeauthentik.EncryptionKeyPK))
 		Expect(got["client_id"]).To(Equal(legacyID))
 		Expect(got["client_secret"]).To(Equal(legacySecret))
-		Expect(got["signing_key"]).To(Equal(fakeauthentik.EncryptionKeyPK), "an unset signingKey keeps the existing one")
+		Expect(got[jsonSigningKey]).To(Equal(fakeauthentik.EncryptionKeyPK), "an unset signingKey keeps the existing one")
 		// The spec's redirect URI and flows are applied.
 		Expect(got["redirect_uris"]).To(ConsistOf(HaveKeyWithValue("url", "https://grafana.example.com/cb")))
 
@@ -197,7 +202,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(writes).To(HaveLen(1))
 		Expect(writes[0].Method).To(Equal(http.MethodPatch))
 		for _, untouched := range []string{"client_id", "client_secret", "name", "logout_uri",
-			"authentication_flow", "encryption_key", "signing_key"} {
+			"authentication_flow", "encryption_key", jsonSigningKey} {
 			Expect(writes[0].Body).NotTo(HaveKey(untouched))
 		}
 		// Defaulted fields differ from the existing values, so they ARE written.
@@ -271,7 +276,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	It("creates with the default signing key when signingKey is unset", func() {
 		p := newProvider("default-key", nil)
 		mustReconcile(p)
-		Expect(fake.Provider(get(p).Status.ProviderPK)["signing_key"]).To(Equal(fakeauthentik.SigningKeyPK))
+		Expect(fake.Provider(get(p).Status.ProviderPK)[jsonSigningKey]).To(Equal(fakeauthentik.SigningKeyPK))
 	})
 
 	It("does not create on a missing explicit match even with createIfMissing false, and creates with it true", func() {
@@ -308,6 +313,73 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(fake.Requests(true)).To(HaveLen(before))
 		Expect(get(p).Status.ProviderPK).To(Equal(pk))
 		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+	})
+
+	It("keeps a null signing key and then settles", func() {
+		pk := fake.SeedProviderWith(map[string]any{jsonName: "no-key", jsonSigningKey: nil})
+		p := newProvider("no-key", adopting(nil, false))
+		mustReconcile(p)
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		writes := fake.Requests(true)
+		Expect(writes).To(HaveLen(1))
+		Expect(writes[0].Body).NotTo(HaveKey(jsonSigningKey))
+		Expect(fake.Provider(pk)[jsonSigningKey]).To(BeNil())
+
+		mustReconcile(p)
+		Expect(fake.Requests(true)).To(HaveLen(1))
+	})
+
+	It("adopts without resolving the default signing key, which it will not use", func() {
+		fake.DeleteCertificate(fakeauthentik.SigningKeyName)
+		seedLegacy("no-default-cert")
+		p := newProvider("no-default-cert", adopting(nil, false))
+		mustReconcile(p)
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("lets an explicit match beat the Created-vanished recreate when createIfMissing is false", func() {
+		p := newProvider("was-created", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.Adoption.CreateIfMissing = true
+		})
+		mustReconcile(p)
+		pk := get(p).Status.ProviderPK
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		fake.DeleteProvider(pk)
+
+		cur := get(p)
+		cur.Spec.Adoption.CreateIfMissing = false
+		cur.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: otherName}
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		mustReconcile(p)
+		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		Expect(fake.ProviderCount()).To(BeZero())
+	})
+
+	It("yields to the lower-UID resource when two track one provider", func() {
+		pk := seedLegacy("raced")
+		a := newProvider("race-a", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+		b := newProvider("race-b", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+		for _, p := range []*authentikiov1alpha1.AuthentikOAuthProvider{a, b} {
+			cur := get(p)
+			cur.Status.Provenance = authentikiov1alpha1.ProvenanceAdopted
+			cur.Status.ProviderPK = pk
+			cur.Status.ClientID = legacyID
+			Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		}
+		low, high := a, b
+		if get(a).UID > get(b).UID {
+			low, high = b, a
+		}
+		mustReconcile(high)
+		Expect(ready(high).Reason).To(Equal(reasonConflict))
+		Expect(get(high).Status.ProviderPK).To(BeZero())
+		Expect(get(high).Status.Provenance).To(BeEmpty())
+
+		mustReconcile(low)
+		Expect(ready(low).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(low).Status.ProviderPK).To(Equal(pk))
 	})
 
 	It("never deletes a provider whose provenance is undecided", func() {
@@ -394,7 +466,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			Expect(cond.Message).To(ContainSubstring("user_email"))
 			Expect(cond.Message).To(ContainSubstring("hashed_user_id"))
 			Expect(cond.Message).NotTo(ContainSubstring("client_secret"))
-			Expect(cond.Message).NotTo(ContainSubstring("signing_key"))
+			Expect(cond.Message).NotTo(ContainSubstring(jsonSigningKey))
 			Expect(cond.Message).NotTo(ContainSubstring(legacySecret))
 			Expect(get(p).Status.Provenance).To(BeEmpty())
 			Expect(get(p).Status.ProviderPK).To(BeZero())

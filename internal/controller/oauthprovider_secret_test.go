@@ -500,7 +500,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 			spec := newTemplate("tmpl-ns", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 				Template:          tmplAX,
 				Labels:            map[string]string{labelTeam: teamObs},
-				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: "elsewhere"}},
+				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: otherName}},
 			})
 			p := attached("sec-ns", "ns", spec)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
@@ -518,7 +518,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 
 			By("withdrawing the template's labels, but keeping the data, when access is revoked")
 			updateTemplate("tmpl-ns", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
-				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = "elsewhere"
+				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = otherName
 			})
 			reconcileP(p)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))

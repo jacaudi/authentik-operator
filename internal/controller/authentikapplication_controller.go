@@ -162,6 +162,31 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	return r.updateApplication(ctx, c, a, want, got)
 }
 
+// observeTracked looks up the application recorded in status. It returns it
+// when it is still this resource's own, and nil to carry on looking when it
+// is gone. status.applicationUid is kept until a replacement exists: a 404
+// can be transient (proxy during a rollout), and the uid is what lets the
+// finalizer clean up.
+func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *authentik.Client,
+	a *authentikiov1alpha1.AuthentikApplication) (*api.Application, error) {
+	uid := a.Status.ApplicationUID
+	got, err := c.GetApplication(ctx, a.Status.Slug)
+	switch {
+	case err == nil && got.Pk != uid:
+		return nil, condErrf(reasonConflict,
+			"application %q in Authentik has pk %s, not %s recorded by this resource; refusing to modify it. "+
+				"If this resource should manage a new application, clear status.applicationUid",
+			a.Status.Slug, got.Pk, uid)
+	case err == nil && a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
+		return got, r.yieldToLower(ctx, a)
+	case err == nil:
+		return got, nil
+	case !authentik.IsNotFound(err):
+		return nil, err
+	}
+	return nil, nil
+}
+
 // observeApplication finds the application this resource manages: by
 // status.applicationUid, then by slug -- a create whose outcome was lost is
 // recovered, and with spec.adoption.enabled an existing application is
@@ -171,22 +196,11 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest,
 	persist func() error) (*api.Application, error) {
 	slug := want.Slug
-	if uid := a.Status.ApplicationUID; uid != "" {
-		got, err := c.GetApplication(ctx, a.Status.Slug)
-		switch {
-		case err == nil && got.Pk != uid:
-			return nil, condErrf(reasonConflict,
-				"application %q in Authentik has pk %s, not %s recorded by this resource; refusing to modify it. "+
-					"If this resource should manage a new application, clear status.applicationUid",
-				a.Status.Slug, got.Pk, uid)
-		case err == nil:
-			return got, nil
-		case !authentik.IsNotFound(err):
-			return nil, err
+	if a.Status.ApplicationUID != "" {
+		got, err := r.observeTracked(ctx, c, a)
+		if err != nil || got != nil {
+			return got, err
 		}
-		// Keep status.applicationUid until a replacement exists: a 404 can
-		// be transient (proxy during a rollout), and the uid is what lets
-		// the finalizer clean up.
 	}
 
 	existing, err := c.GetApplication(ctx, slug)
@@ -219,6 +233,13 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alpha1.AuthentikApplication,
 	slug string) error {
 	switch {
+	case a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted && a.Status.ApplicationUID != "":
+		// Whether or not adoption is still enabled: an adopted application
+		// that vanished is not silently replaced by an empty one. The uid
+		// stays in status.
+		return condErrf(reasonAdoptionTargetNotFound, "the adopted application %q no longer exists in Authentik; "+
+			"not recreating it. Restore it, or clear status.applicationUid, status.slug and status.provenance "+
+			"and set spec.adoption.createIfMissing to create a new one", slug)
 	case !a.Spec.Adoption.Enabled || a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
 		return nil
 	case !a.Spec.Adoption.CreateIfMissing:
@@ -233,22 +254,44 @@ func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alph
 	return nil
 }
 
+// yieldToLower clears this resource's claim and reports a Conflict when
+// another resource tracks the same application and has the lower UID, so two
+// resources that passed the pre-adoption check together are settled by UID.
+func (r *AuthentikApplicationReconciler) yieldToLower(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication) error {
+	other, otherUID, err := r.trackingBy(ctx, a, a.Status.ApplicationUID)
+	if err != nil || other == "" || otherUID >= a.UID {
+		return err
+	}
+	slug := a.Status.Slug
+	a.Status.Provenance, a.Status.ApplicationUID, a.Status.Slug = "", "", ""
+	return condErrf(reasonConflict, "application %q is also claimed by %s, which takes precedence; "+
+		"this resource released it", slug, other)
+}
+
 // otherTracking names another application resource (namespace/name) that
 // already tracks uid on the same connection, or "".
 func (r *AuthentikApplicationReconciler) otherTracking(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, uid string) (string, error) {
+	name, _, err := r.trackingBy(ctx, a, uid)
+	return name, err
+}
+
+// trackingBy is otherTracking that also returns the other resource's UID.
+func (r *AuthentikApplicationReconciler) trackingBy(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, uid string) (string, types.UID, error) {
 	var list authentikiov1alpha1.AuthentikApplicationList
 	if err := r.List(ctx, &list); err != nil {
-		return "", fmt.Errorf("list AuthentikApplications: %w", err)
+		return "", "", fmt.Errorf("list AuthentikApplications: %w", err)
 	}
 	for i := range list.Items {
 		o := &list.Items[i]
 		if o.UID != a.UID && o.Status.ApplicationUID == uid && o.DeletionTimestamp.IsZero() &&
 			sameConnection(o.Namespace, o.Spec.AuthentikRef, a.Namespace, a.Spec.AuthentikRef) {
-			return o.Namespace + "/" + o.Name, nil
+			return o.Namespace + "/" + o.Name, o.UID, nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // adoptApplication takes over target: in dry-run mode it only reports what
@@ -284,6 +327,10 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	a.Status.Slug = target.Slug
 	a.Status.PendingCreate = ""
 	if err := persist(); err != nil {
+		return nil, err
+	}
+	// Re-check after the claim is visible; no Authentik write has happened.
+	if err := r.yieldToLower(ctx, a); err != nil {
 		return nil, err
 	}
 	r.event(a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)

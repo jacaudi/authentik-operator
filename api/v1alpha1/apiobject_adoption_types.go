@@ -108,7 +108,12 @@ type APIAdoptionSpec struct {
 	// database was lost, nothing exists to adopt) sets it to true
 	// deliberately. With adoption disabled the resource creates as usual,
 	// and a resource that created its object itself recreates it if it
-	// vanishes, whatever this says.
+	// vanishes, whatever this says. Treat it as a temporary toggle: leaving
+	// it true in Git removes the typo protection. For a disaster-recovery
+	// re-bootstrap, clear status.providerPk/applicationUid, provenance and
+	// clientId, set this, pin spec.clientId to the old client ID if
+	// consumers must keep it (the client secret is always new), and turn it
+	// off again once the object exists.
 	// +kubebuilder:default=false
 	// +optional
 	CreateIfMissing bool `json:"createIfMissing,omitempty"`

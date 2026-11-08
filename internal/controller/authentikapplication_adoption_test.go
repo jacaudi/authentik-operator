@@ -240,6 +240,58 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(get(a).Status.ApplicationUID).To(Equal(uid))
 	})
 
+	It("never recreates an adopted application that vanished, even after adoption is disabled", func() {
+		seedLegacy("vanish-off", nil)
+		a := newApp("vanish-off", "", true, false)
+		mustReconcile(a)
+		uid := get(a).Status.ApplicationUID
+		cur := get(a)
+		cur.Spec.Adoption.Enabled = false
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		fake.DeleteApplication("vanish-off")
+
+		mustReconcile(a)
+		Expect(ready(a).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		Expect(fake.ApplicationCount()).To(BeZero())
+		Expect(get(a).Status.ApplicationUID).To(Equal(uid))
+	})
+
+	It("yields to the lower-UID resource when two track one application", func() {
+		seedLegacy("raced-app", nil)
+		mk := func(name string) *authentikiov1alpha1.AuthentikApplication {
+			a := &authentikiov1alpha1.AuthentikApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: name, Slug: "raced-app",
+					Adoption: authentikiov1alpha1.APIAdoptionSpec{Enabled: true}},
+			}
+			Expect(k8sClient.Create(ctx, a)).To(Succeed())
+			cleanup(a)
+			return a
+		}
+		a, b := mk("race-a"), mk("race-b")
+		uid, ok := fake.Application("raced-app")["pk"].(string)
+		Expect(ok).To(BeTrue())
+		for _, x := range []*authentikiov1alpha1.AuthentikApplication{a, b} {
+			cur := get(x)
+			cur.Status.Provenance = authentikiov1alpha1.ProvenanceAdopted
+			cur.Status.ApplicationUID = uid
+			cur.Status.Slug = "raced-app"
+			Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		}
+		low, high := a, b
+		if get(a).UID > get(b).UID {
+			low, high = b, a
+		}
+		mustReconcile(high)
+		Expect(ready(high).Reason).To(Equal(reasonConflict))
+		Expect(get(high).Status.ApplicationUID).To(BeEmpty())
+		Expect(get(high).Status.Provenance).To(BeEmpty())
+
+		mustReconcile(low)
+		Expect(ready(low).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(low).Status.ApplicationUID).To(Equal(uid))
+	})
+
 	It("refuses to adopt an application another resource already tracks", func() {
 		seedLegacy("shared-app", nil)
 		first := newApp("shared-app", "", true, false)

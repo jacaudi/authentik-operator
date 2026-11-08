@@ -177,6 +177,22 @@ Kubernetes-object adoption does not.
   can complete adoption; an application in dryRun against a provider still in
   dryRun shows `ProviderNotReady`.
 
+### createIfMissing is a temporary toggle
+
+Leave `createIfMissing` false in Git; flipping it on removes the typo
+protection for as long as it stays on. The one legitimate use is a disaster
+recovery re-bootstrap after the Authentik database was lost:
+
+1. Clear `status.providerPk`, `status.provenance` and `status.clientId` (for
+   an application: `status.applicationUid`, `status.slug`,
+   `status.provenance`) on the resource, since an adopted object that vanished
+   is otherwise never recreated.
+2. Set `adoption.createIfMissing: true` temporarily.
+3. If consumers must keep their client ID, pin `spec.clientId` to the old
+   value. The client secret is always new; consumers need the re-rendered
+   credentials Secret.
+4. Once the object exists, set `createIfMissing` back to false.
+
 ### Deletion policy
 
 `spec.deletionPolicy` is `Delete` or `Retain`. Unset, the effective policy is
@@ -189,8 +205,13 @@ out first if workloads still mount it.
 
 ### Not covered
 
-The duplicate-adoption check reads the cached list of resources, so two
-resources reconciled within the same cache lag could both pass it; Authentik
+The duplicate-adoption check reads the cached list of resources. Two
+resources that pass it together are settled afterwards: each adopted resource
+re-checks on every reconcile and the one with the lexicographically lower
+`metadata.uid` keeps the object while the other releases it and reports a
+`Conflict`. The check compares connections by reference, so one resource on
+the operator default connection and another on an `AuthentikDeployment`
+pointing at the same Authentik are not detected as duplicates; Authentik
 itself limits a provider to one application. Provenance is sticky: turning
 `adoption.enabled` off later does not turn an `Adopted` object into a
 `Created` one.

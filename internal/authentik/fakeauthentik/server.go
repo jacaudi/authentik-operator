@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -188,6 +189,14 @@ func (s *Server) SeedProviderWith(fields map[string]any) int32 {
 	maps.Copy(in, fields)
 	s.providers[pk] = s.completeProvider(pk, in)
 	return pk
+}
+
+// DeleteCertificate removes a certificate-key pair by name (simulates an
+// install without the default signing key).
+func (s *Server) DeleteCertificate(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.certs = slices.DeleteFunc(s.certs, func(c map[string]any) bool { return c["name"] == name })
 }
 
 // Application returns a copy of a stored application, or nil.

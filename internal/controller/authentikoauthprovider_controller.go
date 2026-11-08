@@ -183,10 +183,16 @@ func (r *AuthentikOAuthProviderReconciler) syncProvider(ctx context.Context, c *
 	if err != nil {
 		return nil, err
 	}
+	adopted := got != nil && p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted
+	if !adopted {
+		if err := resolveDefaultSigningKey(ctx, c, p, want); err != nil {
+			return nil, err
+		}
+	}
 	if got == nil {
 		return r.createProvider(ctx, c, p, want, persist)
 	}
-	if p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted {
+	if adopted {
 		adoptionView(p, want, got)
 	}
 	return r.updateProvider(ctx, c, p, want, got)
@@ -255,6 +261,8 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk, "+
 				"status.provenance and status.clientId",
 			pk, got.GetClientId(), p.Status.ClientID)
+	case err == nil && p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
+		return got, r.yieldToLower(ctx, p)
 	case err == nil:
 		return got, nil
 	case authentik.IsNotFound(err):
@@ -297,9 +305,10 @@ func providerConflict(name string, existing *api.OAuth2Provider, err error) erro
 // that vanished, or createIfMissing), otherwise an error that writes nothing.
 func (r *AuthentikOAuthProviderReconciler) missingProvider(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	which string) error {
+	explicit := p.Spec.Adoption.Match != nil && !p.Spec.Adoption.CreateIfMissing
 	switch {
-	case p.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
-		return nil
+	case p.Status.Provenance == authentikiov1alpha1.ProvenanceCreated && !explicit:
+		return nil // a provider this resource created vanished: recreate
 	case !p.Spec.Adoption.CreateIfMissing:
 		return condErrf(reasonAdoptionTargetNotFound, "no OAuth2 provider %s exists in Authentik to adopt; nothing "+
 			"was written. Fix spec.adoption.match, or set spec.adoption.createIfMissing to create one", which)
@@ -393,27 +402,56 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	if err := persist(); err != nil {
 		return nil, err
 	}
+	// Re-check after the claim is visible: a resource that passed the
+	// pre-check at the same time is settled by UID. No Authentik write has
+	// happened yet.
+	if err := r.yieldToLower(ctx, p); err != nil {
+		return nil, err
+	}
 	r.event(p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
 		target.Name, target.Pk)
 	return target, nil
+}
+
+// yieldToLower clears this resource's claim and reports a Conflict when
+// another resource tracks the same provider and has the lower UID. It
+// settles the race in which two resources pass the pre-adoption check
+// together: the lower UID keeps the provider, the other backs off.
+func (r *AuthentikOAuthProviderReconciler) yieldToLower(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) error {
+	other, otherUID, err := r.trackingBy(ctx, p, p.Status.ProviderPK)
+	if err != nil || other == "" || otherUID >= p.UID {
+		return err
+	}
+	pk := p.Status.ProviderPK
+	p.Status.Provenance, p.Status.ProviderPK, p.Status.ClientID = "", 0, ""
+	return condErrf(reasonConflict, "OAuth2 provider pk %d is also claimed by %s, which takes precedence; "+
+		"this resource released it", pk, other)
 }
 
 // otherTracking names another provider resource (namespace/name) that
 // already tracks pk on the same connection, or "".
 func (r *AuthentikOAuthProviderReconciler) otherTracking(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, error) {
+	name, _, err := r.trackingBy(ctx, p, pk)
+	return name, err
+}
+
+// trackingBy is otherTracking that also returns the other resource's UID.
+func (r *AuthentikOAuthProviderReconciler) trackingBy(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, types.UID, error) {
 	var list authentikiov1alpha1.AuthentikOAuthProviderList
 	if err := r.List(ctx, &list); err != nil {
-		return "", fmt.Errorf("list AuthentikOAuthProviders: %w", err)
+		return "", "", fmt.Errorf("list AuthentikOAuthProviders: %w", err)
 	}
 	for i := range list.Items {
 		o := &list.Items[i]
 		if o.UID != p.UID && o.Status.ProviderPK == pk && o.DeletionTimestamp.IsZero() &&
 			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
-			return o.Namespace + "/" + o.Name, nil
+			return o.Namespace + "/" + o.Name, o.UID, nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }
 
 // createProvider creates the provider, recording status.pendingCreate first

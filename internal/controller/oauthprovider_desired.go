@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -199,11 +198,16 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	req.SetIssuerMode(api.IssuerModeEnum(s.IssuerMode))
 	req.SetIncludeClaimsInIdToken(*s.IncludeClaimsInIDToken)
 
-	signing, err := certPK(cmp.Or(s.SigningKey, defaultSigningKeyName))
-	if err != nil {
-		return nil, err
+	// An empty signingKey is resolved to the default certificate only where
+	// it will be used (see resolveDefaultSigningKey): not for an adopted
+	// provider, which keeps its own.
+	if s.SigningKey != "" {
+		signing, err := certPK(s.SigningKey)
+		if err != nil {
+			return nil, err
+		}
+		req.SetSigningKey(signing)
 	}
-	req.SetSigningKey(signing)
 	if s.EncryptionKey != "" {
 		pk, err := certPK(s.EncryptionKey)
 		if err != nil {
@@ -217,6 +221,22 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	req.SetLogoutUri(s.LogoutURI)
 	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
 	return req, nil
+}
+
+// resolveDefaultSigningKey fills in the default certificate when
+// spec.signingKey is empty, for a provider about to be created or managed as
+// created.
+func resolveDefaultSigningKey(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest) error {
+	if p.Spec.SigningKey != "" {
+		return nil
+	}
+	k, err := c.CertificateByName(ctx, defaultSigningKeyName)
+	if err != nil {
+		return referenceError(err)
+	}
+	want.SetSigningKey(k.Pk)
+	return nil
 }
 
 // propertyMappingPKs resolves the scope mappings and property mappings the
