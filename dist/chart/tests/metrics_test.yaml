@@ -1,0 +1,71 @@
+suite: metrics
+templates:
+  - metrics/controller-manager-metrics-service.yaml
+  - prometheus/controller-manager-metrics-monitor.yaml
+  - network-policy/allow-metrics-traffic.yaml
+tests:
+  - it: renders the metrics Service on 8443/https by default
+    template: metrics/controller-manager-metrics-service.yaml
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.ports[0].name
+          value: https
+      - equal:
+          path: spec.ports[0].port
+          value: 8443
+
+  - it: renders no Service when metrics are disabled
+    template: metrics/controller-manager-metrics-service.yaml
+    set:
+      metrics.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: leaves the ServiceMonitor off by default
+    template: prometheus/controller-manager-metrics-monitor.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders a TLS ServiceMonitor with the bearer token when enabled
+    template: prometheus/controller-manager-metrics-monitor.yaml
+    set:
+      prometheus.enabled: true
+      prometheus.labels:
+        release: kube-prometheus-stack
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: spec.endpoints[0].scheme
+          value: https
+      - equal:
+          path: spec.endpoints[0].bearerTokenFile
+          value: /var/run/secrets/kubernetes.io/serviceaccount/token
+      - equal:
+          path: metadata.labels.release
+          value: kube-prometheus-stack
+
+  - it: leaves the NetworkPolicy off by default
+    template: network-policy/allow-metrics-traffic.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders the NetworkPolicy allowing labelled namespaces to scrape 8443
+    template: network-policy/allow-metrics-traffic.yaml
+    set:
+      networkPolicy.enabled: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels
+          value:
+            metrics: enabled
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 8443

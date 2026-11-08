@@ -1,0 +1,434 @@
+suite: deployment
+templates:
+  - manager/manager.yaml
+chart:
+  appVersion: 1.2.3
+tests:
+  - it: renders a single Deployment with one replica by default
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.replicas
+          value: 1
+
+  - it: defaults the image to the lowercase GHCR repo at v<appVersion>
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jacaudi/authentik-operator:v1.2.3
+
+  - it: lets image.tag override the appVersion default
+    set:
+      image.tag: sha-abc1234
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jacaudi/authentik-operator:sha-abc1234
+
+  - it: renders repo@digest when image.digest is set, and the digest wins over the tag
+    set:
+      image.tag: v9.9.9
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/jacaudi/authentik-operator@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  - it: honours a custom repository
+    set:
+      image.repository: registry.example.com/mirror/authentik-operator
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/authentik-operator:v1.2.3
+
+  - it: sets imagePullPolicy and imagePullSecrets
+    set:
+      image.pullPolicy: Always
+      imagePullSecrets:
+        - name: ghcr-pull
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: ghcr-pull
+
+  - it: omits imagePullSecrets by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+
+  - it: honours replicaCount
+    set:
+      replicaCount: 3
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+
+  - it: keeps leader election on by default, matching config/manager
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+
+  - it: can switch leader election off
+    set:
+      leaderElection.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+
+  - it: applies restricted pod and container security contexts by default
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+
+  - it: runs /manager with the health port and probes from config/manager
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value:
+            - /manager
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --health-probe-bind-address=:8081
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+
+  - it: defaults resources to the config/manager values
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+
+  - it: serves secure metrics on 8443 by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=:8443
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-secure=false
+
+  - it: disables the metrics server when metrics.enabled is false
+    set:
+      metrics.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=0
+
+  - it: serves plain-HTTP metrics when metrics.secure is false
+    set:
+      metrics.secure: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-secure=false
+
+  - it: passes the zap logging flags
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=info
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=false
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=json
+
+  - it: honours logging overrides
+    set:
+      logging.level: debug
+      logging.devel: true
+      logging.encoder: console
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=debug
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=console
+
+  - it: passes extraArgs through verbatim, after the chart's own flags
+    set:
+      extraArgs:
+        - --enable-http2
+        - --zap-stacktrace-level=error
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-http2
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-stacktrace-level=error
+      - equal:
+          path: spec.template.spec.containers[0].args[-1]
+          value: --zap-stacktrace-level=error
+
+  - it: passes extraEnv, extraVolumes and extraVolumeMounts through
+    set:
+      extraEnv:
+        - name: HTTPS_PROXY
+          value: http://proxy.example.com:3128
+      extraVolumes:
+        - name: scratch
+          emptyDir: {}
+      extraVolumeMounts:
+        - name: scratch
+          mountPath: /scratch
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HTTPS_PROXY
+            value: http://proxy.example.com:3128
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: scratch
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: scratch
+            mountPath: /scratch
+
+  - it: has no authentik flags, env or volumes when nothing is configured
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+      - notExists:
+          path: spec.template.spec.volumes
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: authentik
+
+  - it: passes the default connection URLs as flags
+    set:
+      authentik.url: https://authentik.example.com
+      authentik.externalUrl: https://sso.example.com
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-url=https://authentik.example.com
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-external-url=https://sso.example.com
+
+  - it: mounts the token Secret as a file and passes --authentik-token-file
+    set:
+      authentik.tokenSecret.name: authentik-api
+      authentik.tokenSecret.key: api-token
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-token-file=/var/run/secrets/authentik/token/token
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: authentik-token
+            secret:
+              secretName: authentik-api
+              items:
+                - key: api-token
+                  path: token
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: authentik-token
+            mountPath: /var/run/secrets/authentik/token
+            readOnly: true
+
+  - it: defaults the token Secret key to token
+    set:
+      authentik.tokenSecret.name: authentik-api
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: authentik-token
+            secret:
+              secretName: authentik-api
+              items:
+                - key: token
+                  path: token
+
+  - it: never inlines the token as an env var or arg
+    set:
+      authentik.tokenSecret.name: authentik-api
+      authentik.tokenSecret.key: api-token
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: AUTHENTIK_TOKEN
+
+  - it: mounts a CA bundle from a ConfigMap
+    set:
+      authentik.caBundle.configMap.name: authentik-ca
+      authentik.caBundle.configMap.key: ca-bundle.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-ca-file=/etc/authentik/ca/ca.crt
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: authentik-ca
+            configMap:
+              name: authentik-ca
+              items:
+                - key: ca-bundle.pem
+                  path: ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: authentik-ca
+            mountPath: /etc/authentik/ca
+            readOnly: true
+
+  - it: mounts a CA bundle from a Secret
+    set:
+      authentik.caBundle.secret.name: authentik-ca
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-ca-file=/etc/authentik/ca/ca.crt
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: authentik-ca
+            secret:
+              secretName: authentik-ca
+              items:
+                - key: ca.crt
+                  path: ca.crt
+
+  - it: rejects a CA bundle set from both a ConfigMap and a Secret
+    set:
+      authentik.caBundle.configMap.name: a
+      authentik.caBundle.secret.name: b
+    asserts:
+      - failedTemplate:
+          errorPattern: caBundle
+
+  - it: passes --authentik-insecure-skip-verify only when asked
+    set:
+      authentik.insecureSkipVerify: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-insecure-skip-verify=true
+
+  - it: does not invent webhook or watch-namespace flags
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: webhook|watch-namespace
+
+  - it: renders scheduling knobs
+    set:
+      priorityClassName: system-cluster-critical
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - key: dedicated
+          operator: Exists
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              control-plane: controller-manager
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-cluster-critical
+      - equal:
+          path: spec.template.spec.nodeSelector
+          value:
+            kubernetes.io/os: linux
+      - equal:
+          path: spec.template.spec.tolerations[0].key
+          value: dedicated
+      - exists:
+          path: spec.template.spec.affinity.podAntiAffinity
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+
+  - it: renders pod annotations and labels without clobbering the selector labels
+    set:
+      podAnnotations:
+        example.com/scrape: "true"
+      podLabels:
+        team: platform
+        control-plane: hijacked
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["example.com/scrape"]
+          value: "true"
+      - equal:
+          path: spec.template.metadata.annotations["kubectl.kubernetes.io/default-container"]
+          value: manager
+      - equal:
+          path: spec.template.metadata.labels.team
+          value: platform
+      - equal:
+          path: spec.template.metadata.labels.control-plane
+          value: controller-manager
+
+  - it: runs as the chart ServiceAccount, or a named one
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.serviceAccountName
+          pattern: controller-manager$
+  - it: uses serviceAccount.name when given
+    set:
+      serviceAccount.name: custom-sa
+    asserts:
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: custom-sa
