@@ -276,32 +276,49 @@ make build-installer IMG=<registry>/<project>:tag
 kubectl apply -f https://raw.githubusercontent.com/<org>/<repo>/<tag>/dist/install.yaml
 ```
 
-### Option 2: Helm Chart
+### Option 2: Helm Chart (`dist/chart`, hybrid hand-owned + plugin-owned)
+
+The chart was scaffolded with `kubebuilder edit --plugins=helm/v2-alpha` (CLI
+pinned to PROJECT `cliVersion`, installed into `bin/` by `make kubebuilder`)
+and then customised. **Do not run the plugin by hand**: it overwrites
+`templates/manager/manager.yaml` and rewrites PROJECT, Makefile and
+`config/manager/kustomization.yaml`. Use the wrapper instead.
+
+| Path | Owner | How it changes |
+|------|-------|----------------|
+| `templates/{crd,rbac,metrics,network-policy,prometheus}/` | plugin | derived from `config/`; `make chart-regen` |
+| `Chart.yaml`, `values.yaml`, `templates/_helpers.tpl`, `templates/NOTES.txt`, `templates/manager/manager.yaml`, `templates/pdb.yaml`, `ci/`, `tests/`, `README.md` | hand | edit directly |
+
+Keeping the chart in sync with `config/`:
+
+- After changing `api/` markers, `config/rbac`, `config/crd`, `config/default`
+  or `config/manager`: run `make chart-regen`, review the diff, commit.
+  `hack/chart-regen.sh` runs the plugin, takes only the plugin-owned
+  directories, and restores the hand-owned files and the plugin's side effects.
+- `config/manager/manager.yaml` (args, probes, securityContext, resources) has
+  NO generated counterpart: mirror such changes into
+  `templates/manager/manager.yaml` and `values.yaml` by hand.
+- New binary flags worth exposing go in `values.yaml` + `templates/manager/manager.yaml`
+  with a test first. Webhook toggles and `watchNamespaces` are intentionally
+  absent until the binary supports them (TASK-06).
+- Enforced in CI by `task chart:ci` (part of `task ci`): `chart:lint` (helm
+  lint --strict, kubeconform, Chart.yaml == `.release-please-manifest.json`,
+  `hack/verify-chart-rbac.sh` diffing rendered RBAC against `config/rbac`),
+  `chart:test` (helm-unittest, `dist/chart/tests`), `chart:drift`
+  (`make chart-regen-check`).
+- Tests first: add/adjust a suite in `dist/chart/tests/` and watch it fail
+  before touching templates.
+- Never edit the `version:`/`appVersion:` lines in `Chart.yaml`; release-please
+  bumps them (`# x-release-please-version` markers, `extra-files`).
+- `task chart:smoke` installs the chart into a throwaway kind cluster.
 
 ```bash
-kubebuilder edit --plugins=helm/v2-alpha                      # Generates dist/chart/ (default)
-kubebuilder edit --plugins=helm/v2-alpha --output-dir=charts  # Generates charts/chart/
+make chart-regen                                         # refresh plugin-owned templates
+task chart:ci                                            # lint + unit tests + drift
+IMAGE=ghcr.io/jacaudi/authentik-operator@sha256:... task chart:smoke
+make helm-deploy IMG=<registry>/<project>:<tag>          # dev deploy to the current context
+helm install authentik-operator oci://ghcr.io/<owner>/charts/authentik-operator --version X.Y.Z
 ```
-
-**For development:**
-```bash
-make helm-deploy IMG=<registry>/<project>:<tag>          # Deploy manager via Helm
-make helm-deploy IMG=$IMG HELM_EXTRA_ARGS="--set ..."    # Deploy with custom values
-make helm-status                                         # Show release status
-make helm-uninstall                                      # Remove release
-make helm-history                                        # View release history
-make helm-rollback                                       # Rollback to previous version
-```
-
-**For end users/production:**
-```bash
-helm install my-release ./<output-dir>/chart/ --namespace <ns> --create-namespace
-```
-
-**Important:** If you add webhooks or modify manifests after initial chart generation:
-1. Backup any customizations in `<output-dir>/chart/values.yaml` and `<output-dir>/chart/manager/manager.yaml`
-2. Re-run: `kubebuilder edit --plugins=helm/v2-alpha --force` (use same `--output-dir` if customized)
-3. Manually restore your custom values from the backup
 
 ### Publish Container Image
 
