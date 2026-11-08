@@ -8,4 +8,6 @@ rules:
     ignore:
       - ci.yaml
       - ci-test.yml
+      - ci-smoke.yml
+      - ci-chart.yml
       - release-republish.yml

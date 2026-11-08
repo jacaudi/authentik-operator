@@ -69,3 +69,65 @@ tasks:
       # Installs the pinned kubebuilder CLI into bin/ and regenerates into a
       # temp copy; hand-owned files are never touched. See AGENTS.md.
       - make chart-regen-check
+
+  # Runs in CI (ci-smoke.yml, ci-chart.yml) and locally:
+  #   IMAGE=ghcr.io/jacaudi/authentik-operator@sha256:... task chart:smoke
+  #   KIND_LOAD=true IMAGE=authentik-operator:dev task chart:smoke   # local image
+  #   task chart:smoke                                  # chart DEFAULT image values
+  # CHART may point at a packaged .tgz instead of the dist/chart directory.
+  smoke:
+    desc: Install the chart into a throwaway kind cluster and wait for the Deployment to be Available
+    env:
+      IMAGE: '{{.IMAGE}}'
+      CHART: '{{.CHART | default .CHART_DIR}}'
+      KIND_CLUSTER: '{{.KIND_CLUSTER | default "ao-chart-smoke"}}'
+      KIND_LOAD: '{{.KIND_LOAD | default "false"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        for tool in kind kubectl helm; do
+          command -v "${tool}" >/dev/null || { echo "${tool} not installed" >&2; exit 1; }
+        done
+        ns=authentik-operator-system
+        ctx="kind-${KIND_CLUSTER}"
+
+        set_args=()
+        case "${IMAGE:-}" in
+          "")        echo "no IMAGE: installing with the chart's DEFAULT image values" ;;
+          *@sha256:*) set_args+=(--set "image.repository=${IMAGE%@*}" --set "image.digest=${IMAGE#*@}") ;;
+          *)          set_args+=(--set "image.repository=${IMAGE%:*}" --set "image.tag=${IMAGE##*:}") ;;
+        esac
+
+        if kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER}"; then
+          echo "kind cluster ${KIND_CLUSTER} already exists; refusing to reuse or delete it" >&2
+          exit 1
+        fi
+        # Deletes EXACTLY the cluster this task created, by name; nothing else.
+        trap 'kind delete cluster --name "${KIND_CLUSTER}" || true' EXIT
+        kind create cluster --name "${KIND_CLUSTER}" --wait 120s
+
+        if [ "${KIND_LOAD}" = "true" ]; then
+          kind load docker-image "${IMAGE}" --name "${KIND_CLUSTER}"
+          set_args+=(--set image.pullPolicy=Never)
+        elif [ -f "${HOME}/.docker/config.json" ]; then
+          # The GHCR package may be private: reuse the runner's registry login as
+          # a pull Secret (the chart's imagePullSecrets path).
+          kubectl --context "${ctx}" create namespace "${ns}"
+          kubectl --context "${ctx}" -n "${ns}" create secret generic ghcr-pull \
+            --type=kubernetes.io/dockerconfigjson \
+            --from-file=.dockerconfigjson="${HOME}/.docker/config.json"
+          set_args+=(--set "imagePullSecrets[0].name=ghcr-pull")
+        fi
+
+        helm install authentik-operator "${CHART}" \
+          --kube-context "${ctx}" --namespace "${ns}" --create-namespace \
+          "${set_args[@]}" --wait --timeout 4m \
+          || { kubectl --context "${ctx}" -n "${ns}" get pods -o wide || true
+               kubectl --context "${ctx}" -n "${ns}" describe pods || true
+               kubectl --context "${ctx}" -n "${ns}" logs deploy/authentik-operator-controller-manager --tail=100 || true
+               exit 1; }
+
+        kubectl --context "${ctx}" -n "${ns}" wait --for=condition=Available \
+          deployment --all --timeout=120s
+        kubectl --context "${ctx}" get crd | grep authentik.io
+        echo "ok: chart installed and Deployment Available"
