@@ -1,0 +1,13 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: badvar, namespace: ns}
+spec:
+  name: Bad
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://bad.example.com/cb"]
+  secret:
+    template: |
+      id: {{ .ClientID }}
+      ns: {{ .Namespace }}

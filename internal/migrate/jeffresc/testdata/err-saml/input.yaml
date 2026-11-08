@@ -1,0 +1,9 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikSAMLApplication
+metadata: {name: wiki, namespace: ns}
+spec:
+  name: Wiki
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    acsUrl: https://wiki.example.com/saml/acs

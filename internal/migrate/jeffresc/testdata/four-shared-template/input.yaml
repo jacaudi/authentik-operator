@@ -1,0 +1,91 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: gitlab, namespace: authentik-operator-system}
+spec:
+  name: "GitLab"
+  slug: "gitlab"
+  metaLaunchUrl: "https://gitlab.example.com"
+  metaDescription: "Git repository hosting"
+  provider:
+    authorizationFlow: "default-provider-authorization-implicit-consent"
+    invalidationFlow: "default-provider-invalidation-flow"
+    redirectUris: ["https://gitlab.example.com/users/auth/openid_connect/callback"]
+    scopes: [openid, profile, email]
+    clientType: "confidential"
+    accessTokenValidity: "minutes=10"
+    refreshTokenValidity: "days=30"
+    subMode: "hashed_user_id"
+    includeClaimsInIdToken: true
+    issuerMode: "per_provider"
+  secret:
+    name: "gitlab-oidc-credentials"
+    template: |
+      OIDC_CLIENT_ID: {{ .ClientID }}
+      OIDC_CLIENT_SECRET: {{ .ClientSecret }}
+      OIDC_ISSUER: {{ .IssuerURL }}
+      OIDC_AUTH_URL: {{ .AuthURL }}
+      OIDC_TOKEN_URL: {{ .TokenURL }}
+      OIDC_USERINFO_URL: {{ .UserInfoURL }}
+---
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: grafana, namespace: authentik-operator-system}
+spec:
+  name: "Grafana"
+  slug: "grafana"
+  metaLaunchUrl: "https://grafana.example.com"
+  provider:
+    authorizationFlow: "default-provider-authorization-implicit-consent"
+    invalidationFlow: "default-provider-invalidation-flow"
+    redirectUris: ["https://grafana.example.com/oauth2/callback"]
+  secret:
+    name: "grafana-oidc-credentials"
+    template: |
+      OIDC_CLIENT_ID: {{ .ClientID }}
+      OIDC_CLIENT_SECRET: {{ .ClientSecret }}
+      OIDC_ISSUER: {{ .IssuerURL }}
+      OIDC_AUTH_URL: {{ .AuthURL }}
+      OIDC_TOKEN_URL: {{ .TokenURL }}
+      OIDC_USERINFO_URL: {{ .UserInfoURL }}
+---
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: litellm, namespace: authentik-operator-system}
+spec:
+  name: "LiteLLM"
+  slug: "litellm"
+  metaLaunchUrl: "https://litellm.example.com"
+  provider:
+    authorizationFlow: "default-provider-authorization-implicit-consent"
+    invalidationFlow: "default-provider-invalidation-flow"
+    redirectUris: ["https://litellm.example.com/oauth2/callback"]
+  secret:
+    name: "litellm-oidc-credentials"
+    template: |
+      OIDC_CLIENT_ID: {{ .ClientID }}
+      OIDC_CLIENT_SECRET: {{ .ClientSecret }}
+      OIDC_ISSUER: {{ .IssuerURL }}
+      OIDC_AUTH_URL: {{ .AuthURL }}
+      OIDC_TOKEN_URL: {{ .TokenURL }}
+      OIDC_USERINFO_URL: {{ .UserInfoURL }}
+---
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: vault, namespace: authentik-operator-system}
+spec:
+  name: "Vault"
+  slug: "vault"
+  metaLaunchUrl: "https://vault.example.com"
+  provider:
+    authorizationFlow: "default-provider-authorization-implicit-consent"
+    invalidationFlow: "default-provider-invalidation-flow"
+    redirectUris: ["https://vault.example.com/oauth2/callback"]
+  secret:
+    name: "vault-oidc-credentials"
+    template: |
+      OIDC_CLIENT_ID: {{ .ClientID }}
+      OIDC_CLIENT_SECRET: {{ .ClientSecret }}
+      OIDC_ISSUER: {{ .IssuerURL }}
+      OIDC_AUTH_URL: {{ .AuthURL }}
+      OIDC_TOKEN_URL: {{ .TokenURL }}
+      OIDC_USERINFO_URL: {{ .UserInfoURL }}
