@@ -105,7 +105,7 @@ func New(cfg Config) (*Client, error) {
 
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if cfg.InsecureSkipVerify {
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // explicit opt-in only
+		tlsCfg.InsecureSkipVerify = true
 	}
 	if len(cfg.CABundle) > 0 {
 		pool, err := x509.SystemCertPool()
@@ -118,7 +118,11 @@ func New(cfg Config) (*Client, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("authentik: http.DefaultTransport is not an *http.Transport")
+	}
+	baseTransport := defaultTransport.Clone()
 	baseTransport.TLSClientConfig = tlsCfg
 
 	var rt http.RoundTripper = baseTransport

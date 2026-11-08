@@ -106,11 +106,12 @@ type AuthentikCredentialsTemplate struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikCredentialsTemplateList contains a list of AuthentikCredentialsTemplate
+// AuthentikCredentialsTemplateList contains a list of AuthentikCredentialsTemplate.
 type AuthentikCredentialsTemplateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikCredentialsTemplate `json:"items"`
+
+	Items []AuthentikCredentialsTemplate `json:"items"`
 }
 
 func init() {

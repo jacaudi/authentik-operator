@@ -27,6 +27,7 @@ package connection
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -67,7 +68,10 @@ type Error struct {
 	Err     error
 }
 
+// Error returns the user-facing message.
 func (e *Error) Error() string { return e.Message }
+
+// Unwrap returns the underlying API error, if any.
 func (e *Error) Unwrap() error { return e.Err }
 
 // Reason extracts the condition reason from err, or "" if err is not an *Error.
@@ -111,7 +115,8 @@ type Resolved struct {
 
 // ForRef resolves the client for an API object in namespace with the given
 // (possibly nil) authentikRef.
-func (r *Resolver) ForRef(ctx context.Context, namespace string, ref *authentikiov1alpha1.AuthentikRef) (*Resolved, error) {
+func (r *Resolver) ForRef(ctx context.Context, namespace string,
+	ref *authentikiov1alpha1.AuthentikRef) (*Resolved, error) {
 	if ref == nil {
 		if r.Default == nil {
 			return nil, &Error{
@@ -183,7 +188,8 @@ func (r *Resolver) Forget(key types.NamespacedName) {
 	delete(r.clients, key.String())
 }
 
-func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.AuthentikDeployment) (authentik.Config, error) {
+func (r *Resolver) configFor(ctx context.Context,
+	d *authentikiov1alpha1.AuthentikDeployment) (authentik.Config, error) {
 	conn := d.Spec.Connection
 	if conn == nil {
 		return authentik.Config{}, &Error{
@@ -193,8 +199,10 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 		}
 	}
 
-	token, err := r.secretValue(ctx, d.Namespace, conn.TokenSecretRef.Name, conn.TokenSecretRef.Key,
-		"token", ReasonSecretNotFound, ReasonSecretKeyMissing)
+	token, err := r.secretValue(ctx, d.Namespace, secretKey{
+		name: conn.TokenSecretRef.Name, key: cmp.Or(conn.TokenSecretRef.Key, "token"),
+		notFoundReason: ReasonSecretNotFound, keyMissingReason: ReasonSecretKeyMissing,
+	})
 	if err != nil {
 		return authentik.Config{}, err
 	}
@@ -213,8 +221,10 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 	if ca := conn.CABundle; ca != nil {
 		switch {
 		case ca.SecretKeyRef != nil:
-			cfg.CABundle, err = r.secretValue(ctx, d.Namespace, ca.SecretKeyRef.Name, ca.SecretKeyRef.Key,
-				"ca.crt", ReasonCABundleNotFound, ReasonCABundleNotFound)
+			cfg.CABundle, err = r.secretValue(ctx, d.Namespace, secretKey{
+				name: ca.SecretKeyRef.Name, key: cmp.Or(ca.SecretKeyRef.Key, "ca.crt"),
+				notFoundReason: ReasonCABundleNotFound, keyMissingReason: ReasonCABundleNotFound,
+			})
 		case ca.ConfigMapKeyRef != nil:
 			cfg.CABundle, err = r.configMapValue(ctx, d.Namespace, *ca.ConfigMapKeyRef)
 		}
@@ -225,14 +235,18 @@ func (r *Resolver) configFor(ctx context.Context, d *authentikiov1alpha1.Authent
 	return cfg, nil
 }
 
-func (r *Resolver) secretValue(ctx context.Context, namespace, name, key, defaultKey,
-	notFoundReason, keyMissingReason string) ([]byte, error) {
-	if key == "" {
-		key = defaultKey
-	}
+// secretKey names one key of a Secret and the condition reasons to report
+// when the Secret or the key is missing.
+type secretKey struct {
+	name, key                        string
+	notFoundReason, keyMissingReason string
+}
+
+func (r *Resolver) secretValue(ctx context.Context, namespace string, ref secretKey) ([]byte, error) {
+	name, key := ref.name, ref.key
 	var s corev1.Secret
 	if err := r.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &s); err != nil {
-		return nil, readError("Secret", namespace, name, notFoundReason, err)
+		return nil, readError("Secret", namespace, name, ref.notFoundReason, err)
 	}
 	// Opt-in check before touching any data, so an unlabeled Secret reveals
 	// nothing about its keys.
@@ -246,7 +260,7 @@ func (r *Resolver) secretValue(ctx context.Context, namespace, name, key, defaul
 	v, ok := s.Data[key]
 	if !ok {
 		return nil, &Error{
-			Reason:  keyMissingReason,
+			Reason:  ref.keyMissingReason,
 			Message: fmt.Sprintf("Secret %s/%s has no key %q", namespace, name, key),
 		}
 	}
@@ -275,7 +289,8 @@ func readError(kind, namespace, name, notFoundReason string, err error) error {
 	}
 }
 
-func (r *Resolver) configMapValue(ctx context.Context, namespace string, ref authentikiov1alpha1.ConfigMapKeyRef) ([]byte, error) {
+func (r *Resolver) configMapValue(ctx context.Context, namespace string,
+	ref authentikiov1alpha1.ConfigMapKeyRef) ([]byte, error) {
 	k := ref.Key
 	if k == "" {
 		k = "ca.crt"
@@ -323,11 +338,11 @@ func (r *Resolver) cached(key string, cfg authentik.Config) (*authentik.Client, 
 func fingerprint(cfg authentik.Config) [sha256.Size]byte {
 	h := sha256.New()
 	for _, part := range [][]byte{[]byte(cfg.URL), []byte(cfg.Token), cfg.CABundle} {
-		_, _ = fmt.Fprintf(h, "%d:", len(part))
-		_, _ = h.Write(part)
+		h.Write(fmt.Appendf(nil, "%d:", len(part)))
+		h.Write(part)
 	}
 	if cfg.InsecureSkipVerify {
-		_, _ = h.Write([]byte{1})
+		h.Write([]byte{1})
 	}
 	var out [sha256.Size]byte
 	copy(out[:], h.Sum(nil))

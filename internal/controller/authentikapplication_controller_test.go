@@ -361,7 +361,8 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(ready(a).Reason).To(Equal(reasonProviderNotReady))
 		Expect(drainEvents(recorder)).NotTo(ContainElement(ContainSubstring(reasonInvalidSpec)))
 
-		p := &authentikiov1alpha1.AuthentikOAuthProvider{ObjectMeta: metav1.ObjectMeta{Name: "prov-recreated", Namespace: namespace}}
+		p := &authentikiov1alpha1.AuthentikOAuthProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov-recreated", Namespace: namespace}}
 		_, err = providers.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
@@ -380,7 +381,8 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		_, err := reconcileApp(a)
 		Expect(err).NotTo(HaveOccurred())
 
-		p := &authentikiov1alpha1.AuthentikOAuthProvider{ObjectMeta: metav1.ObjectMeta{Name: "prov-gone", Namespace: namespace}}
+		p := &authentikiov1alpha1.AuthentikOAuthProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: "prov-gone", Namespace: namespace}}
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
 		p.Finalizers = nil
 		Expect(k8sClient.Update(ctx, p)).To(Succeed())
@@ -478,7 +480,8 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		r := &AuthentikApplicationReconciler{Client: c}
 		reqs := r.applicationsForProvider(ctx, &authentikiov1alpha1.AuthentikOAuthProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: namespace}})
-		Expect(reqs).To(HaveExactElements(reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "uses-p"}}))
+		Expect(reqs).To(HaveExactElements(
+			reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "uses-p"}}))
 	})
 
 	Context("admission validation", func() {

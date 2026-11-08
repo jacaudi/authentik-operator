@@ -46,6 +46,7 @@ const (
 // Rendering happens in the provider reconciler.
 type AuthentikCredentialsTemplateReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 }
 

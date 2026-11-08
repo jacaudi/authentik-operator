@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package controller holds the reconcilers for the authentik.io custom
+// resources: one per kind, plus the helpers they share.
 package controller
 
 import (
@@ -22,8 +24,6 @@ import (
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/connection"
 )
-
-// Helpers shared by the Authentik API object reconcilers.
 
 // resolveForDeletion resolves the connection for a finalizer. When the
 // connection's objects are already gone (namespace teardown deletes the

@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"time"
 
@@ -45,18 +46,25 @@ const (
 
 	healthyRecheck   = 5 * time.Minute
 	unhealthyRecheck = 30 * time.Second
-	// pingTimeout bounds one health check, retries included, so an
+	// defaultPingTimeout bounds one health check, retries included, so an
 	// unreachable Authentik cannot monopolise a worker.
-	pingTimeout = 15 * time.Second
+	defaultPingTimeout = 15 * time.Second
 
 	maxConcurrentReconciles = 4
 )
 
-// AuthentikDeploymentReconciler reconciles a AuthentikDeployment object
+// AuthentikDeploymentReconciler reconciles a AuthentikDeployment object.
 type AuthentikDeploymentReconciler struct {
 	client.Client
+
 	Scheme      *runtime.Scheme
 	Connections *connection.Resolver
+	// PingTimeout bounds one health check; zero means defaultPingTimeout.
+	PingTimeout time.Duration
+}
+
+func (r *AuthentikDeploymentReconciler) pingTimeout() time.Duration {
+	return cmp.Or(r.PingTimeout, defaultPingTimeout)
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get;list;watch;create;update;patch;delete
@@ -107,7 +115,7 @@ func (r *AuthentikDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.
 			break
 		}
 		status.URL = resolved.Client.BaseURL()
-		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		pingCtx, cancel := context.WithTimeout(ctx, r.pingTimeout())
 		user, err := resolved.Client.Ping(pingCtx)
 		cancel()
 		if err != nil {

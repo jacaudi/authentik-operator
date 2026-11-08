@@ -24,7 +24,7 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// AuthentikGroupSpec defines the desired state of AuthentikGroup
+// AuthentikGroupSpec defines the desired state of AuthentikGroup.
 type AuthentikGroupSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
@@ -68,7 +68,7 @@ type AuthentikGroupStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// AuthentikGroup is the Schema for the authentikgroups API
+// AuthentikGroup is the Schema for the authentikgroups API.
 type AuthentikGroup struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -87,11 +87,12 @@ type AuthentikGroup struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikGroupList contains a list of AuthentikGroup
+// AuthentikGroupList contains a list of AuthentikGroup.
 type AuthentikGroupList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikGroup `json:"items"`
+
+	Items []AuthentikGroup `json:"items"`
 }
 
 func init() {

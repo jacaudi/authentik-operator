@@ -293,7 +293,7 @@ type AuthentikOAuthProviderStatus struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.spec.secret) || has(self.spec.secret.name) || size(self.metadata.name) <= 247",message="metadata.name is too long for the default Secret name <name>-oauth; set spec.secret.name"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// AuthentikOAuthProvider is the Schema for the authentikoauthproviders API
+// AuthentikOAuthProvider is the Schema for the authentikoauthproviders API.
 type AuthentikOAuthProvider struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -312,11 +312,12 @@ type AuthentikOAuthProvider struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikOAuthProviderList contains a list of AuthentikOAuthProvider
+// AuthentikOAuthProviderList contains a list of AuthentikOAuthProvider.
 type AuthentikOAuthProviderList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikOAuthProvider `json:"items"`
+
+	Items []AuthentikOAuthProvider `json:"items"`
 }
 
 func init() {

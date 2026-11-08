@@ -47,7 +47,7 @@ type ProviderRef struct {
 // +kubebuilder:validation:Enum=all;any
 type PolicyEngineMode string
 
-// AuthentikApplicationSpec defines the desired state of AuthentikApplication
+// AuthentikApplicationSpec defines the desired state of AuthentikApplication.
 // +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 type AuthentikApplicationSpec struct {
 	// authentikRef names the AuthentikDeployment (same namespace) whose
@@ -165,7 +165,7 @@ type AuthentikApplicationStatus struct {
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// AuthentikApplication is the Schema for the authentikapplications API
+// AuthentikApplication is the Schema for the authentikapplications API.
 type AuthentikApplication struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -184,11 +184,12 @@ type AuthentikApplication struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikApplicationList contains a list of AuthentikApplication
+// AuthentikApplicationList contains a list of AuthentikApplication.
 type AuthentikApplicationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikApplication `json:"items"`
+
+	Items []AuthentikApplication `json:"items"`
 }
 
 func init() {

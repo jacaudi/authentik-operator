@@ -67,9 +67,10 @@ const (
 	userErrorRecheck = time.Minute
 )
 
-// AuthentikOAuthProviderReconciler reconciles a AuthentikOAuthProvider object
+// AuthentikOAuthProviderReconciler reconciles a AuthentikOAuthProvider object.
 type AuthentikOAuthProviderReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 	// Connections resolves the Authentik client for spec.authentikRef.
 	Connections *connection.Resolver
@@ -129,7 +130,8 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 
 // sync does the work and records the outcome in p.Status. It returns an
 // error only for transient failures that should back off and retry.
-func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider) (ctrl.Result, error) {
+func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
 
@@ -209,7 +211,8 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 		p.Status.ProviderPK = created.Pk
 		p.Status.ClientID = created.GetClientId()
 		log.Info("Created OAuth2 provider", "name", created.Name, "pk", created.Pk)
-		r.event(p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)", created.Name, created.Pk)
+		r.event(p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)",
+			created.Name, created.Pk)
 		got = created
 	} else if patch, changed := oauth2ProviderPatch(want, got); len(changed) > 0 {
 		updated, err := c.PatchOAuth2Provider(ctx, got.Pk, patch)
@@ -217,13 +220,15 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 			return r.writeError(p, err)
 		}
 		log.Info("Updated OAuth2 provider", "pk", got.Pk, "fields", changed)
-		r.event(p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s", strings.Join(changed, ", "))
+		r.event(p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s",
+			strings.Join(changed, ", "))
 		got = updated
 	}
 
 	p.Status.ClientID = got.GetClientId()
 	p.Status.ObservedGeneration = p.Generation
-	r.setReady(p, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
+	r.setReady(p, metav1.ConditionTrue, reasonSynced,
+		fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
 
 	// The credentials Secret has its own condition and never affects Ready
 	// (see ConditionCredentialsReady).
@@ -247,7 +252,8 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context, p *authenti
 // than blocking deletion forever. Fixable problems (missing default
 // connection, Forbidden, Authentik unreachable) block deletion and are
 // reported on the object.
-func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context, p *authentikiov1alpha1.AuthentikOAuthProvider) error {
+func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) error {
 	if !controllerutil.ContainsFinalizer(p, FinalizerName) {
 		return nil
 	}
@@ -315,7 +321,8 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 // writeError classifies a failed create/update. Validation errors are the
 // user's to fix and are not retried hot; conflicts are surfaced; anything
 // else backs off.
-func (r *AuthentikOAuthProviderReconciler) writeError(p *authentikiov1alpha1.AuthentikOAuthProvider, err error) (ctrl.Result, error) {
+func (r *AuthentikOAuthProviderReconciler) writeError(p *authentikiov1alpha1.AuthentikOAuthProvider,
+	err error) (ctrl.Result, error) {
 	switch {
 	case authentik.IsConflict(err):
 		r.setReady(p, metav1.ConditionFalse, reasonConflict, err.Error())
@@ -330,7 +337,8 @@ func (r *AuthentikOAuthProviderReconciler) writeError(p *authentikiov1alpha1.Aut
 	}
 }
 
-func (r *AuthentikOAuthProviderReconciler) authentikError(p *authentikiov1alpha1.AuthentikOAuthProvider, err error) (ctrl.Result, error) {
+func (r *AuthentikOAuthProviderReconciler) authentikError(p *authentikiov1alpha1.AuthentikOAuthProvider,
+	err error) (ctrl.Result, error) {
 	r.setReady(p, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 	return ctrl.Result{}, err
 }
@@ -344,6 +352,7 @@ func (r *AuthentikOAuthProviderReconciler) setReady(p *authentikiov1alpha1.Authe
 	})
 }
 
+//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
 func (r *AuthentikOAuthProviderReconciler) event(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	eventType, reason, action, note string, args ...any) {
 	if r.Recorder != nil {
@@ -374,7 +383,8 @@ func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) er
 		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(providerForApplication)).
 		// A template change re-renders every Secret that uses it.
 		// Status-only writes (the template reconciler's) are ignored.
-		Watches(&authentikiov1alpha1.AuthentikCredentialsTemplate{}, handler.EnqueueRequestsFromMapFunc(r.providersForTemplate),
+		Watches(&authentikiov1alpha1.AuthentikCredentialsTemplate{},
+			handler.EnqueueRequestsFromMapFunc(r.providersForTemplate),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikoauthprovider").
@@ -383,16 +393,18 @@ func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) er
 
 // providerForApplication maps an application to the provider it references.
 func providerForApplication(_ context.Context, o client.Object) []reconcile.Request {
-	ref := o.(*authentikiov1alpha1.AuthentikApplication).Spec.ProviderRef
-	if ref == nil {
+	a, ok := o.(*authentikiov1alpha1.AuthentikApplication)
+	if !ok || a.Spec.ProviderRef == nil {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: ref.Name}}}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: a.Namespace, Name: a.Spec.ProviderRef.Name}}}
 }
 
 // providersForTemplate maps a credentials template to the providers that
 // reference it. Templates change rarely, so a list beats a field index.
-func (r *AuthentikOAuthProviderReconciler) providersForTemplate(ctx context.Context, o client.Object) []reconcile.Request {
+func (r *AuthentikOAuthProviderReconciler) providersForTemplate(ctx context.Context,
+	o client.Object) []reconcile.Request {
 	var list authentikiov1alpha1.AuthentikOAuthProviderList
 	if err := r.List(ctx, &list); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to list providers for credentials template", "template", o.GetName())

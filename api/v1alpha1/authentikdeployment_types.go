@@ -40,16 +40,16 @@ const (
 type DeploymentMode string
 
 const (
-	// DeploymentModeManaged: the operator manages the Authentik workloads
+	// DeploymentModeManaged means the operator manages the Authentik workloads
 	// (Deployment, Service, Ingress, RBAC).
 	DeploymentModeManaged DeploymentMode = "Managed"
-	// DeploymentModeConnectOnly: the operator manages no workloads; the
+	// DeploymentModeConnectOnly means the operator manages no workloads; the
 	// resource only supplies a connection (URL, token, CA) to an Authentik
 	// installed some other way, e.g. by Helm.
 	DeploymentModeConnectOnly DeploymentMode = "ConnectOnly"
 )
 
-// AuthentikDeploymentSpec defines the desired state of AuthentikDeployment
+// AuthentikDeploymentSpec defines the desired state of AuthentikDeployment.
 // +kubebuilder:validation:XValidation:rule="self.mode != 'ConnectOnly' || has(self.connection)",message="connection is required when mode is ConnectOnly"
 type AuthentikDeploymentSpec struct {
 	// mode selects whether this resource manages the Authentik workloads
@@ -124,7 +124,7 @@ type AuthentikDeploymentStatus struct {
 // +kubebuilder:printcolumn:name="Connected",type=string,JSONPath=".status.conditions[?(@.type=='Connected')].status"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// AuthentikDeployment is the Schema for the authentikdeployments API
+// AuthentikDeployment is the Schema for the authentikdeployments API.
 type AuthentikDeployment struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -143,11 +143,12 @@ type AuthentikDeployment struct {
 
 // +kubebuilder:object:root=true
 
-// AuthentikDeploymentList contains a list of AuthentikDeployment
+// AuthentikDeploymentList contains a list of AuthentikDeployment.
 type AuthentikDeploymentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []AuthentikDeployment `json:"items"`
+
+	Items []AuthentikDeployment `json:"items"`
 }
 
 func init() {
