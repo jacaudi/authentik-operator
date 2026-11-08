@@ -1,7 +1,7 @@
 # TASK-06: Reconcile semantics, observability, validation
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: parity-with-jeffresc-v0.2.5
 

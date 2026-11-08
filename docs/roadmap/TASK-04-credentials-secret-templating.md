@@ -1,7 +1,7 @@
 # TASK-04: Credentials Secret with Go-template rendering
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Completed (per-namespace RBAC overlay, secret rotation and template webhook are follow-ups)
 - Milestone: parity-with-jeffresc-v0.2.5
 
@@ -109,7 +109,7 @@ Decisions to make in this task:
       controlled (ownerReference, controller=true) by this CR, else
       `SecretConflict` and no write. Rename/removal deletes the previous
       Secret only if still controlled by this CR. Tested.
-- [x] **Verbs.** get/create/update/patch/delete on Secrets (delete for
+- [x] **Verbs.** get/create/update/delete on Secrets (delete for
       rename/removal; GC handles CR deletion). Still no list/watch.
 - [ ] **Per-namespace RBAC as an install option.** Follow-up PR (kustomize
       overlay now, Helm value with TASK-07). Ship an alternative

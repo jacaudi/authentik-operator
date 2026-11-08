@@ -1,7 +1,7 @@
 # TASK-09: Migration path from JeffResc (goauthentik.io) CRs
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: parity-with-jeffresc-v0.2.5
 

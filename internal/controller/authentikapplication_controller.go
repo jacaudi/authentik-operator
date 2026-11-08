@@ -164,7 +164,7 @@ func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentiki
 	}
 
 	if got == nil {
-		existing, err := c.FindApplicationBySlug(ctx, want.Slug)
+		existing, err := c.GetApplication(ctx, want.Slug)
 		switch {
 		case err == nil && a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID:
 			got = existing // the earlier 404 was transient

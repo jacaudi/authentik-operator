@@ -74,25 +74,6 @@ func (c *Client) ScopeMappingByScopeName(ctx context.Context, scopeName string) 
 	return exactlyOne("scope mapping", "scope_name", scopeName, matches, func(api.ScopeMapping) bool { return true })
 }
 
-// ScopeMappingByManaged returns the scope mapping with the given managed
-// identifier (e.g. "goauthentik.io/providers/oauth2/scope-openid").
-func (c *Client) ScopeMappingByManaged(ctx context.Context, managed string) (*api.ScopeMapping, error) {
-	all, err := ListAll(func(page int32) ([]api.ScopeMapping, api.Pagination, *http.Response, error) {
-		res, resp, err := c.api.PropertymappingsAPI.PropertymappingsProviderScopeList(ctx).
-			Managed([]string{managed}).Page(page).PageSize(PageSize).Execute()
-		if res == nil {
-			return nil, api.Pagination{}, resp, err
-		}
-		return res.Results, res.Pagination, resp, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return exactlyOne("scope mapping", "managed", managed, all, func(m api.ScopeMapping) bool {
-		return m.Managed.Get() != nil && *m.Managed.Get() == managed
-	})
-}
-
 // CertificateByName returns the certificate-key pair with the given name.
 func (c *Client) CertificateByName(ctx context.Context, name string) (*api.CertificateKeyPair, error) {
 	all, err := ListAll(func(page int32) ([]api.CertificateKeyPair, api.Pagination, *http.Response, error) {

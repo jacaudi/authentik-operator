@@ -70,6 +70,15 @@ make lint-fix   # Auto-fix code style
 make test       # Run unit tests
 ```
 
+## Project Conventions
+
+- Errors are values: wrap with context (`fmt.Errorf("...: %w", err)`); never log and return the same error.
+- If it runs in a container, test it in a container; rebuild the image to deliver a change.
+- Kubernetes YAML: one object per file, named `<kind>-<name>.yaml`.
+- Design decisions live in `docs/design/scope.md`; the roadmap and per-task notes in `docs/roadmap/TASK-*.md`.
+- Commit format and the ASCII-only rule are in `CONTRIBUTING.md`.
+- The `toolchain` line in `go.mod` is an exact pin; Renovate (`.github/renovate.json`) proposes bumps, and the nightly govulncheck job in `security.yml` fails on stdlib advisories in the meantime.
+
 ## CLI Commands Cheat Sheet
 
 ### Create API (your own types)

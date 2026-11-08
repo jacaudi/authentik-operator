@@ -1,7 +1,7 @@
 # TASK-05: Adoption and deletion policy for Authentik API objects
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: parity-with-jeffresc-v0.2.5 (required for any migration)
 

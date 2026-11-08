@@ -24,21 +24,16 @@ import (
 
 // Application CRUD. Applications are addressed by slug in the API.
 
-// GetApplication fetches an application by slug.
+// GetApplication fetches an application by slug, or returns ErrNotFound.
+// Existence checks must use this rather than the list endpoint: the list
+// filters by the token user's policy access (superuser_full_list is only
+// honoured for superusers), which would hide existing applications.
 func (c *Client) GetApplication(ctx context.Context, slug string) (*api.Application, error) {
 	a, resp, err := c.api.CoreAPI.CoreApplicationsRetrieve(ctx, slug).Execute()
 	if err := Check(resp, err); err != nil {
 		return nil, err
 	}
 	return a, nil
-}
-
-// FindApplicationBySlug returns the application with this slug, or
-// ErrNotFound. It uses retrieve-by-slug rather than the list endpoint: the
-// list filters by the token user's policy access (superuser_full_list is
-// only honoured for superusers), which would hide existing applications.
-func (c *Client) FindApplicationBySlug(ctx context.Context, slug string) (*api.Application, error) {
-	return c.GetApplication(ctx, slug)
 }
 
 // CreateApplication creates an application.

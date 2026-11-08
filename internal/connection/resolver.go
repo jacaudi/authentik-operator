@@ -101,11 +101,9 @@ type cachedClient struct {
 	client      *authentik.Client
 }
 
-// Resolved is a ready-to-use client plus where it came from.
+// Resolved is a ready-to-use client plus its browser-facing URL.
 type Resolved struct {
 	Client *authentik.Client
-	// Source is "default" or "<namespace>/<name>" of the AuthentikDeployment.
-	Source string
 	// ExternalURL is the browser-facing base URL of this Authentik (no
 	// trailing slash); it equals the API base URL unless configured.
 	ExternalURL string
@@ -125,8 +123,7 @@ func (r *Resolver) ForRef(ctx context.Context, namespace string, ref *authentiki
 		if err != nil {
 			return nil, err
 		}
-		return &Resolved{Client: c, Source: "default",
-			ExternalURL: externalOrBase(r.DefaultExternalURL, c.BaseURL())}, nil
+		return &Resolved{Client: c, ExternalURL: externalOrBase(r.DefaultExternalURL, c.BaseURL())}, nil
 	}
 
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
@@ -149,8 +146,7 @@ func (r *Resolver) ForDeployment(ctx context.Context, d *authentikiov1alpha1.Aut
 	if err != nil {
 		return nil, err
 	}
-	return &Resolved{Client: c, Source: key.String(),
-		ExternalURL: externalOrBase(d.Spec.Connection.ExternalURL, c.BaseURL())}, nil
+	return &Resolved{Client: c, ExternalURL: externalOrBase(d.Spec.Connection.ExternalURL, c.BaseURL())}, nil
 }
 
 func externalOrBase(external, base string) string {
@@ -167,10 +163,9 @@ func externalOrBase(external, base string) string {
 // -- so cleanup can still reach Authentik. The cache is in memory only, so
 // this does not survive an operator restart.
 func (r *Resolver) LastKnown(namespace string, ref *authentikiov1alpha1.AuthentikRef) (*Resolved, bool) {
-	key, source := defaultKey, "default"
+	key := defaultKey
 	if ref != nil {
 		key = types.NamespacedName{Namespace: namespace, Name: ref.Name}.String()
-		source = key
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -178,7 +173,7 @@ func (r *Resolver) LastKnown(namespace string, ref *authentikiov1alpha1.Authenti
 	if !ok {
 		return nil, false
 	}
-	return &Resolved{Client: c.client, Source: source}, true
+	return &Resolved{Client: c.client}, true
 }
 
 // Forget drops the cached client of a deleted AuthentikDeployment.

@@ -65,20 +65,17 @@ type Config struct {
 	// InsecureSkipVerify disables TLS certificate verification.
 	InsecureSkipVerify bool
 
-	// RPS and Burst configure the client-side rate limiter. Zero means default;
-	// a negative RPS disables limiting.
-	RPS   float64
-	Burst int
+	// RPS configures the client-side rate limiter. Zero means default; a
+	// negative value disables limiting.
+	RPS float64
 	// MaxRetries is the number of retries on 429/5xx/transport errors.
 	// Zero means default; a negative value disables retries.
 	MaxRetries int
-	// Timeout bounds a single HTTP attempt. Zero means default.
-	Timeout time.Duration
-	// UserAgent overrides the default User-Agent.
-	UserAgent string
 
 	// baseBackoff overrides the retry backoff base; tests only.
 	baseBackoff time.Duration
+	// burst overrides the rate limiter burst; tests only.
+	burst int
 }
 
 // String redacts the token so a Config can never leak it via %v / %+v.
@@ -124,20 +121,15 @@ func New(cfg Config) (*Client, error) {
 	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
 	baseTransport.TLSClientConfig = tlsCfg
 
-	timeout := cfg.Timeout
-	if timeout == 0 {
-		timeout = DefaultTimeout
-	}
-
 	var rt http.RoundTripper = baseTransport
-	if limiter := newLimiter(cfg.RPS, cfg.Burst); limiter != nil {
+	if limiter := newLimiter(cfg.RPS, cfg.burst); limiter != nil {
 		rt = &rateLimitTransport{next: rt, limiter: limiter}
 	}
 	rt = &retryTransport{
 		next:        rt,
 		maxRetries:  retriesOrDefault(cfg.MaxRetries),
 		baseBackoff: cfg.baseBackoff,
-		timeout:     timeout,
+		timeout:     DefaultTimeout,
 	}
 	rt = &authTransport{next: rt, token: cfg.Token}
 
@@ -151,9 +143,6 @@ func New(cfg Config) (*Client, error) {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	apiCfg.UserAgent = "authentik-operator"
-	if cfg.UserAgent != "" {
-		apiCfg.UserAgent = cfg.UserAgent
-	}
 
 	return &Client{api: api.NewAPIClient(apiCfg), baseURL: base}, nil
 }

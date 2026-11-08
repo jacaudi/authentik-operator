@@ -1,7 +1,7 @@
 # TASK-12: Outposts (and the provider kinds that need them)
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: Planned
 - Milestone: beyond-parity
 

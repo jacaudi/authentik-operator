@@ -134,7 +134,7 @@ conditions only for 400 (field validation), so a user-chosen URL cannot be
 used to read arbitrary responses back through status.
 
 RBAC: the operator has cluster-wide **get** on ConfigMaps and
-**get/create/update/patch/delete** on Secrets -- no list, no watch, no cache.
+**get/create/update/delete** on Secrets -- no list, no watch, no cache, no patch.
 Writes exist for credential Secrets (TASK-04): they go only to the provider's
 own namespace, and an existing Secret not controlled by that provider is
 never modified or deleted (`SecretConflict`).

@@ -1,7 +1,7 @@
 # TASK-11: CI, release pipeline and documentation site
 
 ## Ticket
-- Ticket: none (Navigator-only)
+- Ticket: none
 - Status: In Progress
 - Milestone: parity-with-jeffresc-v0.2.5 (a cutover needs a pinnable release)
 - Supersedes the pipeline parts of TASK-07 (chart *values* stay in TASK-07,
@@ -48,7 +48,7 @@ Constraints that shape the design:
    - e2e workflow: pinned kind, no `go mod tidy` in CI, PR + main only.
    - PR title check (Conventional Commits; squash-merge uses the title).
    - Dockerfile cross-compiles (`--platform=$BUILDPLATFORM`, `-trimpath`).
-   - Dependabot (gomod, github-actions, docker; grouped, weekly).
+   - Renovate (`.github/renovate.json`, shared jacaudi presets; 7-day minimum release age). Replaced Dependabot.
    - LICENSE (Apache-2.0), CONTRIBUTING.md, SECURITY.md, PR template.
    - `make verify` so CI and laptops run the same checks.
    - User: branch protection on main requiring the CI jobs.
