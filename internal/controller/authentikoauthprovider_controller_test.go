@@ -39,9 +39,10 @@ import (
 )
 
 const (
-	testAPIToken = "tok"
-	jsonName     = "name"
-	frontchannel = "frontchannel"
+	testAPIToken   = "tok"
+	jsonName       = "name"
+	frontchannel   = "frontchannel"
+	pinnedClientID = "grafana"
 )
 
 // drainEvents returns and clears every event recorded so far.
@@ -280,6 +281,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.RequeueAfter).To(Equal(userErrorRecheck))
 		Expect(ready(p).Reason).To(Equal(reasonInvalidSpec))
+		Expect(get(p).Status.PendingCreate).To(BeEmpty(), "a definite rejection clears the marker")
 	})
 
 	It("backs off on Authentik server errors", func() {
@@ -455,6 +457,24 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 	})
 
+	It("recovers its own provider with a pinned client ID when a create's response was lost", func() {
+		p := newProvider("lost-create-pinned")
+		p.Spec.ClientID = pinnedClientID
+		create(p)
+		fake.LoseNextCreate()
+
+		_, err := reconcileOnce(p)
+		Expect(err).To(HaveOccurred())
+		Expect(get(p).Status.PendingCreate).To(Equal("lost-create-pinned"))
+
+		_, err = reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.ProviderCount()).To(Equal(1))
+		Expect(get(p).Status.ProviderPK).NotTo(BeZero())
+		Expect(get(p).Status.PendingCreate).To(BeEmpty())
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+	})
+
 	It("keeps an explicit empty scope list instead of re-defaulting it", func() {
 		u := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "authentik.io/v1alpha1", "kind": "AuthentikOAuthProvider",
@@ -509,12 +529,52 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 
 	It("uses a pinned client ID", func() {
 		p := newProvider("pinned")
-		p.Spec.ClientID = "grafana"
+		p.Spec.ClientID = pinnedClientID
 		create(p)
 		_, err := reconcileOnce(p)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(get(p).Status.ClientID).To(Equal("grafana"))
-		Expect(fake.Provider(get(p).Status.ProviderPK)["client_id"]).To(Equal("grafana"))
+		Expect(get(p).Status.ClientID).To(Equal(pinnedClientID))
+		Expect(fake.Provider(get(p).Status.ProviderPK)["client_id"]).To(Equal(pinnedClientID))
+	})
+
+	// clientIDChangedStatusLost pins a new client ID, syncs it to Authentik,
+	// then rewinds status.clientId as if that status write had been lost.
+	clientIDChangedStatusLost := func(name string) (*authentikiov1alpha1.AuthentikOAuthProvider, int32) {
+		p := newProvider(name)
+		create(p)
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		pk := get(p).Status.ProviderPK
+
+		cur := get(p)
+		cur.Spec.ClientID = pinnedClientID
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		_, err = reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Provider(pk)["client_id"]).To(Equal(pinnedClientID))
+
+		cur = get(p)
+		cur.Status.ClientID = "k8s-" + string(cur.UID)
+		Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		return p, pk
+	}
+
+	It("keeps ownership after a clientId change whose status write was lost", func() {
+		p, _ := clientIDChangedStatusLost("clientid-change")
+
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(p).Status.ClientID).To(Equal(pinnedClientID))
+	})
+
+	It("still deletes its provider after a clientId change whose status write was lost", func() {
+		p, pk := clientIDChangedStatusLost("clientid-change-delete")
+
+		Expect(k8sClient.Delete(ctx, get(p))).To(Succeed())
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Provider(pk)).To(BeNil())
 	})
 
 	It("reports a rename onto an existing provider name as Conflict", func() {

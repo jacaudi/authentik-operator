@@ -95,7 +95,9 @@ type AuthentikOAuthProviderReconciler struct {
 //
 // Identity: the provider is tracked by status.providerPk once this resource
 // created it. A pre-existing provider with the same name is never taken
-// over -- that is reported as a Conflict (opt-in adoption is TASK-05).
+// over -- that is reported as a Conflict (opt-in adoption is TASK-05) --
+// except when status.pendingCreate shows this resource's own create was in
+// flight and the provider carries the client ID this resource sends.
 func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var p authentikiov1alpha1.AuthentikOAuthProvider
 	if err := r.Get(ctx, req.NamespacedName, &p); err != nil {
@@ -121,110 +123,36 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	orig := p.Status.DeepCopy()
-	result, syncErr := r.sync(ctx, &p)
-	if err := r.patchStatus(ctx, &p, orig); err != nil {
+	persist := func() error {
+		if err := r.patchStatus(ctx, &p, orig); err != nil {
+			return err
+		}
+		orig = p.Status.DeepCopy()
+		return nil
+	}
+	result, syncErr := r.sync(ctx, &p, persist)
+	if err := persist(); err != nil {
 		return ctrl.Result{}, errors.Join(syncErr, err)
 	}
 	return result, syncErr
 }
 
 // sync does the work and records the outcome in p.Status. It returns an
-// error only for transient failures that should back off and retry.
+// error only for transient failures that should back off and retry. persist
+// writes the status immediately; it records the pending-create marker
+// before the create request is sent.
 func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
-
-	resolved, err := r.Connections.ForRef(ctx, p.Namespace, p.Spec.AuthentikRef)
+	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (ctrl.Result, error) {
+	resolved, err := resolve(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 	if err != nil {
-		if reason := connection.Reason(err); reason != "" {
-			r.setReady(p, metav1.ConditionFalse, reason, err.Error())
-			return retryLater, nil
-		}
-		return ctrl.Result{}, err
+		return r.failed(p, err)
 	}
-	c := resolved.Client
-
-	want, err := desiredOAuth2Provider(ctx, c, p)
+	got, err := r.syncProvider(ctx, resolved.Client, p, persist)
 	if err != nil {
-		if refErr, ok := errors.AsType[*referenceError](err); ok {
-			r.setReady(p, metav1.ConditionFalse, refErr.reason, err.Error())
-			return retryLater, nil
-		}
-		return r.authentikError(p, err)
+		return r.failed(p, err)
 	}
 
-	var got *api.OAuth2Provider
-	if pk := p.Status.ProviderPK; pk != 0 {
-		got, err = c.GetOAuth2Provider(ctx, pk)
-		switch {
-		case err == nil && got.GetClientId() != p.Status.ClientID:
-			// The pk now names a different provider: the connection was
-			// pointed at another Authentik, a database was restored, or the
-			// client ID was changed outside the operator. Never modify it.
-			r.setReady(p, metav1.ConditionFalse, reasonConflict, fmt.Sprintf(
-				"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
-					"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
-				pk, got.GetClientId(), p.Status.ClientID))
-			return retryLater, nil
-		case authentik.IsNotFound(err):
-			log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
-			r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
-				"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
-			p.Status.ProviderPK = 0
-			p.Status.ClientID = ""
-			got = nil
-		case err != nil:
-			return r.authentikError(p, err)
-		}
-	}
-
-	if got == nil {
-		existing, err := c.FindOAuth2ProviderByName(ctx, want.Name)
-		switch {
-		case err == nil && p.Spec.ClientID == "" && existing.GetClientId() == derivedClientID(p):
-			// Ours: a previous create succeeded but its outcome was lost.
-			log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
-			p.Status.ProviderPK = existing.Pk
-			p.Status.ClientID = existing.GetClientId()
-			got = existing
-		case err == nil || errors.Is(err, authentik.ErrAmbiguous):
-			msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
-				"this resource; adopting existing providers is not supported yet", want.Name)
-			if existing != nil {
-				msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
-			}
-			r.setReady(p, metav1.ConditionFalse, reasonConflict, msg)
-			return retryLater, nil
-		case !authentik.IsNotFound(err):
-			return r.authentikError(p, err)
-		}
-	}
-
-	if got == nil {
-		created, err := c.CreateOAuth2Provider(ctx, *want)
-		if err != nil {
-			return r.writeError(p, err)
-		}
-		// Record ownership before anything else can fail, so the next
-		// reconcile does not mistake our own provider for a conflict.
-		p.Status.ProviderPK = created.Pk
-		p.Status.ClientID = created.GetClientId()
-		log.Info("Created OAuth2 provider", "name", created.Name, "pk", created.Pk)
-		r.event(p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)",
-			created.Name, created.Pk)
-		got = created
-	} else if patch, changed := oauth2ProviderPatch(want, got); len(changed) > 0 {
-		updated, err := c.PatchOAuth2Provider(ctx, got.Pk, patch)
-		if err != nil {
-			return r.writeError(p, err)
-		}
-		log.Info("Updated OAuth2 provider", "pk", got.Pk, "fields", changed)
-		r.event(p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s",
-			strings.Join(changed, ", "))
-		got = updated
-	}
-
+	p.Status.PendingCreate = ""
 	p.Status.ClientID = got.GetClientId()
 	p.Status.ObservedGeneration = p.Generation
 	r.setReady(p, metav1.ConditionTrue, reasonSynced,
@@ -240,6 +168,123 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
 	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
+}
+
+// syncProvider makes the provider in Authentik match the spec and returns
+// it as Authentik now has it.
+func (r *AuthentikOAuthProviderReconciler) syncProvider(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (*api.OAuth2Provider, error) {
+	want, err := desiredOAuth2Provider(ctx, c, p)
+	if err != nil {
+		return nil, err
+	}
+	got, err := r.observeProvider(ctx, c, p, want.Name)
+	if err != nil {
+		return nil, err
+	}
+	if got == nil {
+		return r.createProvider(ctx, c, p, want, persist)
+	}
+	return r.updateProvider(ctx, c, p, want, got)
+}
+
+// observeProvider finds the provider this resource owns: by
+// status.providerPk, then by name for a create whose outcome was lost. nil
+// means it has to be created; a provider that is not this resource's own is
+// a Conflict.
+func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, name string) (*api.OAuth2Provider, error) {
+	log := logf.FromContext(ctx)
+	if pk := p.Status.ProviderPK; pk != 0 {
+		got, err := c.GetOAuth2Provider(ctx, pk)
+		switch {
+		case err == nil && !ownsProvider(p, got):
+			// The pk now names a different provider: the connection was
+			// pointed at another Authentik, a database was restored, or the
+			// client ID was changed outside the operator. Never modify it.
+			return nil, condErrf(reasonConflict,
+				"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
+					"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
+				pk, got.GetClientId(), p.Status.ClientID)
+		case err == nil:
+			return got, nil
+		case authentik.IsNotFound(err):
+			log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
+			r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
+				"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
+			p.Status.ProviderPK = 0
+			p.Status.ClientID = ""
+		default:
+			return nil, err
+		}
+	}
+
+	existing, err := c.FindOAuth2ProviderByName(ctx, name)
+	switch {
+	case err == nil && p.Status.PendingCreate == name && existing.GetClientId() == expectedClientID(p):
+		// Ours: a previous create succeeded but its outcome was lost. The
+		// marker proves a create was sent; the client ID that it was this
+		// one that landed (a pinned ID could also be someone else's).
+		log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
+		p.Status.ProviderPK = existing.Pk
+		p.Status.ClientID = existing.GetClientId()
+		return existing, nil
+	case err == nil || errors.Is(err, authentik.ErrAmbiguous):
+		msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
+			"this resource; adopting existing providers is not supported yet", name)
+		if existing != nil {
+			msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
+		}
+		return nil, condErr(reasonConflict, errors.New(msg))
+	case authentik.IsNotFound(err):
+		return nil, nil
+	default:
+		return nil, err
+	}
+}
+
+// createProvider creates the provider, recording status.pendingCreate first
+// so a lost response can be recovered, and ownership right after.
+func (r *AuthentikOAuthProviderReconciler) createProvider(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
+	persist func() error) (*api.OAuth2Provider, error) {
+	p.Status.PendingCreate = want.Name
+	if err := persist(); err != nil {
+		return nil, err
+	}
+	created, err := c.CreateOAuth2Provider(ctx, *want)
+	if err != nil {
+		if code := authentik.StatusCode(err); code >= 400 && code < 500 {
+			p.Status.PendingCreate = "" // definitely not created
+		}
+		return nil, err
+	}
+	// Record ownership before anything else can fail, so the next
+	// reconcile does not mistake our own provider for a conflict.
+	p.Status.ProviderPK = created.Pk
+	p.Status.ClientID = created.GetClientId()
+	logf.FromContext(ctx).Info("Created OAuth2 provider", "name", created.Name, "pk", created.Pk)
+	r.event(p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)",
+		created.Name, created.Pk)
+	return created, nil
+}
+
+// updateProvider patches the fields that differ, if any.
+func (r *AuthentikOAuthProviderReconciler) updateProvider(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
+	got *api.OAuth2Provider) (*api.OAuth2Provider, error) {
+	patch, changed := oauth2ProviderPatch(want, got)
+	if len(changed) == 0 {
+		return got, nil
+	}
+	updated, err := c.PatchOAuth2Provider(ctx, got.Pk, patch)
+	if err != nil {
+		return nil, err
+	}
+	logf.FromContext(ctx).Info("Updated OAuth2 provider", "pk", got.Pk, "fields", changed)
+	r.event(p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s",
+		strings.Join(changed, ", "))
+	return updated, nil
 }
 
 // finalize deletes the provider this resource created, then releases the
@@ -275,10 +320,7 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 			r.event(p, corev1.EventTypeWarning, "Orphaned", "Delete",
 				"OAuth2 provider pk %d left in Authentik: %v", pk, err)
 		default:
-			reason := connection.Reason(err)
-			if reason == "" {
-				reason = reasonAuthentikError
-			}
+			reason := conditionReason(err, reasonAuthentikError)
 			if r.setReady(p, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
 				r.event(p, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
 					"Cannot delete OAuth2 provider pk %d yet: %v", pk, err)
@@ -304,7 +346,7 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 		return nil
 	case err != nil:
 		return err
-	case got.GetClientId() != p.Status.ClientID:
+	case !ownsProvider(p, got):
 		log.Info("OAuth2 provider pk no longer belongs to this resource; not deleting it", "pk", pk)
 		r.event(p, corev1.EventTypeWarning, "NotDeleted", "Delete",
 			"OAuth2 provider pk %d has a different client ID than this resource created; left in place", pk)
@@ -318,29 +360,29 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 	return nil
 }
 
-// writeError classifies a failed create/update. Validation errors are the
-// user's to fix and are not retried hot; conflicts are surfaced; anything
-// else backs off.
-func (r *AuthentikOAuthProviderReconciler) writeError(p *authentikiov1alpha1.AuthentikOAuthProvider,
+// failed records why sync stopped. Problems retrying cannot fix -- a
+// conditionError, an Authentik conflict or validation rejection -- are
+// reported and retried on the slow interval; anything else backs off.
+func (r *AuthentikOAuthProviderReconciler) failed(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	err error) (ctrl.Result, error) {
+	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
+	if ce, ok := errors.AsType[*conditionError](err); ok {
+		r.setReady(p, metav1.ConditionFalse, ce.reason, err.Error())
+		return retryLater, nil
+	}
 	switch {
 	case authentik.IsConflict(err):
 		r.setReady(p, metav1.ConditionFalse, reasonConflict, err.Error())
-		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
+		return retryLater, nil
 	case authentik.IsValidation(err):
 		if r.setReady(p, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
 			r.event(p, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the provider: %v", err)
 		}
-		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
+		return retryLater, nil
 	default:
-		return r.authentikError(p, err)
+		r.setReady(p, metav1.ConditionFalse, reasonAuthentikError, err.Error())
+		return ctrl.Result{}, err
 	}
-}
-
-func (r *AuthentikOAuthProviderReconciler) authentikError(p *authentikiov1alpha1.AuthentikOAuthProvider,
-	err error) (ctrl.Result, error) {
-	r.setReady(p, metav1.ConditionFalse, reasonAuthentikError, err.Error())
-	return ctrl.Result{}, err
 }
 
 // setReady records the Ready condition and reports whether it changed, so

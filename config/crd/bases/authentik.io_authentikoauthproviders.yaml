@@ -376,6 +376,13 @@ spec:
                   to Authentik.
                 format: int64
                 type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the provider name while a create is in flight. It
+                  lets the next reconcile recognise its own provider if the create's
+                  outcome was lost (timeout, failed status write), which a pinned
+                  spec.clientId alone cannot prove: another provider could carry it.
+                type: string
               providerPk:
                 description: |-
                   providerPk is the primary key of the provider this resource created

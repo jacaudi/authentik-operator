@@ -275,6 +275,13 @@ type AuthentikOAuthProviderStatus struct {
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
+	// pendingCreate holds the provider name while a create is in flight. It
+	// lets the next reconcile recognise its own provider if the create's
+	// outcome was lost (timeout, failed status write), which a pinned
+	// spec.clientId alone cannot prove: another provider could carry it.
+	// +optional
+	PendingCreate string `json:"pendingCreate,omitempty"`
+
 	// observedGeneration is the spec generation last synced to Authentik.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
