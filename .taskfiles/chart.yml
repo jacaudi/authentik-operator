@@ -1,0 +1,71 @@
+# Helm chart (dist/chart) — lint, unit tests, and drift checks. Repo-specific (kubebuilder helm/v2-alpha hybrid chart); not a fleet template.
+version: '3'
+
+vars:
+  CHART_DIR: dist/chart
+
+tasks:
+  ci:
+    desc: All chart checks
+    cmds:
+      - task: lint
+      - task: test
+      - task: drift
+
+  lint:
+    desc: helm lint --strict + kubeconform on helm template output (default and full-feature values)
+    cmds:
+      - |
+        set -eu
+        command -v helm >/dev/null || { echo "helm not installed: brew install helm" >&2; exit 1; }
+        helm lint --strict {{.CHART_DIR}}
+        helm lint --strict {{.CHART_DIR}} -f {{.CHART_DIR}}/ci/full-values.yaml
+        # Same kubeconform and flags as `task k8s:manifests`: our own CRD kinds
+        # and the ServiceMonitor have no published schema (-ignore-missing-schemas);
+        # Deployment, RBAC, PDB, NetworkPolicy, ... are validated strictly.
+        for values in "" "-f {{.CHART_DIR}}/ci/full-values.yaml"; do
+          # shellcheck disable=SC2086  # deliberate word split of the -f flag
+          helm template chart-lint {{.CHART_DIR}} --namespace chart-lint ${values} \
+            | go run "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}" \
+                -strict -summary -ignore-missing-schemas
+        done
+      - task: version-sync
+      - bash hack/verify-chart-rbac.sh
+    env:
+      # renovate: datasource=go depName=github.com/yannh/kubeconform
+      KUBECONFORM_VERSION: v0.8.0
+
+  version-sync:
+    desc: Fail unless Chart.yaml version and appVersion equal the release-please manifest
+    cmds:
+      - |
+        set -eu
+        want=$(yq -r '.["."]' .release-please-manifest.json)
+        for k in version appVersion; do
+          got=$(yq -r ".${k}" {{.CHART_DIR}}/Chart.yaml)
+          [ "${got}" = "${want}" ] || { echo "Chart.yaml ${k}=${got} != .release-please-manifest.json ${want}" >&2; exit 1; }
+        done
+        echo "chart version == app version == ${want}"
+
+  test:
+    desc: helm-unittest suites in dist/chart/tests
+    cmds:
+      - |
+        set -eu
+        command -v helm >/dev/null || { echo "helm not installed: brew install helm" >&2; exit 1; }
+        if ! helm plugin list | awk 'NR>1{print $1}' | grep -qx unittest; then
+          # Helm 4 verifies plugin provenance by default; the project ships none.
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" --verify=false \
+            || helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}"
+        fi
+        helm unittest {{.CHART_DIR}}
+    env:
+      # renovate: datasource=github-releases depName=helm-unittest/helm-unittest
+      HELM_UNITTEST_VERSION: v1.2.1
+
+  drift:
+    desc: Fail if the plugin-owned chart templates no longer match config/ (kubebuilder helm/v2-alpha)
+    cmds:
+      # Installs the pinned kubebuilder CLI into bin/ and regenerates into a
+      # temp copy; hand-owned files are never touched. See AGENTS.md.
+      - make chart-regen-check

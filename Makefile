@@ -201,8 +201,12 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+KUBEBUILDER ?= $(LOCALBIN)/kubebuilder
 
 ## Tool Versions
+# KUBEBUILDER_VERSION must equal cliVersion in PROJECT (the helm/v2-alpha plugin
+# ships inside the CLI); hack/chart-regen.sh refuses to run on a mismatch.
+KUBEBUILDER_VERSION ?= v4.16.0
 KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.22.0
 
@@ -226,6 +230,11 @@ $(KUSTOMIZE): $(LOCALBIN)
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+
+.PHONY: kubebuilder
+kubebuilder: $(KUBEBUILDER) ## Download the kubebuilder CLI (helm/v2-alpha plugin) locally if necessary.
+$(KUBEBUILDER): $(LOCALBIN)
+	$(call go-install-tool,$(KUBEBUILDER),sigs.k8s.io/kubebuilder/v4,$(KUBEBUILDER_VERSION))
 
 .PHONY: setup-envtest
 setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.
@@ -295,8 +304,8 @@ helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify
 	IMG="$(IMG)"; $(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \
 		--namespace $(HELM_NAMESPACE) \
 		--create-namespace \
-		--set manager.image.repository=$${IMG%:*} \
-		--set manager.image.tag=$${IMG##*:} \
+		--set image.repository=$${IMG%:*} \
+		--set image.tag=$${IMG##*:} \
 		--wait \
 		--timeout 5m \
 		$(HELM_EXTRA_ARGS)
@@ -316,3 +325,11 @@ helm-history: ## Show Helm release history.
 .PHONY: helm-rollback
 helm-rollback: ## Rollback to previous Helm release.
 	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: chart-regen
+chart-regen: kubebuilder ## Regenerate the plugin-owned parts of dist/chart (CRDs, RBAC, metrics, ServiceMonitor, NetworkPolicy).
+	KUBEBUILDER="$(KUBEBUILDER)" hack/chart-regen.sh
+
+.PHONY: chart-regen-check
+chart-regen-check: kubebuilder ## Fail if the plugin-owned parts of dist/chart are stale relative to config/.
+	KUBEBUILDER="$(KUBEBUILDER)" hack/chart-regen.sh --check
