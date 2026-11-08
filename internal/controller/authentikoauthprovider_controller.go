@@ -201,33 +201,10 @@ func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, 
 	persist func() error) (*api.OAuth2Provider, error) {
 	log := logf.FromContext(ctx)
 	name := want.Name
-	if pk := p.Status.ProviderPK; pk != 0 {
-		got, err := c.GetOAuth2Provider(ctx, pk)
-		switch {
-		case err == nil && !ownsProvider(p, got):
-			// The pk now names a different provider: the connection was
-			// pointed at another Authentik, a database was restored, or the
-			// client ID was changed outside the operator. Never modify it.
-			return nil, condErrf(reasonConflict,
-				"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
-					"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
-				pk, got.GetClientId(), p.Status.ClientID)
-		case err == nil:
-			if p.Status.Provenance == "" {
-				// Tracked since before provenance existed, when only a
-				// create could produce a pk.
-				p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
-			}
-			return got, nil
-		case authentik.IsNotFound(err):
-			log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
-			r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
-				"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
-			p.Status.ProviderPK = 0
-			p.Status.ClientID = ""
-			p.Status.Provenance = "" // decided afresh below
-		default:
-			return nil, err
+	if p.Status.ProviderPK != 0 {
+		got, err := r.observeTracked(ctx, c, p)
+		if err != nil || got != nil {
+			return got, err
 		}
 	}
 
@@ -249,33 +226,81 @@ func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, 
 	}
 
 	if !p.Spec.Adoption.Enabled {
-		switch {
-		case err == nil || errors.Is(err, authentik.ErrAmbiguous):
-			msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
-				"this resource; set spec.adoption.enabled to adopt it", name)
-			if existing != nil {
-				msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
-			}
-			return nil, condErr(reasonConflict, errors.New(msg))
-		default:
-			return nil, nil
-		}
+		return nil, providerConflict(name, existing, err)
 	}
 
-	target, err := r.adoptionTarget(ctx, c, p, name, existing, err)
+	target, err := r.adoptionTarget(ctx, c, p, providerLookup{name: name, got: existing, err: err})
 	if err != nil || target == nil {
 		return nil, err
 	}
 	return r.adoptProvider(p, want, target, persist)
 }
 
-// adoptionTarget picks the provider to adopt. byName and byNameErr are the
-// lookup of the desired name. With no spec.adoption.match, that is the
+// observeTracked looks up the provider recorded in status.providerPk. It
+// returns it when it is still this resource's own, or nil to carry on
+// looking when it no longer exists (status is then cleared).
+func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c *authentik.Client,
+	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2Provider, error) {
+	log := logf.FromContext(ctx)
+	pk := p.Status.ProviderPK
+	got, err := c.GetOAuth2Provider(ctx, pk)
+	switch {
+	case err == nil && !ownsProvider(p, got):
+		// The pk now names a different provider: the connection was
+		// pointed at another Authentik, a database was restored, or the
+		// client ID was changed outside the operator. Never modify it.
+		return nil, condErrf(reasonConflict,
+			"OAuth2 provider pk %d in Authentik has client ID %q, not %q recorded by this resource; "+
+				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk",
+			pk, got.GetClientId(), p.Status.ClientID)
+	case err == nil:
+		if p.Status.Provenance == "" {
+			// Tracked since before provenance existed, when only a
+			// create could produce a pk.
+			p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
+		}
+		return got, nil
+	case authentik.IsNotFound(err):
+		log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
+		r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
+			"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
+		p.Status.ProviderPK = 0
+		p.Status.ClientID = ""
+		p.Status.Provenance = "" // decided afresh below
+	default:
+		return nil, err
+	}
+	return nil, nil
+}
+
+// providerConflict is the outcome of finding a provider this resource may not
+// adopt: a Conflict if one exists (err nil or ambiguous), else nil, nil to
+// create.
+func providerConflict(name string, existing *api.OAuth2Provider, err error) error {
+	if err != nil && !errors.Is(err, authentik.ErrAmbiguous) {
+		return nil
+	}
+	msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
+		"this resource; set spec.adoption.enabled to adopt it", name)
+	if existing != nil {
+		msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
+	}
+	return condErr(reasonConflict, errors.New(msg))
+}
+
+// providerLookup is the result of looking a provider up by the desired name.
+type providerLookup struct {
+	name string
+	got  *api.OAuth2Provider
+	err  error
+}
+
+// adoptionTarget picks the provider to adopt. byName is the lookup of the
+// desired name. With no spec.adoption.match, that is the
 // candidate, and nil (create) when absent. An explicit match must resolve:
 // creating instead would mint new credentials, the thing adoption avoids.
 func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c *authentik.Client,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, name string, byName *api.OAuth2Provider,
-	byNameErr error) (*api.OAuth2Provider, error) {
+	p *authentikiov1alpha1.AuthentikOAuthProvider, byName providerLookup) (*api.OAuth2Provider, error) {
 	m := p.Spec.Adoption.Match
 	var (
 		got   *api.OAuth2Provider
@@ -284,12 +309,12 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 	)
 	switch {
 	case m == nil:
-		got, err, which = byName, byNameErr, fmt.Sprintf("named %q", name)
+		got, err, which = byName.got, byName.err, fmt.Sprintf("named %q", byName.name)
 	case m.PK != 0:
 		got, err = c.GetOAuth2Provider(ctx, m.PK)
 		which = fmt.Sprintf("with pk %d", m.PK)
-	case m.Name == name:
-		got, err, which = byName, byNameErr, fmt.Sprintf("named %q", m.Name)
+	case m.Name == byName.name:
+		got, err, which = byName.got, byName.err, fmt.Sprintf("named %q", m.Name)
 	default:
 		got, err = c.FindOAuth2ProviderByName(ctx, m.Name)
 		which = fmt.Sprintf("named %q", m.Name)

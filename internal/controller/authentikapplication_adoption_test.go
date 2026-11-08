@@ -165,7 +165,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(fake.ApplicationCount()).To(Equal(1))
 
 		got := fake.Application("legacy-app")
-		Expect(got["name"]).To(Equal("App legacy-app"))
+		Expect(got[jsonName]).To(Equal("App legacy-app"))
 		Expect(got["group"]).To(Equal("Legacy Group"))
 		Expect(got["meta_launch_url"]).To(Equal("https://legacy.example.com/"))
 		Expect(got["meta_description"]).To(Equal("legacy description"))
@@ -233,7 +233,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 			mustReconcile(a)
 			Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
-			Expect(fake.Application("dry-app")["name"]).To(Equal("App dry-app"))
+			Expect(fake.Application("dry-app")[jsonName]).To(Equal("App dry-app"))
 		})
 	})
 

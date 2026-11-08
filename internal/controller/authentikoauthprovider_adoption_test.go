@@ -39,6 +39,8 @@ import (
 var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	const (
 		namespace    = "default"
+		callbackURL  = "https://x.example.com/cb"
+		adoptedCreds = "adopted-creds"
 		legacyID     = "legacy-client-id"
 		legacySecret = "legacy-client-secret"
 		legacyLogout = "https://legacy.example.com/logout"
@@ -68,13 +70,15 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	// with credentials and optional fields the spec below never sets.
 	seedLegacy := func(name string) int32 {
 		return fake.SeedProviderWith(map[string]any{
-			"name": name, "client_id": legacyID, "client_secret": legacySecret,
+			jsonName: name, "client_id": legacyID, "client_secret": legacySecret,
 			"logout_uri": legacyLogout, "authentication_flow": fakeauthentik.FlowAuthenticationPK,
 			"encryption_key": fakeauthentik.EncryptionKeyPK,
 		})
 	}
 
-	newProvider := func(name string, mutate func(*authentikiov1alpha1.AuthentikOAuthProviderSpec)) *authentikiov1alpha1.AuthentikOAuthProvider {
+	type specMutator = func(*authentikiov1alpha1.AuthentikOAuthProviderSpec)
+
+	newProvider := func(name string, mutate specMutator) *authentikiov1alpha1.AuthentikOAuthProvider {
 		p := &authentikiov1alpha1.AuthentikOAuthProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
@@ -98,7 +102,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		return p
 	}
 
-	adopting := func(match *authentikiov1alpha1.ProviderMatch, dryRun bool) func(*authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+	adopting := func(match *authentikiov1alpha1.ProviderMatch, dryRun bool) specMutator {
 		return func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
 			s.Adoption = authentikiov1alpha1.ProviderAdoptionSpec{
 				APIAdoptionSpec: authentikiov1alpha1.APIAdoptionSpec{Enabled: true, DryRun: dryRun},
@@ -220,7 +224,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: "bad-match", Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
 					AuthorizationFlow: "a", InvalidationFlow: "b",
-					RedirectURIs: []authentikiov1alpha1.RedirectURI{{URL: "https://x.example.com/cb"}},
+					RedirectURIs: []authentikiov1alpha1.RedirectURI{{URL: callbackURL}},
 				},
 			}
 			adopting(m, false)(&p.Spec)
@@ -249,17 +253,17 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		pk := seedLegacy("secret-provider")
 		fake.SeedApplication("secret-app", pk)
 		p := newProvider("secret", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
-			s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "adopted-creds"}
+			s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: adoptedCreds}
 			adopting(&authentikiov1alpha1.ProviderMatch{Name: "secret-provider"}, false)(s)
 		})
 		DeferCleanup(func() {
 			_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "adopted-creds", Namespace: namespace}}))
+				ObjectMeta: metav1.ObjectMeta{Name: adoptedCreds, Namespace: namespace}}))
 		})
 
 		mustReconcile(p)
 		var s corev1.Secret
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: "adopted-creds"}, &s)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: adoptedCreds}, &s)).To(Succeed())
 		Expect(s.Data["client-id"]).To(Equal([]byte(legacyID)))
 		Expect(s.Data["client-secret"]).To(Equal([]byte(legacySecret)))
 		Expect(fake.Provider(pk)["client_secret"]).To(Equal(legacySecret))

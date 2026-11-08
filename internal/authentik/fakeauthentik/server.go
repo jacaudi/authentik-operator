@@ -55,12 +55,13 @@ const (
 )
 
 const (
-	fieldName   = "name"
-	fieldSlug   = "slug"
-	fieldAuthz  = "authorization_flow"
-	fieldInval  = "invalidation_flow"
-	fieldDetail = "detail"
-	notFound    = "Not found."
+	fieldName      = "name"
+	fieldSlug      = "slug"
+	fieldAuthz     = "authorization_flow"
+	fieldInval     = "invalidation_flow"
+	fieldDetail    = "detail"
+	fieldRedirects = "redirect_uris"
+	notFound       = "Not found."
 )
 
 // Request is a recorded API call.
@@ -167,7 +168,7 @@ func (s *Server) SeedProvider(name string) int32 {
 	s.nextPK++
 	s.providers[pk] = s.completeProvider(pk, map[string]any{
 		fieldName: name, fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
-		"redirect_uris": []any{},
+		fieldRedirects: []any{},
 	})
 	return pk
 }
@@ -182,7 +183,7 @@ func (s *Server) SeedProviderWith(fields map[string]any) int32 {
 	s.nextPK++
 	in := map[string]any{
 		fieldName: "", fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
-		"redirect_uris": []any{},
+		fieldRedirects: []any{},
 	}
 	maps.Copy(in, fields)
 	s.providers[pk] = s.completeProvider(pk, in)
