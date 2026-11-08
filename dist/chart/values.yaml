@@ -1,201 +1,173 @@
 ## String to partially override chart.fullname template (will maintain the release name)
-##
 # nameOverride: ""
 
 ## String to fully override chart.fullname template
-##
 # fullnameOverride: ""
 
-## Configure the controller manager deployment
-##
-manager:
-  ## Set to false to skip manager installation
-  ##
+replicaCount: 1
+
+image:
+  ## Lowercase on purpose: GHCR rejects uppercase references.
+  repository: ghcr.io/jacaudi/authentik-operator
+  ## Defaults to "v" + Chart.appVersion (release images are tagged v<semver>).
+  tag: ""
+  ## When set, renders repository@digest and the tag is ignored. Prefer pinning a
+  ## single-platform digest if your registry mirror cannot sync multi-arch indexes.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+## The GHCR package may be private; reference a pull Secret here.
+imagePullSecrets: []
+# - name: ghcr-pull
+
+## Leader election (--leader-elect). On by default, matching config/manager.
+leaderElection:
   enabled: true
 
-  replicas: 1
+## Health probe server (/healthz, /readyz).
+healthProbe:
+  port: 8081
 
-  image:
-    repository: controller
-    ## Image tag (defaults to Chart.appVersion if not set)
-    ##
-    # tag: ""
-    pullPolicy: IfNotPresent
+## Logging (controller-runtime zap flags).
+logging:
+  ## --zap-log-level: debug | info | error | a positive integer
+  level: info
+  ## --zap-devel: development mode (console encoder defaults, debug level, stack traces on warn)
+  devel: false
+  ## --zap-encoder: json | console
+  encoder: json
 
-  ## Arguments
-  ##
-  args:
-    - --leader-elect
+## Default Authentik connection, used by objects without spec.authentikRef.
+## Leave everything empty to run without a default connection.
+authentik:
+  ## --authentik-url (env AUTHENTIK_URL)
+  url: ""
+  ## --authentik-external-url: browser-facing URL used in rendered credential Secrets
+  externalUrl: ""
+  ## API token from an EXISTING Secret, mounted as a file and passed via
+  ## --authentik-token-file. The token never appears in values or in the pod spec.
+  ## The token is read once at startup; rotating it requires a pod restart.
+  tokenSecret:
+    name: ""
+    key: token
+  ## PEM CA bundle (trusted in addition to system roots) from an EXISTING
+  ## ConfigMap OR Secret (set only one), mounted and passed via --authentik-ca-file.
+  caBundle:
+    configMap:
+      name: ""
+      key: ca.crt
+    secret:
+      name: ""
+      key: ca.crt
+  ## --authentik-insecure-skip-verify. Testing only.
+  insecureSkipVerify: false
 
-  ## Health probes.
-  ## The manager serves the liveness (/healthz) and readiness (/readyz) endpoints on this port.
-  ##
-  healthProbe:
-    # Health probe server port
-    port: 8081
+## Extra command-line flags appended to the manager args (rendered with tpl).
+extraArgs: []
+# - --enable-http2
 
-  ## Image pull secrets
-  ##
-  # imagePullSecrets:
-  #   - name: myregistrykey
+## Extra environment variables for the manager container.
+extraEnv: []
+# - name: HTTPS_PROXY
+#   value: http://proxy.example.com:3128
 
-  ## Pod-level security settings
-  ##
-  podSecurityContext:
-    runAsNonRoot: true
-    seccompProfile:
-      type: RuntimeDefault
+extraVolumes: []
+extraVolumeMounts: []
 
-  ## Container-level security settings
-  ##
-  securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop:
+## Defaults match config/manager/manager.yaml.
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+## "restricted" Pod Security Standard, matching config/manager/manager.yaml.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
       - ALL
-    readOnlyRootFilesystem: true
+  readOnlyRootFilesystem: true
 
-  ## Resource limits and requests
-  ##
-  resources:
-    limits:
-      cpu: 500m
-      memory: 128Mi
-    requests:
-      cpu: 10m
-      memory: 64Mi
+terminationGracePeriodSeconds: 10
 
-  ## Manager pod's affinity
-  ##
-  affinity: {}
+## Deployment strategy
+# strategy:
+#   type: RollingUpdate
 
-  ## Manager pod's node selector
-  ##
-  nodeSelector: {}
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
 
-  ## Manager pod's tolerations
-  ##
-  tolerations: []
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
 
-  ## Deployment strategy
-  ##
-  # strategy:
-  #   type: RollingUpdate
-  #   rollingUpdate:
-  #     maxSurge: 25%
-  #     maxUnavailable: 25%
+## PodDisruptionBudget. Off by default: with replicaCount=1 a budget of
+## minAvailable=1 would block node drains.
+podDisruptionBudget:
+  enabled: false
+  ## Set one of the two; minAvailable wins. Default when enabled: maxUnavailable 1.
+  # minAvailable: 1
+  # maxUnavailable: 1
 
-  ## Priority class name
-  ##
-  # priorityClassName: ""
-
-  ## Topology spread constraints
-  ##
-  # topologySpreadConstraints: []
-
-  ## Termination grace period seconds
-  ##
-  terminationGracePeriodSeconds: 10
-
-  ## Custom Deployment labels
-  ##
+## ServiceAccount. (Key is `enabled`, not `create`: the plugin-generated
+## templates use it.) `name` is honoured whether or not the chart creates it;
+## it is required when enabled=false (use "default" for the namespace default).
+serviceAccount:
+  enabled: true
+  # name: ""
+  # annotations: {}
   # labels: {}
 
-  ## Custom Deployment annotations
-  ##
-  # annotations: {}
-
-  ## Custom Pod labels and annotations
-  ##
-  # pod:
-  #   labels: {}
-  #   annotations: {}
-
-## RBAC configuration
-##
+## RBAC
 rbac:
-  ## RBAC resource scope
-  ## - false (default): ClusterRole/ClusterRoleBinding (all namespaces)
-  ## - true: Role/RoleBinding (release namespace only)
-  ##
+  ## Kept for plugin-template compatibility. The operator needs cluster-wide
+  ## access (it has no watch-namespaces flag), so leave this false.
   namespaced: false
-
-  ## Helper roles for CRD management (admin/editor/viewer)
-  ##
   helpers:
-    ## Install convenience admin/editor/viewer roles for CRDs
-    ##
+    ## Install convenience admin/editor/viewer ClusterRoles for each CRD
     enabled: false
 
-## ServiceAccount configuration
-##
-serviceAccount:
-  # Install default ServiceAccount provided
-  enabled: true
-
-  ## Existing ServiceAccount name (required when enabled=false)
-  ## Set to "default" to use the namespace default ServiceAccount
-  ## Note: When enabled=true, respects nameOverride/fullnameOverride
-  ##
-  # name: ""
-
-  ## Custom ServiceAccount annotations
-  ##
-  # annotations: {}
-
-  ## Custom ServiceAccount labels
-  ##
-  # labels: {}
-
-## Custom Resource Definitions
-##
+## CRDs are rendered as templates (not crds/) so `helm upgrade` updates them.
+## With keep=true they carry helm.sh/resource-policy: keep and survive
+## `helm uninstall` (deleting a CRD deletes every custom resource of that kind).
 crd:
-  # Install CRDs with the chart
   enabled: true
-  # Keep CRDs when uninstalling
   keep: true
 
-## Controller metrics endpoint.
-## Enable to expose /metrics endpoint
-##
+## Metrics endpoint (Service + controller-runtime metrics server).
 metrics:
   enabled: true
-  # Metrics server port
   port: 8443
-  # Enable secure metrics: HTTPS with certs/auth (true) or HTTP (false).
-  # Note: Metrics authn/authz needs ClusterRole access.
+  ## HTTPS with authn/authz (true) or plain HTTP (false); matches config/default.
   secure: true
 
-## Cert-manager integration for TLS certificates.
-## Required for webhook certificates and metrics endpoint certificates.
-##
-certManager:
-  enabled: false
-
-## Webhook server configuration
-##
-webhook:
-  enabled: false
-  # Webhook server port
-  port: 9443
-
-## Prometheus ServiceMonitor for metrics scraping.
-## Requires prometheus-operator to be installed in the cluster.
-##
+## ServiceMonitor for the metrics Service. Requires prometheus-operator CRDs.
+## (Key is `prometheus`: the plugin-generated template uses it.)
 prometheus:
   enabled: false
-
-  ## Custom ServiceMonitor labels
-  ##
   # labels: {}
-
-  ## Custom ServiceMonitor annotations
-  ##
   # annotations: {}
 
-## Network policies for controlling traffic flow.
-## Enable to restrict ingress to the controller manager.
-##
+## NetworkPolicy allowing metrics scrapes from namespaces labelled `metrics: enabled`.
 networkPolicy:
   enabled: false
 
+## Reserved by the plugin-generated ServiceMonitor template. The chart does not
+## ship Certificate resources; leave false (metrics use controller-runtime's
+## self-signed certificate, as in config/default).
+certManager:
+  enabled: false
+
+## Not exposed on purpose (the binary has no such support yet; see
+## docs/roadmap/TASK-06): webhook toggles, watchNamespaces.

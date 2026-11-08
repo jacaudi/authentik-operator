@@ -1,0 +1,48 @@
+# Exercises every optional branch of the chart for `task chart:lint`
+# (helm lint + kubeconform). Not a recommended configuration.
+replicaCount: 2
+image:
+  tag: sha-0000000
+imagePullSecrets:
+  - name: ghcr-pull
+authentik:
+  url: https://authentik.example.com
+  externalUrl: https://sso.example.com
+  tokenSecret:
+    name: authentik-api
+    key: api-token
+  caBundle:
+    configMap:
+      name: authentik-ca
+      key: ca-bundle.pem
+extraArgs:
+  - --enable-http2
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy.example.com:3128
+podDisruptionBudget:
+  enabled: true
+priorityClassName: system-cluster-critical
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        control-plane: controller-manager
+podAnnotations:
+  example.com/scrape: "true"
+podLabels:
+  team: platform
+prometheus:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+networkPolicy:
+  enabled: true
+rbac:
+  helpers:
+    enabled: true
+serviceAccount:
+  annotations:
+    example.com/role: operator

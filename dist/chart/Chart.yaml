@@ -1,14 +1,21 @@
 apiVersion: v2
 name: authentik-operator
-description: A Helm chart to distribute authentik-operator
+description: Kubernetes operator that manages authentik (applications, providers, users, groups) from custom resources
 type: application
 
-version: 0.1.0
-appVersion: "0.1.0"
+# Chart version == app version. Both lines are bumped by release-please
+# (generic updater, see release-please-config.json); do not edit by hand.
+version: 0.0.0 # x-release-please-version
+appVersion: "0.0.0" # x-release-please-version
+
+home: https://github.com/jacaudi/authentik-operator
+sources:
+  - https://github.com/jacaudi/authentik-operator
 
 keywords:
   - kubernetes
   - operator
+  - authentik
 
 annotations:
   kubebuilder.io/generated-by: kubebuilder

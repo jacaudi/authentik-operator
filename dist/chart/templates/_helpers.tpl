@@ -51,13 +51,30 @@ Dynamically calculates safe truncation to ensure total name length <= 63 chars.
 
 {{/*
 ServiceAccount name to use.
-When enabled, use the chart's ServiceAccount name.
-When disabled, serviceAccount.name must be set; use "default" to pick the namespace default ServiceAccount.
+serviceAccount.name wins whether or not the chart creates the account.
+Otherwise the chart's own ServiceAccount is used; with serviceAccount.enabled=false
+a name is required (use "default" for the namespace default account).
 */}}
 {{- define "authentik-operator.serviceAccountName" -}}
-{{- if .Values.serviceAccount.enabled }}
+{{- if .Values.serviceAccount.name }}
+{{- .Values.serviceAccount.name }}
+{{- else if .Values.serviceAccount.enabled }}
 {{- include "authentik-operator.resourceName" (dict "suffix" "controller-manager" "context" .) }}
 {{- else }}
 {{- required "serviceAccount.name is required when serviceAccount.enabled=false (set name: default explicitly to use the namespace default ServiceAccount)" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Container image reference.
+- image.digest set: repository@digest (the tag is ignored; pin single-platform digests).
+- otherwise repository:tag, where tag defaults to v<Chart.appVersion> because
+  release images are tagged v<semver> (see .github/workflows/ci-build.yml).
+*/}}
+{{- define "authentik-operator.image" -}}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.image.repository (default (printf "v%s" .Chart.AppVersion) .Values.image.tag) }}
 {{- end }}
 {{- end }}
