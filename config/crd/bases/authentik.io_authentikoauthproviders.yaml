@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
+    - jsonPath: .status.provenance
+      name: Provenance
+      type: string
     - jsonPath: .status.conditions[?(@.type=='CredentialsReady')].status
       name: Credentials
       type: string
@@ -67,6 +70,62 @@ spec:
                 description: accessTokenValidity, e.g. "minutes=5".
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
+              adoption:
+                description: |-
+                  adoption controls whether this resource may take over a provider that
+                  already exists in Authentik (for example one created by another
+                  operator) instead of reporting a Conflict. See APIAdoptionSpec for
+                  what adoption writes and which defaulted fields are included. An
+                  adopted provider's client ID and secret are kept as they are (the
+                  credentials Secret is rendered from the existing values) unless
+                  spec.clientId is set. Unset optional fields (authenticationFlow,
+                  encryptionKey, logoutUri, name) are left as the existing provider has
+                  them. The defaulted fields adoption will write are: scopes, clientType,
+                  grantTypes, accessCodeValidity, accessTokenValidity,
+                  refreshTokenValidity, refreshTokenThreshold, subMode,
+                  includeClaimsInIdToken, issuerMode, signingKey, logoutMethod, and the
+                  matchingMode and type of each redirect URI.
+                properties:
+                  dryRun:
+                    default: false
+                    description: |-
+                      dryRun finds the existing object and reports, in the Ready condition
+                      (reason AdoptionDryRun) and an event, which fields adoption would
+                      change. Nothing is written to Authentik, and no credentials Secret is
+                      rendered. Set it back to false to adopt for real. Only meaningful
+                      with enabled true.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: |-
+                      enabled permits this resource to take over an existing Authentik
+                      object that it did not create.
+                    type: boolean
+                  match:
+                    description: |-
+                      match selects the existing provider by name or pk. When unset, the
+                      provider named like this resource's desired name (spec.name, else
+                      metadata.name) is the candidate and, if there is none, a new provider
+                      is created. When set, the match must exist: a missing provider is an
+                      error (reason AdoptionTargetNotFound), never a create, so a migration
+                      cannot silently mint new credentials.
+                    properties:
+                      name:
+                        description: name is the provider's exact name in Authentik.
+                        maxLength: 255
+                        minLength: 1
+                        type: string
+                      pk:
+                        description: pk is the provider's primary key in Authentik.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                    x-kubernetes-validations:
+                    - message: set exactly one of name or pk
+                      rule: '(has(self.name) ? 1 : 0) + (has(self.pk) ? 1 : 0) ==
+                        1'
+                type: object
               authenticationFlow:
                 description: |-
                   authenticationFlow is the slug of the flow used when an
@@ -111,6 +170,17 @@ spec:
                 enum:
                 - confidential
                 - public
+                type: string
+              deletionPolicy:
+                description: |-
+                  deletionPolicy is what happens to the provider in Authentik when this
+                  resource is deleted: Delete or Retain. When unset: Delete for a
+                  provider this resource created, Retain for an adopted one. The
+                  rendered credentials Secret is a Kubernetes object owned by this
+                  resource and is garbage-collected with it under either policy.
+                enum:
+                - Delete
+                - Retain
                 type: string
               encryptionKey:
                 description: |-
@@ -383,10 +453,18 @@ spec:
                   outcome was lost (timeout, failed status write), which a pinned
                   spec.clientId alone cannot prove: another provider could carry it.
                 type: string
+              provenance:
+                description: |-
+                  provenance is Created or Adopted once decided; empty means not yet
+                  decided (including while an adoption dry run is reporting).
+                enum:
+                - Created
+                - Adopted
+                type: string
               providerPk:
                 description: |-
-                  providerPk is the primary key of the provider this resource created
-                  in Authentik. Set only for providers the operator created.
+                  providerPk is the primary key of the provider this resource manages in
+                  Authentik, whether it created or adopted it.
                 format: int32
                 type: integer
               secretName:

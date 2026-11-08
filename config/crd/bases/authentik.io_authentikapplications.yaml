@@ -18,6 +18,9 @@ spec:
     - jsonPath: .status.slug
       name: Slug
       type: string
+    - jsonPath: .status.provenance
+      name: Provenance
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -54,6 +57,34 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikApplication
             properties:
+              adoption:
+                description: |-
+                  adoption controls whether this resource may take over an application
+                  that already exists in Authentik with this slug instead of reporting
+                  a Conflict. The application is matched by slug. Adoption patches the
+                  fields the spec sets and leaves the others (group, metaLaunchUrl,
+                  metaDescription, metaPublisher, metaIcon, and the provider link when
+                  providerRef is unset) as they are. The defaulted fields it will write
+                  are: policyEngineMode, openInNewTab and metaHide. When providerRef is
+                  set, the application's provider link is set to that provider (normally
+                  the adopted provider, so a no-op). See APIAdoptionSpec.
+                properties:
+                  dryRun:
+                    default: false
+                    description: |-
+                      dryRun finds the existing object and reports, in the Ready condition
+                      (reason AdoptionDryRun) and an event, which fields adoption would
+                      change. Nothing is written to Authentik, and no credentials Secret is
+                      rendered. Set it back to false to adopt for real. Only meaningful
+                      with enabled true.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: |-
+                      enabled permits this resource to take over an existing Authentik
+                      object that it did not create.
+                    type: boolean
+                type: object
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -72,6 +103,15 @@ spec:
                 required:
                 - name
                 type: object
+              deletionPolicy:
+                description: |-
+                  deletionPolicy is what happens to the application in Authentik when
+                  this resource is deleted: Delete or Retain. When unset: Delete for an
+                  application this resource created, Retain for an adopted one.
+                enum:
+                - Delete
+                - Retain
+                type: string
               group:
                 description: group groups applications on the user's library page.
                 maxLength: 255
@@ -164,7 +204,7 @@ spec:
               applicationUid:
                 description: |-
                   applicationUid is the Authentik primary key (UUID) of the application
-                  this resource created.
+                  this resource manages, whether it created or adopted it.
                 type: string
               conditions:
                 description: |-
@@ -239,6 +279,14 @@ spec:
                   next reconcile recognise its own application if the create's outcome
                   was lost (timeout, failed status write) without trusting anything
                   another resource could also claim.
+                type: string
+              provenance:
+                description: |-
+                  provenance is Created or Adopted once decided; empty means not yet
+                  decided (including while an adoption dry run is reporting).
+                enum:
+                - Created
+                - Adopted
                 type: string
               providerPk:
                 description: providerPk is the primary key of the provider currently
