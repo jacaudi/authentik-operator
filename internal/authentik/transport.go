@@ -58,7 +58,7 @@ func (t *rateLimitTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // retryTransport retries 429 for any method (the server rejected the request
-// before acting on it) and 5xx / transport errors for idempotent methods only,
+// before acting on it) and 5xx / transport errors for replayable methods only,
 // so a POST that may have been applied is never replayed.
 type retryTransport struct {
 	next        http.RoundTripper
@@ -114,13 +114,13 @@ func (t *retryTransport) attempt(req *http.Request) (*http.Response, error) {
 
 func (t *retryTransport) shouldRetry(method string, resp *http.Response, err error) bool {
 	if err != nil {
-		return isIdempotent(method)
+		return replayable(method)
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return true
 	case resp.StatusCode >= 500:
-		return isIdempotent(method)
+		return replayable(method)
 	default:
 		return false
 	}
@@ -152,9 +152,13 @@ func discardBody(resp *http.Response) {
 	_ = resp.Body.Close()                                         //nolint:errcheck // response is discarded
 }
 
-func isIdempotent(method string) bool {
+// replayable reports whether a request that may already have been applied is
+// safe to send again. The idempotent methods are, and so is PATCH here: every
+// PATCH this client sends sets its fields to absolute values, so applying it
+// twice equals applying it once. POST is the only method that creates.
+func replayable(method string) bool {
 	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete:
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodPatch, http.MethodDelete:
 		return true
 	default:
 		return false

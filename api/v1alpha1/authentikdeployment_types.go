@@ -55,8 +55,8 @@ type AuthentikDeploymentSpec struct {
 	// mode selects whether this resource manages the Authentik workloads
 	// (Managed) or only describes how to reach an existing Authentik
 	// (ConnectOnly). There is no default: managing workloads must be asked for.
-	// Immutable: switching would orphan or adopt workloads implicitly.
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="mode is immutable"
+	// Mutable: switching to Managed takes over nothing by itself, since
+	// adoption is gated by spec.adoption.enabled.
 	// +required
 	Mode DeploymentMode `json:"mode"`
 

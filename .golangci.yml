@@ -467,16 +467,6 @@ linters:
         linters:
           - gosec
         text: "^G204: "
-      # Deferred to PR 3 (the controller refactor): splitting the OAuth provider sync and
-      # its desired-state builders, and the four-value (…, reason, msg, err) returns.
-      - path: ^internal/controller/
-        linters:
-          - gocyclo
-        text: "of func `(\\(\\*Authentik(Application|OAuthProvider)Reconciler\\)\\.sync|desiredOAuth2Provider|oauth2ProviderPatch)`"
-      - path: ^internal/controller/oauthprovider_secret\.go$
-        linters:
-          - revive
-        text: "^confusing-results: "
     paths:
       - third_party$
       - builtin$

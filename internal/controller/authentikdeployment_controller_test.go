@@ -259,11 +259,14 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 			Expect(got.Spec.Connection.CABundle.SecretKeyRef.Key).To(Equal("ca.crt"))
 		})
 
-		It("rejects changing mode", func() {
-			d := connectOnly("immutable-mode", "tok")
+		It("accepts changing mode; ConnectOnly still requires a connection", func() {
+			d := connectOnly("mutable-mode", "tok")
 			create(d)
 			d.Spec.Mode = authentikiov1alpha1.DeploymentModeManaged
-			Expect(k8sClient.Update(ctx, d)).To(MatchError(ContainSubstring("mode is immutable")))
+			Expect(k8sClient.Update(ctx, d)).To(Succeed())
+			d.Spec.Mode = authentikiov1alpha1.DeploymentModeConnectOnly
+			d.Spec.Connection = nil
+			Expect(k8sClient.Update(ctx, d)).To(MatchError(ContainSubstring("connection is required")))
 		})
 	})
 })
