@@ -153,7 +153,7 @@ Rollback: uninstall this operator and its CRDs. Nothing has been adopted.
 
 ```sh
 bin/convert-jeffresc --out out/ --secret-suffix -v2 jeffresc-backup.yaml     # add --authentik-ref NAME if used
-less out/*.yaml; stderr report: read it
+# read the files and the report printed on stderr before applying anything
 ```
 
 `AuthentikCredentialsTemplate` is cluster-scoped and administrator-owned. A
@@ -209,8 +209,9 @@ have reconciled.
 
 Rollback: before `dryRun: false`, delete the new objects (nothing was
 written). After it, `deletionPolicy: Retain` makes deleting a new object
-release the Authentik object without deleting it; fields adoption wrote stay
-until JeffResc (still running) reconciles them back.
+release the Authentik object without deleting it. Fields adoption wrote stay
+on the object; JeffResc, still running, rewrites the fields it manages on its
+next reconcile.
 
 ### 4. Confirm the new Secret is byte-identical, then point consumers at it
 
@@ -269,9 +270,9 @@ kubectl -n NS get authentikoauthproviders.authentik.io,authentikapplications.aut
 and the applications still exist in Authentik.
 
 Rollback: re-apply `jeffresc-backup.yaml` and scale the old operator up; it
-finds the existing provider by its `<slug>-provider` name and manages it
-again. Remove the new objects first or the two operators fight over the same
-objects.
+looks the provider up by its `<slug>-provider` name, so it should manage it
+again (verify one application before relying on this). Delete the new objects
+first, or the two operators fight over the same Authentik objects.
 
 ### 6. Uninstall the old chart and CRDs, verify
 
@@ -283,9 +284,9 @@ kubectl delete crd authentikapplications.goauthentik.io authentikoauth2applicati
 Delete the CRDs only after step 5: deleting a CRD deletes its CRs, and a CR
 still carrying the finalizer would be processed by any running JeffResc
 operator. Then verify SSO login for every application with a real user.
-Optionally set `adoption.enabled: false` on the new objects later; `status.provenance`
-stays `Adopted` and deleting them still retains the Authentik object unless
-you set `deletionPolicy: Delete`.
+The new objects keep `deletionPolicy: Retain`, so deleting one later releases
+the Authentik object instead of deleting it; set `deletionPolicy: Delete`
+only if you want the new operator to own its lifecycle.
 
 Rollback: reinstall the old chart and CRDs and re-apply `jeffresc-backup.yaml`.
 
