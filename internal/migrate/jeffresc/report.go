@@ -105,6 +105,10 @@ func (b *builder) report(skipped []string) string {
 		slices.Sort(skipped)
 		writeList(&sb, skipped)
 	}
+	sb.WriteString("\nAdopt-only mode: createIfMissing is not set, so a missing match target is reported as\n")
+	sb.WriteString("AdoptionTargetNotFound and nothing is created. Once every app is migrated and SSO login is\n")
+	sb.WriteString("verified, leave adopt-only mode: set spec.adoption.enabled: false on every converted\n")
+	sb.WriteString("provider and application (final runbook step in docs/migration-from-jeffresc.md).\n")
 	return sb.String()
 }
 

@@ -290,9 +290,39 @@ only if you want the new operator to own its lifecycle.
 
 Rollback: reinstall the old chart and CRDs and re-apply `jeffresc-backup.yaml`.
 
-## Disaster recovery
+### 7. Leave adopt-only mode
 
-Adoption needs the Authentik objects to exist. After losing the Authentik
-database, `adoption.createIfMissing: true` (set deliberately, never by the
-converter) lets a fresh provider be created, with new client credentials.
-See [scope.md, "API-object adoption"](design/scope.md#api-object-adoption-task-05).
+The migration runs adopt-only: converted objects have `adoption.enabled: true`
+and never set `createIfMissing` (default false). In this mode the operator
+never creates a provider or application. If the match target is missing (a typo
+in `match.name` or the slug) it reports `AdoptionTargetNotFound` and writes
+nothing.
+
+Once SSO login is verified for every application, set `spec.adoption.enabled:
+false` on every converted provider and application (remove the `adoption`
+block, or set `enabled: false`; `dryRun` becomes irrelevant), commit that to
+your manifests, and confirm each resource stays `Ready` with provenance
+`Adopted` and that its next reconcile writes nothing (no new events, no
+change in Authentik). Why: adoption is a one-time takeover. Afterwards the
+resources are managed by primary key; leaving adoption enabled would let a
+future CR with a matching name take over unrelated objects.
+
+Rollback: set `adoption.enabled: true` again.
+
+## After migration: disaster recovery
+
+With adoption disabled (step 7):
+
+- **Cluster and Authentik rebuilt, CRs re-applied with no status.** The
+  operator creates new providers and applications normally. The client secret
+  is new; the client ID too, unless you pin `spec.clientId` beforehand (do so
+  if consumers must keep it).
+- **Authentik database lost, CR status intact** (provenance `Adopted`, pk
+  set). The operator reports `AdoptionTargetNotFound` and never recreates an
+  adopted object automatically. To let it create, clear `status.providerPk`,
+  `status.provenance` and `status.clientId` (applications: `applicationUid`,
+  `provenance`), or delete and re-apply the CR.
+
+For the in-place toggle (`createIfMissing`) see
+[scope.md, "API-object adoption"](design/scope.md#api-object-adoption-task-05).
+

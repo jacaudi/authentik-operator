@@ -24,3 +24,8 @@ AuthentikApplication authentik-operator-system/gitlab
 
 AuthentikCredentialsTemplates (cluster-scoped; a platform admin applies them)
   jeffresc-a4704637: namespaces sso
+
+Adopt-only mode: createIfMissing is not set, so a missing match target is reported as
+AdoptionTargetNotFound and nothing is created. Once every app is migrated and SSO login is
+verified, leave adopt-only mode: set spec.adoption.enabled: false on every converted
+provider and application (final runbook step in docs/migration-from-jeffresc.md).
