@@ -1,0 +1,26 @@
+convert-jeffresc report
+=======================
+
+Adoption will WRITE every field below onto the live objects in Authentik. Before turning
+dryRun off, read each object's Ready condition (reason AdoptionDryRun lists `field: old -> new`)
+and edit the spec until the only listed changes are ones you intend.
+
+AuthentikApplication authentik-operator-system/gitlab
+  files: authentikoauthprovider-gitlab.yaml, authentikapplication-gitlab.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.accessCodeValidity = minutes=1
+    - provider.signingKey = authentik Self-signed Certificate
+    - application.openInNewTab = true
+    - application.policyEngineMode = any
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - moves from namespace authentik-operator-system to sso: consumers must be pointed at Secret sso/gitlab-oidc-credentials
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+AuthentikCredentialsTemplates (cluster-scoped; a platform admin applies them)
+  jeffresc-a4704637: namespaces sso

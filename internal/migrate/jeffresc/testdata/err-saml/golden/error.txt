@@ -1,0 +1,1 @@
+input.yaml: AuthentikSAMLApplication ns/wiki: unsupported: SAML applications have no equivalent (this operator has no SAML provider kind); leave it on the JeffResc operator

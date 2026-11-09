@@ -1,0 +1,27 @@
+convert-jeffresc report
+=======================
+
+Adoption will WRITE every field below onto the live objects in Authentik. Before turning
+dryRun off, read each object's Ready condition (reason AdoptionDryRun lists `field: old -> new`)
+and edit the spec until the only listed changes are ones you intend.
+
+AuthentikOAuth2Application media/immich
+  files: authentikoauthprovider-immich.yaml, authentikapplication-immich.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.scopes = [openid profile email]
+    - provider.clientType = confidential
+    - provider.accessCodeValidity = minutes=1
+    - provider.accessTokenValidity = minutes=5
+    - provider.refreshTokenValidity = days=30
+    - provider.subMode = hashed_user_id
+    - provider.issuerMode = per_provider
+    - provider.includeClaimsInIdToken = true
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - Secret immich-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label

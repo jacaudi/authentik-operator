@@ -1,0 +1,98 @@
+convert-jeffresc report
+=======================
+
+Adoption will WRITE every field below onto the live objects in Authentik. Before turning
+dryRun off, read each object's Ready condition (reason AdoptionDryRun lists `field: old -> new`)
+and edit the spec until the only listed changes are ones you intend.
+
+AuthentikApplication authentik-operator-system/gitlab
+  files: authentikoauthprovider-gitlab.yaml, authentikapplication-gitlab.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.accessCodeValidity = minutes=1
+    - provider.signingKey = authentik Self-signed Certificate
+    - application.openInNewTab = true
+    - application.policyEngineMode = any
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - Secret gitlab-oidc-credentials keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+AuthentikApplication authentik-operator-system/grafana
+  files: authentikoauthprovider-grafana.yaml, authentikapplication-grafana.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.scopes = [openid profile email]
+    - provider.clientType = confidential
+    - provider.accessCodeValidity = minutes=1
+    - provider.accessTokenValidity = minutes=5
+    - provider.refreshTokenValidity = days=30
+    - provider.subMode = hashed_user_id
+    - provider.issuerMode = per_provider
+    - provider.signingKey = authentik Self-signed Certificate
+    - provider.includeClaimsInIdToken = true
+    - application.openInNewTab = true
+    - application.policyEngineMode = any
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - Secret grafana-oidc-credentials keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+AuthentikApplication authentik-operator-system/litellm
+  files: authentikoauthprovider-litellm.yaml, authentikapplication-litellm.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.scopes = [openid profile email]
+    - provider.clientType = confidential
+    - provider.accessCodeValidity = minutes=1
+    - provider.accessTokenValidity = minutes=5
+    - provider.refreshTokenValidity = days=30
+    - provider.subMode = hashed_user_id
+    - provider.issuerMode = per_provider
+    - provider.signingKey = authentik Self-signed Certificate
+    - provider.includeClaimsInIdToken = true
+    - application.openInNewTab = true
+    - application.policyEngineMode = any
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - Secret litellm-oidc-credentials keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+AuthentikApplication authentik-operator-system/vault
+  files: authentikoauthprovider-vault.yaml, authentikapplication-vault.yaml
+  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
+    - provider.scopes = [openid profile email]
+    - provider.clientType = confidential
+    - provider.accessCodeValidity = minutes=1
+    - provider.accessTokenValidity = minutes=5
+    - provider.refreshTokenValidity = days=30
+    - provider.subMode = hashed_user_id
+    - provider.issuerMode = per_provider
+    - provider.signingKey = authentik Self-signed Certificate
+    - provider.includeClaimsInIdToken = true
+    - application.openInNewTab = true
+    - application.policyEngineMode = any
+  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
+    - provider.grantTypes = [authorization_code, refresh_token]
+    - provider.refreshTokenThreshold = seconds=0
+    - provider.logoutMethod = backchannel
+    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
+    - application.metaHide = false
+  notes:
+    - Secret vault-oidc-credentials keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+AuthentikCredentialsTemplates (cluster-scoped; a platform admin applies them)
+  jeffresc-a4704637: namespaces authentik-operator-system

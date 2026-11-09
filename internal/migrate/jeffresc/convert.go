@@ -18,7 +18,12 @@ limitations under the License.
 // (goauthentik.io) into the resources of this operator (authentik.io).
 package jeffresc
 
-import "errors"
+import (
+	"cmp"
+	"errors"
+	"maps"
+	"slices"
+)
 
 // Options control the conversion.
 type Options struct {
@@ -62,7 +67,34 @@ type Result struct {
 	Report string
 }
 
-// Convert converts the JeffResc objects found in inputs.
-func Convert(_ []Input, _ Options) (*Result, error) {
-	return nil, errors.New("not implemented")
+// Convert converts the JeffResc objects found in inputs. Conversion is
+// all-or-nothing: if any object cannot be converted faithfully, no files are
+// returned and the error names every offending object.
+func Convert(inputs []Input, opts Options) (*Result, error) {
+	apps, skipped, err := parseInputs(inputs)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(apps, func(a, b source) int {
+		return cmp.Or(cmp.Compare(a.namespace, b.namespace), cmp.Compare(a.name, b.name), cmp.Compare(a.kind, b.kind))
+	})
+	b := &builder{opts: opts, templates: map[string]*templateGroup{}, files: map[string]File{}}
+	var errs []error
+	for i := range apps {
+		if err := b.add(apps[i]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	if len(apps) == 0 {
+		return nil, errors.New("no AuthentikApplication or AuthentikOAuth2Application (goauthentik.io) found in the input")
+	}
+	if err := b.finish(); err != nil {
+		return nil, err
+	}
+	files := slices.Collect(maps.Values(b.files))
+	slices.SortFunc(files, func(x, y File) int { return cmp.Compare(x.Name, y.Name) })
+	return &Result{Files: files, Report: b.report(skipped)}, nil
 }

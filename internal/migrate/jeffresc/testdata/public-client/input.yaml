@@ -11,4 +11,5 @@ spec:
   secret:
     template: |
       client_id: {{ .ClientID }}
+      client_secret: {{ .ClientSecret }}
       issuer: {{ .IssuerURL }}

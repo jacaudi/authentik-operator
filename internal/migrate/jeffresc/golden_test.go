@@ -17,6 +17,7 @@ limitations under the License.
 package jeffresc
 
 import (
+	"bytes"
 	"flag"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 	"testing"
 )
 
-//nolint:gochecknoglobals // test flag: go test -run Golden -update rewrites testdata.
+// update rewrites the golden files: go test -run Golden -update.
 var update = flag.Bool("update", false, "rewrite golden files")
 
 type goldenCase struct {
@@ -146,7 +147,7 @@ func TestGoldenDeterministic(t *testing.T) {
 			t.Fatal("output is not deterministic")
 		}
 		for i := range next.Files {
-			if next.Files[i].Name != first.Files[i].Name || string(next.Files[i].Data) != string(first.Files[i].Data) {
+			if next.Files[i].Name != first.Files[i].Name || !bytes.Equal(next.Files[i].Data, first.Files[i].Data) {
 				t.Fatalf("file %d differs between runs", i)
 			}
 		}
