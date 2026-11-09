@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none
-- Status: Planned
+- Status: In Progress
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -12,9 +12,9 @@ split kinds mean no in-place upgrade. JeffResc itself renamed
 hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
 
 ## Implementation Plan
-- [ ] Field map document (`docs/migration-from-jeffresc.md`): every JeffResc
+- [x] Field map document (`docs/migration-from-jeffresc.md`): every JeffResc
       field -> provider/application field, defaults that differ, dropped fields
-- [ ] Converter: `hack/convert-jeffresc` (Go, testable) reading
+- [x] Converter: `hack/convert-jeffresc` (Go, testable) reading
       AuthentikApplication / AuthentikOAuth2Application / AuthentikSAMLApplication
       YAML and emitting AuthentikOAuthProvider + AuthentikApplication (one object
       per file, `<kind>-<name>.yaml`), plus one cluster-scoped
@@ -24,7 +24,7 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
       `spec.secret.templateRef`. Templates are admin-owned (TASK-04), so the
       runbook has the platform admin apply them. Also: `adoption.enabled: true`,
       `adoption.match` targeting `<slug>-provider`, `deletionPolicy: Retain`
-- [ ] Runbook, zero-downtime, credentials preserved:
+- [x] Runbook, zero-downtime, credentials preserved:
   1. install new operator alongside the old (different group, no CRD clash)
   2. apply converted CRs with adoption (+ dryRun first); confirm Ready and that
      the rendered Secret is byte-identical to the old one
@@ -34,7 +34,17 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
      Scale the old operator to 0, strip `goauthentik.io/finalizer` from its CRs,
      then delete them, so the Authentik objects survive
   5. uninstall the old chart and CRDs
-- [ ] Converter tests against representative real-world manifests (golden files)
+- [x] Converter tests against representative real-world manifests (golden files)
+
+## Notes
+- Converter: `internal/migrate/jeffresc` (+ `hack/convert-jeffresc`); golden
+  fixtures in `internal/migrate/jeffresc/testdata`, refreshed with
+  `go test ./internal/migrate/... -run Golden -update`. Output is also decoded
+  strictly into the typed structs and created in an envtest apiserver.
+- Runbook and field map: `docs/migration-from-jeffresc.md`. Finding that shaped
+  it: this operator refuses to overwrite a Secret it does not own, and
+  JeffResc's Secret is owned by its CR, so the runbook renders the new Secrets
+  under a suffix (`--secret-suffix`) to compare and cut over without a gap.
 
 ## Dependencies
 - Requires: TASK-02..TASK-05, TASK-08
