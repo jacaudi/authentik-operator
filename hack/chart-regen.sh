@@ -4,13 +4,22 @@
 # dist/chart is a hybrid. The kubebuilder helm/v2-alpha plugin derives these
 # directories from config/ and they are NEVER edited by hand:
 #   templates/{crd,rbac,metrics,network-policy,prometheus}
-# Everything else is hand-owned and is preserved byte-for-byte: Chart.yaml,
+# Everything else is hand-owned and is never written by this script: Chart.yaml,
 # values.yaml, templates/_helpers.tpl, templates/NOTES.txt, templates/pdb.yaml,
-# templates/manager/manager.yaml (the plugin would overwrite it with its generic
-# Deployment), tests/, README.md.
+# templates/manager/manager.yaml, tests/, ci/, README.md.
 #
-# The plugin also rewrites PROJECT, Makefile, config/manager/kustomization.yaml
-# and adds .github/workflows/test-chart.yml; those side effects are undone.
+# The plugin is pointed at a scratch --output-dir under bin/, so the live
+# dist/chart is only touched at the very end, and only in the generated dirs.
+#
+# CAUTION: before scaffolding, the plugin runs `make manifests generate
+# build-installer`. That can rewrite config/crd/bases, config/rbac/role.yaml and
+# api/**/zz_generated*.go (the same files `make verify` regenerates; review
+# `git status` afterwards). A build-installer failure is only a WARNING in
+# kubebuilder v4.16.0 (pkg/plugins/optional/helm/v2alpha/edit.go), so a stale
+# dist/install.yaml could be used silently; this script therefore runs
+# `make build-installer` itself first and fails hard. The plugin also rewrites
+# PROJECT (output:), Makefile and config/manager/kustomization.yaml, and may add
+# .github/workflows/test-chart.yml; an EXIT/INT/TERM trap restores all of them.
 #
 #   hack/chart-regen.sh           regenerate in place
 #   hack/chart-regen.sh --check   exit 1 if the plugin-owned parts drift
@@ -27,9 +36,7 @@ have=$("${kb}" version 2>/dev/null | sed -n 's/^KubeBuilder: *//p' | head -1)
 
 generated=(crd rbac metrics network-policy prometheus)
 tmp=$(mktemp -d)
-trap 'rm -rf "${tmp:?}"' EXIT
 
-cp -a dist/chart "${tmp}/owned"
 cp PROJECT "${tmp}/PROJECT"
 cp Makefile "${tmp}/Makefile"
 cp config/manager/kustomization.yaml "${tmp}/kustomization.yaml"
@@ -42,20 +49,34 @@ restore_side_effects() {
   cp "${tmp}/kustomization.yaml" config/manager/kustomization.yaml
   if [ "${had_workflow}" = 0 ]; then rm -f .github/workflows/test-chart.yml; fi
 }
-
-if ! "${kb}" edit --plugins=helm/v2-alpha --force >"${tmp}/plugin.log" 2>&1; then
-  cat "${tmp}/plugin.log" >&2
+cleanup() {
   restore_side_effects
+  rm -rf "${scratch:-bin/chart-regen}" "${tmp:?}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+scratch="bin/chart-regen"
+rm -rf "${scratch:?}"
+mkdir -p "${scratch}"
+
+# Fail hard where the plugin would only warn.
+if ! make build-installer IMG=controller:latest >"${tmp}/installer.log" 2>&1; then
+  cat "${tmp}/installer.log" >&2
+  echo "make build-installer failed" >&2
   exit 1
 fi
-cp -a dist/chart "${tmp}/fresh"
-rm -rf dist/chart
-cp -a "${tmp}/owned" dist/chart
-restore_side_effects
+if ! "${kb}" edit --plugins=helm/v2-alpha --output-dir="${scratch}" >"${tmp}/plugin.log" 2>&1; then
+  cat "${tmp}/plugin.log" >&2
+  exit 1
+fi
+fresh="${scratch}/chart"
+[ -d "${fresh}/templates" ] || { echo "plugin produced no chart in ${fresh}" >&2; exit 1; }
 
 # A new generated directory (e.g. webhook or certmanager after a PROJECT change)
 # must be adopted deliberately, not silently dropped.
-for d in "${tmp}"/fresh/templates/*/; do
+for d in "${fresh}"/templates/*/; do
   name=$(basename "${d}")
   case " ${generated[*]} manager " in
     *" ${name} "*) ;;
@@ -69,10 +90,10 @@ done
 drift=0
 for d in "${generated[@]}"; do
   if [ "${mode}" = "--check" ]; then
-    diff -ru "dist/chart/templates/${d}" "${tmp}/fresh/templates/${d}" || drift=1
+    diff -ru "dist/chart/templates/${d}" "${fresh}/templates/${d}" || drift=1
   else
     rm -rf "dist/chart/templates/${d}"
-    cp -a "${tmp}/fresh/templates/${d}" "dist/chart/templates/${d}"
+    cp -a "${fresh}/templates/${d}" "dist/chart/templates/${d}"
   fi
 done
 
