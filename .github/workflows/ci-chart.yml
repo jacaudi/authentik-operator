@@ -35,6 +35,8 @@ jobs:
       APP_ID: ${{ secrets.APP_ID }}
       # renovate: datasource=go depName=sigs.k8s.io/kind
       KIND_VERSION: v0.33.0
+      # renovate: datasource=go depName=github.com/mikefarah/yq/v4
+      YQ_VERSION: v4.54.3
       VERSION: ${{ inputs.version }}
     steps:
       - name: Checkout
@@ -42,6 +44,17 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          lint-tools: 'false'
+
+      - name: Install yq
+        run: |
+          go install "github.com/mikefarah/yq/v4@${YQ_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Verify the checkout matches the release being published
         run: |
@@ -68,16 +81,27 @@ jobs:
           username: ${{ steps.app-token.outputs.token && 'x-access-token' || github.actor }}
           password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
-      - name: Set up toolchains
-        uses: ./.github/actions/setup
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          lint-tools: 'false'
-
       - name: Install kind
         run: |
           go install "sigs.k8s.io/kind@${KIND_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Owner-agnostic release: the committed default stays
+      # ghcr.io/jacaudi/authentik-operator, but the PACKAGED chart points at the
+      # image this repository built (ci-build pushes ghcr.io/<lowercased
+      # github.repository>), so a private copy's dry run smokes its own image
+      # and a chart published under another owner pulls that owner's image.
+      - name: Point the packaged chart at this repository
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          repo=$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPO="ghcr.io/${repo}" yq -i '.image.repository = strenv(IMAGE_REPO)' dist/chart/values.yaml
+          URL="${SERVER_URL}/${REPOSITORY}" yq -i '.home = strenv(URL) | .sources = [strenv(URL)]' dist/chart/Chart.yaml
+          yq '.image.repository' dist/chart/values.yaml
+          yq '.home' dist/chart/Chart.yaml
 
       - name: Package the chart
         id: pkg
