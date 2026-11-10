@@ -31,6 +31,8 @@ tasks:
         done
       - task: version-sync
       - bash hack/verify-chart-rbac.sh
+      - make kustomize
+      - bash hack/verify-chart-deployment.sh
     env:
       # renovate: datasource=go depName=github.com/yannh/kubeconform
       KUBECONFORM_VERSION: v0.8.0
@@ -109,13 +111,18 @@ tasks:
         if [ "${KIND_LOAD}" = "true" ]; then
           kind load docker-image "${IMAGE}" --name "${KIND_CLUSTER}"
           set_args+=(--set image.pullPolicy=Never)
-        elif [ -f "${HOME}/.docker/config.json" ]; then
-          # The GHCR package may be private: reuse the runner's registry login as
-          # a pull Secret (the chart's imagePullSecrets path).
+        elif [ -f "${HOME}/.docker/config.json" ] \
+            && jq -e '.auths["ghcr.io"]' "${HOME}/.docker/config.json" >/dev/null 2>&1; then
+          # The GHCR package may be private: turn the runner's ghcr.io login into
+          # a pull Secret (the chart's imagePullSecrets path). Only the ghcr.io
+          # entry is copied, never the rest of ~/.docker/config.json.
+          pull_cfg=$(mktemp)
+          jq '{auths: {"ghcr.io": .auths["ghcr.io"]}}' "${HOME}/.docker/config.json" > "${pull_cfg}"
           kubectl --context "${ctx}" create namespace "${ns}"
           kubectl --context "${ctx}" -n "${ns}" create secret generic ghcr-pull \
             --type=kubernetes.io/dockerconfigjson \
-            --from-file=.dockerconfigjson="${HOME}/.docker/config.json"
+            --from-file=.dockerconfigjson="${pull_cfg}"
+          rm -f "${pull_cfg}"
           set_args+=(--set "imagePullSecrets[0].name=ghcr-pull")
         fi
 

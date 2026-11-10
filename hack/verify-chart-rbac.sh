@@ -35,4 +35,29 @@ for p in "${pairs[@]}"; do
     echo "ok: ${kind} *-${suffix} matches ${file}"
   fi
 done
+
+# Bindings: roleRef (kind, apiGroup, name suffix) and subjects (kind, name
+# suffix, namespace == release namespace) must match config/rbac.
+# "<binding kind>|<binding name suffix>|<config file>"
+bindings=(
+  "ClusterRoleBinding|manager-rolebinding|config/rbac/role_binding.yaml"
+  "RoleBinding|leader-election-rolebinding|config/rbac/leader_election_role_binding.yaml"
+  "ClusterRoleBinding|metrics-auth-rolebinding|config/rbac/metrics_auth_role_binding.yaml"
+)
+# Strip everything up to the config object's name: chart names carry a release prefix.
+bnorm='{"kind": .kind, "roleRef": {"apiGroup": .roleRef.apiGroup, "kind": .roleRef.kind, "name": (.roleRef.name | sub("^.*-(manager-role|leader-election-role|metrics-auth-role)$", "$1"))}, "subjects": (.subjects | map({"kind": .kind, "name": (.name | sub("^.*-?controller-manager$", "controller-manager")), "namespace": (.namespace | sub("^(system|rbac-check)$", "NS"))}))}'
+for p in "${bindings[@]}"; do
+  IFS='|' read -r kind suffix file <<<"${p}"
+  want=$(yq "${bnorm}" "${file}" -o=json -I=0)
+  got=$(printf '%s\n' "${rendered}" \
+    | yq "select(.kind == \"${kind}\" and (.metadata.name | test(\"-${suffix}\$\"))) | ${bnorm}" -o=json -I=0)
+  if [ -z "${got}" ] || [ "${want}" != "${got}" ]; then
+    echo "binding mismatch for ${kind} *-${suffix} vs ${file}" >&2
+    echo "  config: ${want}" >&2
+    echo "  chart:  ${got}" >&2
+    fail=1
+  else
+    echo "ok: ${kind} *-${suffix} matches ${file}"
+  fi
+done
 exit "${fail}"
