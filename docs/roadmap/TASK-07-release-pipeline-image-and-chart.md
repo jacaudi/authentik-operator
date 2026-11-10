@@ -36,16 +36,22 @@ Lessons from JeffResc to avoid:
       ALL, read-only rootfs), PDB, topologySpread, priorityClass,
       nodeSelector/tolerations/affinity, ServiceMonitor, NetworkPolicy, logging,
       extraArgs/extraEnv, image digest pin, imagePullSecrets
-      (50 helm-unittest cases in `dist/chart/tests`)
+      (60 helm-unittest cases in `dist/chart/tests`; render-time validation for
+      inconsistent authentik.*, bad digests, certManager, rbac.namespaced)
 - [ ] Chart values: webhook toggles and `watchNamespaces`. NOT exposed on purpose:
       the binary has neither a watch-namespaces flag nor an active webhook.
       Follow-up gated on TASK-06.
 - [x] CRDs shipped in the chart (templates with `helm.sh/resource-policy: keep`,
-      `crd.enabled`/`crd.keep`); upgrade path documented in `dist/chart/README.md`
+      `crd.enabled`/`crd.keep`); upgrade path documented in `dist/chart/README.md` (incl. re-annotating kept CRDs on reinstall)
+- [x] Chart/config drift control: plugin-owned templates (`make chart-regen`
+      check), rendered RBAC + bindings and Deployment compared with
+      `config/` (`hack/verify-chart-*.sh`), all in `task chart:ci`
 - [ ] CI smoke: PR pipeline installs the chart into kind with the digest-pinned
       PR image (`ci-smoke.yml`, `task chart:smoke`); the release pipeline
       installs the PACKAGED chart with its DEFAULT image values before pushing
-      (`ci-chart.yml`). Written, not yet run in Actions (no local Docker).
+      (`ci-chart.yml`, which also points the packaged chart's image.repository and
+      home/sources at the building repository). Written, not yet run in Actions
+      (no local Docker).
 - [ ] Container runs as non-root, static binary, distroless base
 
 ## Dependencies
