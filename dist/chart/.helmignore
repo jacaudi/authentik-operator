@@ -22,6 +22,6 @@
 .vscode/
 
 # Helm chart artifacts
-dist/chart/*.tgz
+*.tgz
 tests/
 ci/

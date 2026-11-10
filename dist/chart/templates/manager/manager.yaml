@@ -3,6 +3,7 @@ Hand-owned: the kubebuilder helm/v2-alpha plugin regenerates this path, and
 hack/chart-regen.sh restores this file afterwards. Keep it in sync with
 config/manager/manager.yaml and config/default by hand (see AGENTS.md).
 */ -}}
+{{- include "authentik-operator.validate" . }}
 {{- $auth := .Values.authentik }}
 {{- $caCM := dig "caBundle" "configMap" "name" "" $auth }}
 {{- $caSecret := dig "caBundle" "secret" "name" "" $auth }}
@@ -96,10 +97,10 @@ spec:
         - --zap-devel={{ .Values.logging.devel }}
         - --zap-encoder={{ .Values.logging.encoder }}
         {{- with $auth.url }}
-        - --authentik-url={{ . }}
+        - {{ printf "--authentik-url=%s" . | quote }}
         {{- end }}
         {{- with $auth.externalUrl }}
-        - --authentik-external-url={{ . }}
+        - {{ printf "--authentik-external-url=%s" . | quote }}
         {{- end }}
         {{- if $tokenSecret }}
         - --authentik-token-file=/var/run/secrets/authentik/token/token

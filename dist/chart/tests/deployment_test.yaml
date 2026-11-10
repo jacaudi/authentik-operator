@@ -236,9 +236,15 @@ tests:
           path: spec.template.spec.volumes
       - notExists:
           path: spec.template.spec.containers[0].volumeMounts
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].args[0]
-          pattern: authentik
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --metrics-bind-address=:8443
+            - --health-probe-bind-address=:8081
+            - --leader-elect
+            - --zap-log-level=info
+            - --zap-devel=false
+            - --zap-encoder=json
 
   - it: passes the default connection URLs as flags
     set:
@@ -254,6 +260,7 @@ tests:
 
   - it: mounts the token Secret as a file and passes --authentik-token-file
     set:
+      authentik.url: https://authentik.example.com
       authentik.tokenSecret.name: authentik-api
       authentik.tokenSecret.key: api-token
     asserts:
@@ -278,6 +285,7 @@ tests:
 
   - it: defaults the token Secret key to token
     set:
+      authentik.url: https://authentik.example.com
       authentik.tokenSecret.name: authentik-api
     asserts:
       - contains:
@@ -292,17 +300,28 @@ tests:
 
   - it: never inlines the token as an env var or arg
     set:
+      authentik.url: https://authentik.example.com
       authentik.tokenSecret.name: authentik-api
       authentik.tokenSecret.key: api-token
     asserts:
       - notExists:
           path: spec.template.spec.containers[0].env
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].args[0]
-          pattern: AUTHENTIK_TOKEN
+      # The WHOLE arg list: a token (or any other flag) leaking in breaks equality.
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --metrics-bind-address=:8443
+            - --health-probe-bind-address=:8081
+            - --leader-elect
+            - --zap-log-level=info
+            - --zap-devel=false
+            - --zap-encoder=json
+            - --authentik-url=https://authentik.example.com
+            - --authentik-token-file=/var/run/secrets/authentik/token/token
 
   - it: mounts a CA bundle from a ConfigMap
     set:
+      authentik.url: https://authentik.example.com
       authentik.caBundle.configMap.name: authentik-ca
       authentik.caBundle.configMap.key: ca-bundle.pem
     asserts:
@@ -327,6 +346,7 @@ tests:
 
   - it: mounts a CA bundle from a Secret
     set:
+      authentik.url: https://authentik.example.com
       authentik.caBundle.secret.name: authentik-ca
     asserts:
       - contains:
@@ -344,6 +364,7 @@ tests:
 
   - it: rejects a CA bundle set from both a ConfigMap and a Secret
     set:
+      authentik.url: https://authentik.example.com
       authentik.caBundle.configMap.name: a
       authentik.caBundle.secret.name: b
     asserts:
@@ -432,3 +453,63 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: custom-sa
+
+  - it: fails when a token Secret is set without authentik.url
+    set:
+      authentik.tokenSecret.name: authentik-api
+    asserts:
+      - failedTemplate:
+          errorPattern: authentik.url
+
+  - it: fails when a CA bundle is set without authentik.url
+    set:
+      authentik.caBundle.secret.name: ca
+    asserts:
+      - failedTemplate:
+          errorPattern: authentik.url
+
+  - it: fails when externalUrl is set without authentik.url
+    set:
+      authentik.externalUrl: https://sso.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: authentik.url
+
+  - it: does not fail on url without a token Secret (token may come from extraEnv)
+    set:
+      authentik.url: https://authentik.example.com
+      extraEnv:
+        - name: AUTHENTIK_TOKEN
+          value: from-somewhere
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --authentik-url=https://authentik.example.com
+
+  - it: accepts a sha256 digest only
+    set:
+      image.digest: latest
+    asserts:
+      - failedTemplate:
+          errorPattern: sha256
+
+  - it: rejects a short sha256 digest
+    set:
+      image.digest: sha256:abc
+    asserts:
+      - failedTemplate:
+          errorPattern: sha256
+
+  - it: rejects certManager.enabled (reserved, not implemented)
+    set:
+      certManager.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: reserved
+
+  - it: rejects rbac.namespaced (the operator needs cluster-wide access)
+    set:
+      rbac.namespaced: true
+    asserts:
+      - failedTemplate:
+          errorPattern: cluster-wide

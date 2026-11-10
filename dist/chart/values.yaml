@@ -29,6 +29,10 @@ healthProbe:
   port: 8081
 
 ## Logging (controller-runtime zap flags).
+## DELIBERATE DIFFERENCE from config/ (the kustomize deployment): the binary
+## defaults to zap Development=true (console encoder, debug-ish) when no flag is
+## passed, and config/manager passes none. The chart sets production defaults
+## instead: json encoder, info level, devel=false.
 logging:
   ## --zap-log-level: debug | info | error | a positive integer
   level: info

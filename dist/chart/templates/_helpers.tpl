@@ -78,3 +78,23 @@ Container image reference.
 {{- printf "%s:%s" .Values.image.repository (default (printf "v%s" .Chart.AppVersion) .Values.image.tag) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Render-time validation of value combinations the binary or chart cannot honour.
+Included from templates/manager/manager.yaml, which is always rendered.
+*/}}
+{{- define "authentik-operator.validate" -}}
+{{- $a := .Values.authentik }}
+{{- if and (not $a.url) (or $a.externalUrl (dig "tokenSecret" "name" "" $a) (dig "caBundle" "configMap" "name" "" $a) (dig "caBundle" "secret" "name" "" $a)) }}
+{{- fail "authentik.externalUrl, authentik.tokenSecret and authentik.caBundle only apply to the default connection: set authentik.url too (the binary ignores them without --authentik-url)" }}
+{{- end }}
+{{- if .Values.certManager.enabled }}
+{{- fail "certManager.enabled is reserved and not implemented: the chart ships no Certificate resources" }}
+{{- end }}
+{{- if .Values.rbac.namespaced }}
+{{- fail "rbac.namespaced=true is not supported: the operator needs cluster-wide access (it reads Namespaces and watches every namespace; there is no watch-namespaces flag)" }}
+{{- end }}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest)) }}
+{{- fail "image.digest must match ^sha256:[a-f0-9]{64}$" }}
+{{- end }}
+{{- end }}

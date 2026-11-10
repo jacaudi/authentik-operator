@@ -32,8 +32,7 @@ helm install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator 
 
 Release images are multi-arch (linux/amd64, linux/arm64) with no attestation
 entries in the index, but registry mirrors and pull-through caches are often
-easier to satisfy with a single-platform digest. Pin one (release notes list
-the per-platform digests):
+easier to satisfy with a single-platform digest. Look one up and pin it:
 
 ```bash
 crane digest --platform linux/amd64 ghcr.io/jacaudi/authentik-operator:vX.Y.Z
@@ -56,11 +55,37 @@ directory, because Helm never upgrades or deletes `crds/` content. As templates:
   Remove them deliberately with `kubectl delete crd` only when you mean to
   delete all Authentik objects managed through the operator.
 - `crd.enabled=false` skips them if you manage CRDs separately (for example
-  with `kubectl apply -f dist/install.yaml`'s CRDs or GitOps).
+  with kustomize from `config/crd`, or GitOps).
 
 Upgrade path: `helm upgrade authentik-operator oci://... --version <new>`. Read
 the release notes first for breaking CRD changes. Flux and Argo CD users can
 reference the OCI chart directly.
+
+### Ownership metadata on kept CRDs
+
+Helm records `meta.helm.sh/release-name` and `meta.helm.sh/release-namespace`
+on every object it installs. A CRD kept by `helm uninstall`, or created earlier
+by `kubectl`/kustomize, therefore makes the next `helm install` under a
+different release name or namespace fail with `invalid ownership metadata`.
+Either adopt the CRDs:
+
+```bash
+for crd in $(kubectl get crd -o name | grep '\.authentik\.io$'); do
+  kubectl annotate "$crd" --overwrite \
+    meta.helm.sh/release-name=authentik-operator \
+    meta.helm.sh/release-namespace=authentik-operator-system
+  kubectl label "$crd" --overwrite app.kubernetes.io/managed-by=Helm
+done
+```
+
+or install with `--set crd.enabled=false` and manage the CRDs separately.
+
+### Warning: removing CRDs
+
+Switching `crd.enabled` from `true` to `false` while `crd.keep=false` makes
+Helm delete the CRDs, which deletes **every** Authentik custom resource (and,
+depending on each object's deletion policy, what it manages in Authentik). Keep
+`crd.keep=true` unless you really mean it.
 
 ## Values
 
@@ -70,15 +95,15 @@ reference the OCI chart directly.
 | `replicaCount` | `1` | Controller replicas (leader election keeps one active). |
 | `image.repository` | `ghcr.io/jacaudi/authentik-operator` | Lowercase GHCR repository. |
 | `image.tag` | `""` | Defaults to `v<appVersion>` (release images are tagged `v<semver>`). |
-| `image.digest` | `""` | When set, renders `repository@digest`; overrides the tag. |
+| `image.digest` | `""` | When set (must match `^sha256:[a-f0-9]{64}$`), renders `repository@digest`; overrides the tag. |
 | `image.pullPolicy` | `IfNotPresent` | |
 | `imagePullSecrets` | `[]` | Needed if the GHCR package is private. |
 | `leaderElection.enabled` | `true` | `--leader-elect`, as in `config/manager`. |
 | `healthProbe.port` | `8081` | `/healthz` and `/readyz`. |
-| `logging.level` | `info` | `--zap-log-level`. |
+| `logging.level` | `info` | `--zap-log-level`. Deliberate difference from the kustomize deployment: the binary's own default is zap Development mode (console, verbose), and `config/manager` passes no zap flags; the chart defaults to production logging (json, info, `devel=false`). |
 | `logging.devel` | `false` | `--zap-devel`. |
 | `logging.encoder` | `json` | `--zap-encoder` (`json` or `console`). |
-| `authentik.url` | `""` | `--authentik-url`: default connection for objects without `spec.authentikRef`. Empty disables it. |
+| `authentik.url` | `""` | `--authentik-url`: default connection for objects without `spec.authentikRef`. Empty disables it; `externalUrl`, `tokenSecret` and `caBundle` require it (the render fails otherwise). The token may instead come from `extraEnv` (`AUTHENTIK_TOKEN`). |
 | `authentik.externalUrl` | `""` | `--authentik-external-url`: browser-facing URL used in rendered credential Secrets. |
 | `authentik.tokenSecret.name` | `""` | Existing Secret holding the API token. Mounted at `/var/run/secrets/authentik/token/token`, passed as `--authentik-token-file`. Read once at startup; restart the pod to rotate. |
 | `authentik.tokenSecret.key` | `token` | Key within that Secret. |
@@ -102,7 +127,7 @@ reference the OCI chart directly.
 | `serviceAccount.name` | generated | Used whether or not the chart creates the account; required when `enabled=false`. |
 | `serviceAccount.annotations`, `.labels` | `{}` | |
 | `rbac.helpers.enabled` | `false` | Admin/editor/viewer ClusterRoles per CRD. |
-| `rbac.namespaced` | `false` | Plugin-template compatibility; the operator needs cluster-wide access, leave `false`. |
+| `rbac.namespaced` | `false` | Plugin-template compatibility; `true` fails the render (the operator needs cluster-wide access). |
 | `crd.enabled` | `true` | Install the CRDs. |
 | `crd.keep` | `true` | `helm.sh/resource-policy: keep` on CRDs. |
 | `metrics.enabled` | `true` | Metrics server and Service. |
@@ -111,7 +136,7 @@ reference the OCI chart directly.
 | `prometheus.enabled` | `false` | Render a `ServiceMonitor` (needs prometheus-operator CRDs). |
 | `prometheus.labels`, `.annotations` | `{}` | Extra ServiceMonitor metadata, e.g. `release: kube-prometheus-stack`. |
 | `networkPolicy.enabled` | `false` | Allow metrics scrapes only from namespaces labelled `metrics: enabled`. |
-| `certManager.enabled` | `false` | Reserved by the generated ServiceMonitor template; the chart ships no Certificate. |
+| `certManager.enabled` | `false` | Reserved; `true` fails the render (the chart ships no Certificate). |
 
 The `ServiceMonitor` skips TLS verification when `metrics.secure=true` because
 controller-runtime serves a self-signed certificate (same as `config/default`).
