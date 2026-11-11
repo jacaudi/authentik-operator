@@ -111,7 +111,8 @@ func TestAuthentik20262ProviderReportsNoGrantTypes(t *testing.T) {
 func TestCompatLeavesPresentAndForeignContentAlone(t *testing.T) {
 	fill := compatRule("/api/v3/core/applications/x/")
 	got, ok := patchJSON([]byte(`{"slug":"x","pbm_uuid":"abc","pk":12345678901234567890}`), fill)
-	if !ok || !strings.Contains(string(got), `"pbm_uuid":"abc"`) || !strings.Contains(string(got), "12345678901234567890") {
+	if !ok || !strings.Contains(string(got), `"pbm_uuid":"abc"`) ||
+		!strings.Contains(string(got), "12345678901234567890") {
 		t.Fatalf("present value or number changed: %s", got)
 	}
 	got, ok = patchJSON([]byte(`{"detail":"nope"}`), fill)
