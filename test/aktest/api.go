@@ -259,6 +259,25 @@ func (a *API) ApplicationBySlug(ctx context.Context, slug string) (Obj, error) {
 	return out, err
 }
 
+// DeleteApplicationIfExists deletes the application, if there is one.
+func (a *API) DeleteApplicationIfExists(ctx context.Context, slug string) error {
+	err := a.Do(ctx, http.MethodDelete, "/api/v3/core/applications/"+url.PathEscape(slug)+"/", nil, nil)
+	if IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// DeleteOAuthProviderByNameIfExists deletes the provider with exactly this
+// name, if there is one.
+func (a *API) DeleteOAuthProviderByNameIfExists(ctx context.Context, name string) error {
+	p, err := a.OAuthProviderByName(ctx, name)
+	if err != nil || p == nil {
+		return err
+	}
+	return a.Do(ctx, http.MethodDelete, "/api/v3/providers/oauth2/"+Str(p, "pk")+"/", nil, nil)
+}
+
 // ModelWrite is one audit event recording a write to an object.
 type ModelWrite struct {
 	Action  string // model_created | model_updated | model_deleted

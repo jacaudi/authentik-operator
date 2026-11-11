@@ -35,6 +35,8 @@ import (
 
 // typicalTemplate is the kind of template an administrator writes for an
 // application's environment: every variable the operator offers, quoted.
+const typicalTemplateName = "e2e-typical"
+
 const typicalTemplate = `CLIENT_ID: {{ printf "%q" .ClientID }}
 CLIENT_SECRET: {{ printf "%q" .ClientSecret }}
 ISSUER_URL: {{ printf "%q" .IssuerURL }}
@@ -67,7 +69,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 	BeforeAll(func(ctx SpecContext) {
 		tmpl := &authentikiov1alpha1.AuthentikCredentialsTemplate{
-			ObjectMeta: metav1.ObjectMeta{Name: "e2e-typical"},
+			ObjectMeta: metav1.ObjectMeta{Name: typicalTemplateName},
 			Spec: authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 				Template: typicalTemplate,
 				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{
@@ -85,7 +87,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 			_, err = reconcileTotal(m, "authentikoauthprovider")
 			g.Expect(err).To(Succeed())
-		}).WithContext(ctx).Should(Succeed())
+		}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 	})
 
 	// Scenarios 1, 2: OAuthProvider + Application + CredentialsTemplate.
@@ -93,7 +95,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		It("renders a Secret with the template's keys and Authentik's own values", func(ctx SpecContext) {
 			p := newProvider(createdName, createdRedirect)
 			p.Spec.Secret = &authentikiov1alpha1.CredentialsSecretSpec{
-				Name: "e2e-oidc-creds", TemplateRef: &authentikiov1alpha1.CredentialsTemplateRef{Name: "e2e-typical"}}
+				Name: "e2e-oidc-creds", TemplateRef: &authentikiov1alpha1.CredentialsTemplateRef{Name: typicalTemplateName}}
 			Expect(k8s.Create(ctx, p)).To(Succeed())
 			a := newApplication(createdName, "E2E OIDC", "e2e-oidc", createdName)
 			a.Spec.MetaPublisher = "e2e-publisher"
@@ -150,6 +152,9 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		)
 
 		It("pre-creates a provider and application the way JeffResc would", func(ctx SpecContext) {
+			By("removing leftovers of an earlier run on this cluster")
+			Expect(ak.DeleteApplicationIfExists(ctx, adoptName)).To(Succeed())
+			Expect(ak.DeleteOAuthProviderByNameIfExists(ctx, adoptExisting)).To(Succeed())
 			created, err := ak.CreateOAuthProvider(ctx, adoptExisting, []string{adoptRedirect})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fmt.Sscan(aktest.Str(created, "pk"), &pk)).To(Equal(1))
@@ -285,7 +290,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 				app, err := ak.ApplicationBySlug(ctx, "e2e-oidc")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(aktest.Str(app, "meta_publisher")).To(Equal("e2e-publisher"))
-			}).WithContext(ctx).Should(Succeed())
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 
 			By("a login still works with the restored provider")
 			_, err := login(ctx, templateCreds(secretData(ctx, "e2e-oidc-creds")), createdRedirect)
@@ -303,7 +308,8 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			By("proving the measurement: a no-op PATCH is visible as an audit event")
 			base := oauthWrites(ctx)
 			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"name": createdName})).To(Succeed())
-			Eventually(func() int { return oauthWrites(ctx) }).WithContext(ctx).Should(BeNumerically(">", base))
+			Eventually(func() int { return oauthWrites(ctx) }).WithContext(ctx).WithTimeout(waitTimeout).
+				Should(BeNumerically(">", base))
 
 			By("forcing reconciles of every kind and waiting until the operator has run them")
 			provCtl, appCtl := "authentikoauthprovider", "authentikapplication"
@@ -332,7 +338,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(p1-p0).To(BeNumerically(">=", 2*rounds), "provider reconciles")
 				g.Expect(a1-a0).To(BeNumerically(">=", 2*rounds), "application reconciles")
-			}).WithContext(ctx).Should(Succeed())
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 
 			Consistently(func() int { return oauthWrites(ctx) }).WithContext(ctx).
 				WithTimeout(15*time.Second).WithPolling(3*time.Second).
@@ -374,7 +380,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 				app, err := ak.ApplicationBySlug(ctx, createdName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(app).To(BeNil())
-			}).WithContext(ctx).Should(Succeed())
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 			var s corev1.Secret
 			Expect(k8s.Get(ctx, key("e2e-oidc-creds"), &s)).NotTo(Succeed(), "the rendered Secret is owned and goes with it")
 		})
@@ -389,29 +395,38 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			By("terminating TLS in front of Authentik with a certificate from a private CA")
 			pki, err := aktest.NewPKI(tlsHost)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(client.IgnoreAlreadyExists(k8s.Create(ctx, &corev1.Secret{
+			// A CA is generated per run, so a TLS terminator and CA bundle left by an
+			// earlier run on this cluster would not match it: start from nothing.
+			_, err = kubectl(ctx, "-n", authentikNS, "delete", "--ignore-not-found", "--wait=true",
+				"deploy/authentik-tls", "svc/authentik-tls", "secret/authentik-tls-cert", "configmap/authentik-tls-nginx")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = kubectl(ctx, "-n", operatorNS, "delete", "--ignore-not-found", "configmap/authentik-ca")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8s.Create(ctx, &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: "authentik-tls-cert", Namespace: authentikNS},
 				Type:       corev1.SecretTypeTLS,
 				Data:       map[string][]byte{"tls.crt": pki.ServerCrt, "tls.key": pki.ServerKey},
-			}))).To(Succeed())
+			})).To(Succeed())
 			Expect(kubectlApply(ctx, nginxTLSManifest)).To(Succeed())
-			Expect(waitDeployment(ctx, authentikNS, "authentik-tls", 3*time.Minute)).To(Succeed())
-			Expect(client.IgnoreAlreadyExists(k8s.Create(ctx, &corev1.ConfigMap{
+			Expect(waitDeployment(ctx, authentikNS, "authentik-tls", 8*time.Minute)).To(Succeed())
+			Expect(k8s.Create(ctx, &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{Name: "authentik-ca", Namespace: operatorNS},
 				Data:       map[string]string{"ca.crt": string(pki.CACert)},
-			}))).To(Succeed())
+			})).To(Succeed())
 
 			By("pointing the operator at the https URL WITHOUT the CA: it must refuse")
 			Expect(installOperator(ctx, tlsURL)).To(Succeed())
 			p := newProvider("e2e-ca", "https://e2e-ca.invalid/callback")
+			p.Spec.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "e2e-ca-creds"}
 			Expect(k8s.Create(ctx, p)).To(Succeed())
+			Expect(k8s.Create(ctx, newApplication("e2e-ca", "E2E CA", "e2e-ca", "e2e-ca"))).To(Succeed())
 			Eventually(func(g Gomega) {
 				got := getProvider(ctx, "e2e-ca")
 				c := condition(got.Status.Conditions, condReady)
 				g.Expect(c).NotTo(BeNil())
 				g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(strings.ToLower(c.Message)).To(ContainSubstring("x509"))
-			}).WithContext(ctx).Should(Succeed())
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 			none, err := ak.OAuthProviderByName(ctx, "e2e-ca")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(none).To(BeNil(), "nothing may be created through an untrusted connection")
@@ -429,7 +444,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			created, err := ak.OAuthProviderByName(ctx, "e2e-ca")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(created).NotTo(BeNil())
-			data := eventuallySecret(ctx, "e2e-ca-oauth")
+			data := eventuallySecret(ctx, "e2e-ca-creds")
 			Expect(data["issuer-url"]).To(HavePrefix(tlsURL + "/application/o/"))
 		})
 	})

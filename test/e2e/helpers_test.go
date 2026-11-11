@@ -97,7 +97,7 @@ func providerCondition(ctx context.Context, name string, status metav1.Condition
 		if reason != "" {
 			g.Expect(c.Reason).To(Equal(reason), c.Message)
 		}
-	}).WithContext(ctx).Should(Succeed())
+	}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 }
 
 func applicationCondition(ctx context.Context, name string, status metav1.ConditionStatus, reasons ...string) {
@@ -110,7 +110,7 @@ func applicationCondition(ctx context.Context, name string, status metav1.Condit
 		if len(reasons) > 0 {
 			g.Expect(reasons).To(ContainElement(c.Reason), c.Message)
 		}
-	}).WithContext(ctx).Should(Succeed())
+	}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 }
 
 // poke changes an annotation so the operator reconciles the object now
@@ -147,7 +147,7 @@ func eventuallySecret(ctx context.Context, name string) map[string]string {
 		for k, v := range s.Data {
 			out[k] = string(v)
 		}
-	}).WithContext(ctx).Should(Succeed())
+	}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 	return out
 }
 
@@ -158,7 +158,8 @@ func deleteAndWait(ctx context.Context, obj client.Object) {
 	}
 	EventuallyWithOffset(1, func() bool {
 		return apierrors.IsNotFound(k8s.Get(ctx, client.ObjectKeyFromObject(obj), obj))
-	}).WithContext(ctx).Should(BeTrue(), "%s did not finish deleting", client.ObjectKeyFromObject(obj))
+	}).WithContext(ctx).WithTimeout(waitTimeout).Should(BeTrue(),
+		"%s did not finish deleting", client.ObjectKeyFromObject(obj))
 }
 
 // creds are what a consuming application would read from the credentials Secret.
@@ -204,4 +205,24 @@ func oauthWrites(ctx context.Context) int {
 	}
 	ExpectWithOffset(1, n).To(BeNumerically("<", 150), "audit event listing is paginated at 200 per action")
 	return n
+}
+
+// resetTestResources removes what an earlier run on the same cluster left
+// behind (custom resources and the objects the operator created for them),
+// so the suite can be re-run without recreating the cluster. Objects a run
+// adopted are removed in the spec that makes them.
+func resetTestResources(ctx context.Context) {
+
+	Expect(k8s.DeleteAllOf(ctx, &authentikiov1alpha1.AuthentikApplication{}, client.InNamespace(appsNS))).To(Succeed())
+	Expect(k8s.DeleteAllOf(ctx, &authentikiov1alpha1.AuthentikOAuthProvider{}, client.InNamespace(appsNS))).To(Succeed())
+	Eventually(func(g Gomega) {
+		var provs authentikiov1alpha1.AuthentikOAuthProviderList
+		g.Expect(k8s.List(ctx, &provs, client.InNamespace(appsNS))).To(Succeed())
+		g.Expect(provs.Items).To(BeEmpty())
+		var apps authentikiov1alpha1.AuthentikApplicationList
+		g.Expect(k8s.List(ctx, &apps, client.InNamespace(appsNS))).To(Succeed())
+		g.Expect(apps.Items).To(BeEmpty())
+	}).WithContext(ctx).WithTimeout(2 * time.Minute).Should(Succeed())
+	Expect(client.IgnoreNotFound(k8s.Delete(ctx, &authentikiov1alpha1.AuthentikCredentialsTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: typicalTemplateName}}))).To(Succeed())
 }

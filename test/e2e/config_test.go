@@ -21,6 +21,7 @@ package e2e
 import (
 	"os"
 	"strings"
+	"time"
 )
 
 // Fixed names. The Authentik install is throwaway and its credentials are
@@ -44,6 +45,11 @@ const (
 	secretKey         = "e2e-secret-key-not-a-secret-0123456789abcdef"
 	postgresPassword  = "e2e-postgres-password-not-a-secret"
 )
+
+// waitTimeout bounds every Eventually. It is passed explicitly because an
+// Eventually given a context (needed to abort on interrupt) has NO timeout of
+// its own: Gomega's default timeout applies only without a context.
+const waitTimeout = 2 * time.Minute
 
 // Run-time configuration, all from the environment.
 var (

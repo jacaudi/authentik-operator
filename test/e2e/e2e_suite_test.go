@@ -79,6 +79,7 @@ var _ = BeforeSuite(func(ctx SpecContext) {
 	Expect(installOperator(ctx, authentikURL)).To(Succeed(), "helm install of the operator chart")
 
 	Expect(ensureNamespace(ctx, appsNS, nil)).To(Succeed())
+	resetTestResources(ctx)
 	// Metrics scraping: a ServiceAccount allowed to read /metrics.
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "e2e-metrics", Namespace: operatorNS}}
 	if err := k8s.Create(ctx, sa); err != nil {
