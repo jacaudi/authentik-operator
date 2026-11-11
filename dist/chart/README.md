@@ -9,6 +9,8 @@ both). It is published as an OCI artifact on public releases.
 
 ## Install
 
+The examples use the upstream owner (`ghcr.io/jacaudi/...`). If you publish the chart from a fork, substitute your own owner.
+
 ```bash
 helm install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator \
   --version X.Y.Z \
@@ -103,7 +105,7 @@ depending on each object's deletion policy, what it manages in Authentik). Keep
 | `logging.level` | `info` | `--zap-log-level`. Deliberate difference from the kustomize deployment: the binary's own default is zap Development mode (console, verbose), and `config/manager` passes no zap flags; the chart defaults to production logging (json, info, `devel=false`). |
 | `logging.devel` | `false` | `--zap-devel`. |
 | `logging.encoder` | `json` | `--zap-encoder` (`json` or `console`). |
-| `authentik.url` | `""` | `--authentik-url`: default connection for objects without `spec.authentikRef`. Empty disables it; `externalUrl`, `tokenSecret` and `caBundle` require it (the render fails otherwise). The token may instead come from `extraEnv` (`AUTHENTIK_TOKEN`). |
+| `authentik.url` | `""` | `--authentik-url`: default connection for objects without `spec.authentikRef`. Empty disables it; `externalUrl`, `tokenSecret` and `caBundle` require it (the render fails otherwise). The token may instead come from `extraEnv` (`AUTHENTIK_TOKEN`). Set the URL here, not as `extraEnv` `AUTHENTIK_URL`: the render check only sees this value. |
 | `authentik.externalUrl` | `""` | `--authentik-external-url`: browser-facing URL used in rendered credential Secrets. |
 | `authentik.tokenSecret.name` | `""` | Existing Secret holding the API token. Mounted at `/var/run/secrets/authentik/token/token`, passed as `--authentik-token-file`. Read once at startup; restart the pod to rotate. |
 | `authentik.tokenSecret.key` | `token` | Key within that Secret. |
