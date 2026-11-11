@@ -2,7 +2,7 @@ module github.com/jacaudi/authentik-operator
 
 go 1.26.0
 
-toolchain go1.26.11
+toolchain go1.27.4
 
 require (
 	github.com/onsi/ginkgo/v2 v2.27.4
