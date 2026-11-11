@@ -45,8 +45,8 @@ real server.
         `authentik.caBundle` (x509, nothing created), works with it
   - [ ] JeffResc migration end to end: pending spec, waits for the converter
         and runbook (TASK-09)
-- [x] Run in CI on PRs (matrix over Authentik versions): `test-e2e.yml`
-      (written; has not run on GitHub)
+- [ ] Run in CI on PRs (matrix over Authentik versions): workflow written in
+      `test-e2e.yml` (actionlint and zizmor clean); has not run on GitHub
 
 ## Progress
 Ran locally (kind cluster `ao-e2e`, operator built with podman and loaded as an
