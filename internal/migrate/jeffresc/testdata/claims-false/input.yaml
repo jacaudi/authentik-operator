@@ -1,0 +1,12 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikOAuth2Application
+metadata: {name: demo, namespace: ns}
+spec:
+  name: Demo
+
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://demo.example.com/cb"]
+    includeClaimsInIdToken: false
+

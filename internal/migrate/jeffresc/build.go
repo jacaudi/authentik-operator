@@ -74,6 +74,8 @@ type pendingProvider struct {
 	group    string
 	filename string
 	header   string
+	// emptyScopes writes scopes: [] (an explicit empty list is dropped by omitempty).
+	emptyScopes bool
 }
 
 type builder struct {
@@ -112,7 +114,7 @@ func (b *builder) add(a source) error {
 		return err
 	}
 
-	prov := b.providerSpec(a, providerName, newSecretName, &rep)
+	prov, emptyScopes := b.providerSpec(a, providerName, newSecretName, &rep)
 	provObj := &authentikiov1alpha1.AuthentikOAuthProvider{
 		TypeMeta:   typeMeta("AuthentikOAuthProvider"),
 		ObjectMeta: metav1.ObjectMeta{Name: resName, Namespace: ns},
@@ -121,7 +123,7 @@ func (b *builder) add(a source) error {
 	provFile := "authentikoauthprovider-" + resName + ".yaml"
 	appObj := b.applicationObject(a, ns, slug, resName, &rep)
 	appFile := "authentikapplication-" + a.name + ".yaml"
-	appData, err := render(appObj, "spec", b.opts.DryRunAdoption, headerFor(a))
+	appData, err := render(appObj, headerFor(a), adoptionDryRun(b.opts.DryRunAdoption))
 	if err != nil {
 		return err
 	}
@@ -132,7 +134,8 @@ func (b *builder) add(a source) error {
 		return fmt.Errorf(errDupFile, provFile)
 	}
 	b.providers = append(b.providers,
-		pendingProvider{obj: provObj, group: groupKey, filename: provFile, header: headerFor(a)})
+		pendingProvider{obj: provObj, group: groupKey, filename: provFile, header: headerFor(a),
+			emptyScopes: emptyScopes})
 	rep.files = []string{provFile, appFile}
 	b.describe(a, ns, secretName, newSecretName, &rep)
 	b.reports = append(b.reports, rep)
@@ -153,7 +156,8 @@ func validateSource(a source, ns, slug string) error {
 			"slug %q is longer than the %d characters this operator allows", slug, maxSlugLen))
 	}
 	if l := a.spec.MetaLaunchURL; l != "" && !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
-		errs = append(errs, fmt.Sprintf("metaLaunchUrl %q is not http(s), which this operator requires", l))
+		errs = append(errs, fmt.Sprintf("metaLaunchUrl %q is not http(s), which this operator requires; "+
+			"remove the field to keep the live launch URL on adoption", l))
 	}
 	if a.spec.Name == "" {
 		errs = append(errs, "spec.name is required")
@@ -177,15 +181,16 @@ func (b *builder) registerTemplate(a source, ns string) (string, error) {
 	body := ""
 	if sec.Template != "" {
 		var err error
-		if body, err = convertTemplate(sec.Template); err != nil {
+		if body, err = convertTemplate(sec.Template, a.kind == kindV1); err != nil {
 			return "", fmt.Errorf("%s: %s: secret.template: %w", a.from, a.ref(), err)
 		}
 	}
+	labels, annotations := nilIfEmpty(sec.Labels), nilIfEmpty(sec.Annotations)
 	canon, err := json.Marshal(struct {
 		Body        string            `json:"body"`
 		Labels      map[string]string `json:"labels"`
 		Annotations map[string]string `json:"annotations"`
-	}{body, sec.Labels, sec.Annotations})
+	}{body, labels, annotations})
 	if err != nil {
 		return "", fmt.Errorf("canonicalise template: %w", err)
 	}
@@ -193,7 +198,7 @@ func (b *builder) registerTemplate(a source, ns string) (string, error) {
 	key := hex.EncodeToString(sum[:])
 	g, ok := b.templates[key]
 	if !ok {
-		g = &templateGroup{body: body, labels: sec.Labels, annotations: sec.Annotations, hash: key[:8]}
+		g = &templateGroup{body: body, labels: labels, annotations: annotations, hash: key[:8]}
 		b.templates[key] = g
 	}
 	if !slices.Contains(g.namespaces, ns) {
@@ -205,9 +210,9 @@ func (b *builder) registerTemplate(a source, ns string) (string, error) {
 
 func (b *builder) providerSpec(
 	a source, providerName, secretName string, rep *objectReport,
-) authentikiov1alpha1.AuthentikOAuthProviderSpec {
+) (spec authentikiov1alpha1.AuthentikOAuthProviderSpec, emptyScopes bool) {
 	p := a.spec.Provider
-	spec := authentikiov1alpha1.AuthentikOAuthProviderSpec{
+	spec = authentikiov1alpha1.AuthentikOAuthProviderSpec{
 		Name:              providerName,
 		AuthorizationFlow: p.AuthorizationFlow,
 		InvalidationFlow:  p.InvalidationFlow,
@@ -225,14 +230,34 @@ func (b *builder) providerSpec(
 	for _, u := range p.RedirectURIs {
 		spec.RedirectURIs = append(spec.RedirectURIs, authentikiov1alpha1.RedirectURI{URL: u})
 	}
-	spec.Scopes = fill(p.Scopes, defScopes(), "provider.scopes", rep)
+	spec.Scopes = defScopes()
+	switch {
+	case p.Scopes == nil:
+		rep.filled = append(rep.filled, "provider.scopes = "+show(spec.Scopes))
+	case len(*p.Scopes) == 0:
+		spec.Scopes = nil
+		emptyScopes = true
+		rep.notes = append(rep.notes, "provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] "+
+			"(adoption removes the scope mappings, as JeffResc did)")
+	default:
+		spec.Scopes = *p.Scopes
+	}
 	spec.ClientType = authentikiov1alpha1.OAuthClientType(fill(p.ClientType, defClientType, "provider.clientType", rep))
 	spec.AccessCodeValidity = fill(p.AccessCodeValidity, defAccessCodeValidity, "provider.accessCodeValidity", rep)
 	spec.AccessTokenValidity = fill(p.AccessTokenValidity, defAccessTokenValidity, "provider.accessTokenValidity", rep)
 	spec.RefreshTokenValidity = fill(p.RefreshTokenValidity, defRefreshTokenValidity, "provider.refreshTokenValidity", rep)
 	spec.SubMode = authentikiov1alpha1.OAuthSubMode(fill(p.SubMode, defSubMode, "provider.subMode", rep))
 	spec.IssuerMode = authentikiov1alpha1.OAuthIssuerMode(fill(p.IssuerMode, defIssuerMode, "provider.issuerMode", rep))
-	spec.SigningKey = fill(p.SigningKey, defSigningKey, "provider.signingKey", rep)
+	switch {
+	case p.SigningKey == nil:
+		spec.SigningKey = defSigningKey
+		rep.filled = append(rep.filled, "provider.signingKey = "+defSigningKey)
+	case *p.SigningKey == "":
+		rep.notes = append(rep.notes, "provider.signingKey is explicitly empty in JeffResc: omitted, so adoption "+
+			"keeps the live signing key")
+	default:
+		spec.SigningKey = *p.SigningKey
+	}
 	claims := true
 	if p.IncludeClaimsInIDToken != nil {
 		claims = *p.IncludeClaimsInIDToken
@@ -240,7 +265,7 @@ func (b *builder) providerSpec(
 		rep.filled = append(rep.filled, "provider.includeClaimsInIdToken = true")
 	}
 	spec.IncludeClaimsInIDToken = &claims
-	return spec
+	return spec, emptyScopes
 }
 
 func (b *builder) applicationObject(
@@ -308,7 +333,7 @@ func (b *builder) finish() error {
 				}}},
 			},
 		}
-		data, err := render(obj, "", false, "# Cluster-scoped and administrator-owned: a platform admin applies this.\n")
+		data, err := render(obj, "# Cluster-scoped and administrator-owned: a platform admin applies this.\n")
 		if err != nil {
 			return err
 		}
@@ -321,7 +346,12 @@ func (b *builder) finish() error {
 		if p.group != "" {
 			p.obj.Spec.Secret.TemplateRef = &authentikiov1alpha1.CredentialsTemplateRef{Name: names[p.group]}
 		}
-		data, err := render(p.obj, "spec", b.opts.DryRunAdoption, p.header)
+		patches := []func(map[string]any){adoptionDryRun(b.opts.DryRunAdoption)}
+		if p.emptyScopes {
+			// [0]string{} marshals as [], where a nil slice would be null.
+			patches = append(patches, func(spec map[string]any) { spec["scopes"] = [0]string{} })
+		}
+		data, err := render(p.obj, p.header, patches...)
 		if err == nil {
 			err = b.addFile(p.filename, data)
 		}
@@ -331,9 +361,26 @@ func (b *builder) finish() error {
 	return errors.Join(errs...)
 }
 
+// adoptionDryRun writes dryRun out explicitly, so it is easy to flip.
+func adoptionDryRun(dryRun bool) func(map[string]any) {
+	return func(spec map[string]any) {
+		if ad, ok := spec["adoption"].(map[string]any); ok {
+			ad["dryRun"] = dryRun
+		}
+	}
+}
+
+// show formats a value for the report: lists as [a, b].
+func show(v any) string {
+	if l, ok := v.([]string); ok {
+		return "[" + strings.Join(l, ", ") + "]"
+	}
+	return fmt.Sprint(v)
+}
+
 // render marshals obj without status or timestamps. For objects with
 // adoption, dryRun is written out explicitly so it is easy to flip.
-func render(obj any, adoptionIn string, dryRun bool, header string) ([]byte, error) {
+func render(obj any, header string, patches ...func(spec map[string]any)) ([]byte, error) {
 	raw, err := json.Marshal(obj)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -346,9 +393,9 @@ func render(obj any, adoptionIn string, dryRun bool, header string) ([]byte, err
 	if meta, ok := m["metadata"].(map[string]any); ok {
 		delete(meta, "creationTimestamp")
 	}
-	if spec, ok := m["spec"].(map[string]any); ok && adoptionIn != "" {
-		if ad, ok := spec["adoption"].(map[string]any); ok {
-			ad["dryRun"] = dryRun
+	if spec, ok := m["spec"].(map[string]any); ok {
+		for _, patch := range patches {
+			patch(spec)
 		}
 	}
 	out, err := yaml.Marshal(m)
@@ -358,11 +405,18 @@ func render(obj any, adoptionIn string, dryRun bool, header string) ([]byte, err
 	return append([]byte(header), out...), nil
 }
 
+func nilIfEmpty(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
 // fill returns v, or def (recording the substitution) when v is unset.
 func fill[T string | []string](v, def T, field string, rep *objectReport) T {
 	if len(v) > 0 {
 		return v
 	}
-	rep.filled = append(rep.filled, fmt.Sprintf("%s = %v", field, def))
+	rep.filled = append(rep.filled, fmt.Sprintf("%s = %s", field, show(def)))
 	return def
 }

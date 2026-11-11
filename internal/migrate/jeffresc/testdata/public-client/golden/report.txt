@@ -8,7 +8,7 @@ and edit the spec until the only listed changes are ones you intend.
 AuthentikApplication web/spa
   files: authentikoauthprovider-spa.yaml, authentikapplication-spa.yaml
   unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
-    - provider.scopes = [openid profile email]
+    - provider.scopes = [openid, profile, email]
     - provider.accessCodeValidity = minutes=1
     - provider.accessTokenValidity = minutes=5
     - provider.refreshTokenValidity = days=30
@@ -25,7 +25,7 @@ AuthentikApplication web/spa
     - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
     - application.metaHide = false
   notes:
-    - public client: the template reads .ClientSecret, which is empty for a public client in both operators
+    - public client: the template reads .ClientSecret, which has the same value in both operators (Authentik's, normally empty for a public client)
     - Secret spa-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
     - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
 

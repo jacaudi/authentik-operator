@@ -43,19 +43,19 @@ const (
 // jeffProvider is the JeffResc provider block (identical in v0.1.x and
 // v0.2.x apart from validation).
 type jeffProvider struct {
-	AuthorizationFlow      string   `json:"authorizationFlow"`
-	InvalidationFlow       string   `json:"invalidationFlow"`
-	RedirectURIs           []string `json:"redirectUris"`
-	Scopes                 []string `json:"scopes,omitempty"`
-	ClientType             string   `json:"clientType,omitempty"`
-	AccessCodeValidity     string   `json:"accessCodeValidity,omitempty"`
-	AccessTokenValidity    string   `json:"accessTokenValidity,omitempty"`
-	RefreshTokenValidity   string   `json:"refreshTokenValidity,omitempty"`
-	SubMode                string   `json:"subMode,omitempty"`
-	IncludeClaimsInIDToken *bool    `json:"includeClaimsInIdToken,omitempty"`
-	IssuerMode             string   `json:"issuerMode,omitempty"`
-	PropertyMappings       []string `json:"propertyMappings,omitempty"`
-	SigningKey             string   `json:"signingKey,omitempty"`
+	AuthorizationFlow      string    `json:"authorizationFlow"`
+	InvalidationFlow       string    `json:"invalidationFlow"`
+	RedirectURIs           []string  `json:"redirectUris"`
+	Scopes                 *[]string `json:"scopes,omitempty"`
+	ClientType             string    `json:"clientType,omitempty"`
+	AccessCodeValidity     string    `json:"accessCodeValidity,omitempty"`
+	AccessTokenValidity    string    `json:"accessTokenValidity,omitempty"`
+	RefreshTokenValidity   string    `json:"refreshTokenValidity,omitempty"`
+	SubMode                string    `json:"subMode,omitempty"`
+	IncludeClaimsInIDToken *bool     `json:"includeClaimsInIdToken,omitempty"`
+	IssuerMode             string    `json:"issuerMode,omitempty"`
+	PropertyMappings       []string  `json:"propertyMappings,omitempty"`
+	SigningKey             *string   `json:"signingKey,omitempty"`
 }
 
 // jeffSecret is the JeffResc output Secret block.

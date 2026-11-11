@@ -8,7 +8,7 @@ and edit the spec until the only listed changes are ones you intend.
 AuthentikOAuth2Application media/immich
   files: authentikoauthprovider-immich.yaml, authentikapplication-immich.yaml
   unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
-    - provider.scopes = [openid profile email]
+    - provider.scopes = [openid, profile, email]
     - provider.clientType = confidential
     - provider.accessCodeValidity = minutes=1
     - provider.accessTokenValidity = minutes=5

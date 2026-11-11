@@ -47,7 +47,8 @@ type objectReport struct {
 func (b *builder) describe(a source, ns, oldSecret, newSecret string, rep *objectReport) {
 	if a.spec.Provider.ClientType == "public" && usesClientSecret(a.spec.Secret.Template) {
 		rep.notes = append(rep.notes,
-			"public client: the template reads .ClientSecret, which is empty for a public client in both operators")
+			"public client: the template reads .ClientSecret, which has the same value in both operators "+
+				"(Authentik's, normally empty for a public client)")
 	}
 	switch {
 	case ns != a.namespace:

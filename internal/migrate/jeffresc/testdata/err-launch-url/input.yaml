@@ -1,0 +1,12 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: demo, namespace: ns}
+spec:
+  name: Demo
+  metaLaunchUrl: "blank://blank"
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://demo.example.com/cb"]
+
+

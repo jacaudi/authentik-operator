@@ -25,7 +25,7 @@ AuthentikApplication authentik-operator-system/gitlab
 AuthentikApplication monitoring/grafana
   files: authentikoauthprovider-grafana.yaml, authentikapplication-grafana.yaml
   unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
-    - provider.scopes = [openid profile email]
+    - provider.scopes = [openid, profile, email]
     - provider.clientType = confidential
     - provider.accessCodeValidity = minutes=1
     - provider.accessTokenValidity = minutes=5

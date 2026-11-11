@@ -1,0 +1,1 @@
+input.yaml: AuthentikApplication ns/demo: metaLaunchUrl "blank://blank" is not http(s), which this operator requires; remove the field to keep the live launch URL on adoption

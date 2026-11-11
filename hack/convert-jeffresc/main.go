@@ -22,6 +22,7 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -43,6 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.PrintDefaults()
 	}
 	var opts jeffresc.Options
+	force := fs.Bool("force", false, "write into a non-empty --out directory")
 	out := fs.String("out", "", "directory to write the converted objects to (required)")
 	fs.BoolVar(&opts.DryRunAdoption, "dry-run-adoption", true, "set adoption.dryRun on every converted object")
 	fs.StringVar(&opts.Namespace, "namespace", "",
@@ -67,6 +69,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	res, err := jeffresc.Convert(inputs, opts)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if entries, err := os.ReadDir(*out); err == nil && len(entries) > 0 && !*force {
+		return fail(stderr, errors.New(*out+" is not empty; use --force to write into it"))
 	}
 	if err := os.MkdirAll(*out, 0o750); err != nil {
 		return fail(stderr, err)

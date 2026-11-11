@@ -73,7 +73,7 @@ func TestConvertTemplateAccepts(t *testing.T) {
 		"a: {{ .ClientID }}\n",
 		"a: {{ printf \"%q\" .Name }}\nb: {{ if eq .Slug \"x\" }}1{{ else }}2{{ end }}\n",
 	} {
-		got, err := convertTemplate(body)
+		got, err := convertTemplate(body, false)
 		if err != nil || got != body {
 			t.Errorf("convertTemplate(%q) = %q, %v", body, got, err)
 		}
@@ -86,7 +86,7 @@ func TestConvertTemplateRejects(t *testing.T) {
 		"a: {{ .ClientID \n":             "does not parse",
 		"a: {{ .ClientSecret | upper }}": "", // upper is not a function in either operator.
 	} {
-		if _, err := convertTemplate(body); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := convertTemplate(body, false); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("convertTemplate(%q): want error containing %q, got %v", body, want, err)
 		}
 	}
@@ -161,5 +161,30 @@ func TestReadInputsDirectory(t *testing.T) {
 	}
 	if len(in) != 2 || filepath.Base(in[0].Source) != "a.yml" {
 		t.Fatalf("unexpected inputs: %v", in)
+	}
+}
+
+func TestV2YAMLCommentIsAccepted(t *testing.T) {
+	in := strings.Replace(strings.Replace(app("x", "ns"), "{{ .ClientID }}", "{{ .ClientID }} # note", 1),
+		"AuthentikApplication", "AuthentikOAuth2Application", 1)
+	if _, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmptyLabelsEqualAbsent(t *testing.T) {
+	withEmpty := strings.Replace(app("b", "ns"), "  secret:\n", "  secret:\n    labels: {}\n    annotations: {}\n", 1)
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(app("a", "ns") + "---\n" + withEmpty)}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, f := range res.Files {
+		if strings.HasPrefix(f.Name, "authentikcredentialstemplate-") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want one shared template, got %d", n)
 	}
 }

@@ -60,7 +60,7 @@ type jeffSecretData struct {
 // variables; this operator's restricted template subset accepts it; and it
 // renders identically (as Secret data) to JeffResc's own rendering for
 // sample values.
-func convertTemplate(body string) (string, error) {
+func convertTemplate(body string, v1 bool) (string, error) {
 	t, err := template.New("secret").Option("missingkey=error").Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("template does not parse: %w", err)
@@ -83,7 +83,7 @@ func convertTemplate(body string) (string, error) {
 	if err := credentials.Check(body); err != nil {
 		return "", fmt.Errorf("template is not accepted by this operator: %w", err)
 	}
-	if err := sameRendering(t, body); err != nil {
+	if err := sameRendering(t, body, v1); err != nil {
 		return "", err
 	}
 	return body, nil
@@ -141,10 +141,43 @@ func children(n parse.Node) []parse.Node {
 	}
 }
 
+// jeffrescParse turns rendered template text into Secret data the way
+// JeffResc does: v0.1.x (kind AuthentikApplication) with a line parser,
+// v0.2.x with a YAML decoder.
+func jeffrescParse(out []byte, v1 bool) (map[string]string, error) {
+	if !v1 {
+		var m map[string]string
+		if err := yaml.Unmarshal(out, &m); err != nil {
+			return nil, fmt.Errorf("template output is not a YAML map: %w", err)
+		}
+		return m, nil
+	}
+	// Port of RenderSecretData in JeffResc 0.1.8 internal/template/secret.go:
+	// split on newlines, trim, split on the first colon, strip one pair of
+	// matching surrounding quotes (no escapes), skip lines without a colon.
+	m := map[string]string{}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		key, value, ok := strings.Cut(line, ":")
+		if line == "" || !ok {
+			continue
+		}
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '"' && value[len(value)-1] == '"' ||
+			value[0] == '\'' && value[len(value)-1] == '\'') {
+			value = value[1 : len(value)-1]
+		}
+		if key != "" {
+			m[key] = value
+		}
+	}
+	return m, nil
+}
+
 // sameRendering renders the template with JeffResc's pipeline (text/template
 // on a struct, YAML into map[string]string) and with this operator's, for
 // sample values, and requires identical Secret data.
-func sameRendering(t *template.Template, body string) error {
+func sameRendering(t *template.Template, body string, v1 bool) error {
 	for _, name := range []string{"Example", "GitLab"} {
 		const u = "https://authentik.example.com/application/o/example/"
 		jd := jeffSecretData{
@@ -156,9 +189,9 @@ func sameRendering(t *template.Template, body string) error {
 		if err := t.Execute(&buf, jd); err != nil {
 			return fmt.Errorf("template does not render with JeffResc's variables: %w", err)
 		}
-		var old map[string]string
-		if err := yaml.Unmarshal(buf.Bytes(), &old); err != nil {
-			return fmt.Errorf("template output is not a YAML map: %w", err)
+		old, err := jeffrescParse(buf.Bytes(), v1)
+		if err != nil {
+			return err
 		}
 		got, err := credentials.Render(body, credentials.Vars(jd))
 		if err != nil {

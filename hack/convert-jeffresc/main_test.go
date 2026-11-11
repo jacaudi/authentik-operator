@@ -93,3 +93,19 @@ func TestRunUsage(t *testing.T) {
 		t.Fatalf("want exit 2 without arguments, got %d", code)
 	}
 }
+
+func TestRunRefusesNonEmptyOutWithoutForce(t *testing.T) {
+	out := t.TempDir()
+	if err := os.WriteFile(filepath.Join(out, "keep.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(fixtures, "v1-gitlab", "input.yaml")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{flagOut, out, in}, &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "--force") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if code = run([]string{flagOut, out, "--force", in}, &stdout, &stderr); code != 0 {
+		t.Fatalf("with --force: exit %d: %s", code, stderr.String())
+	}
+}

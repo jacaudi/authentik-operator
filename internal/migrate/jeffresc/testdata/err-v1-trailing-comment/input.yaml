@@ -1,0 +1,14 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: demo, namespace: ns}
+spec:
+  name: Demo
+
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://demo.example.com/cb"]
+
+  secret:
+    template: |
+      K: {{ .ClientID }} # note
