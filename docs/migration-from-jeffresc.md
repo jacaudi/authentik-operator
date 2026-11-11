@@ -327,7 +327,7 @@ bash -euo pipefail <<'EOF'
 OLD_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
 SELECTOR='app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=authentik-operator'
 OLD_WEBHOOK=''
-R=authentikapplications.goauthentik.io; NAME=gitlab; NEW_NS=authentik-operator-system
+R=authentikapplications.goauthentik.io; NAME=gitlab; NEW_NS=authentik-operator
 
 # gate 2: scale to 0 and wait until the pods are really gone (a running pod re-adds finalizers)
 kubectl -n "$OLD_NS" scale deploy/"$OLD_DEPLOY" --replicas=0
