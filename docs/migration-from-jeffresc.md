@@ -28,6 +28,7 @@ for JeffResc, `authentikapplications.authentik.io` for this operator).
 ```sh
 make convert-jeffresc
 bin/convert-jeffresc --out out/ jeffresc-backup.yaml          # files and/or directories, multi-document YAML or a List
+# re-running into a non-empty --out needs --force
 ```
 
 Writes one object per file, `<kind-lowercase>-<name>.yaml`, deterministically
@@ -44,6 +45,7 @@ operator does not support, a template that would render differently).
 | `--authentik-ref NAME` | none | `spec.authentikRef` (an `AuthentikDeployment` in the same namespace); omit to use the operator's default connection |
 | `--template-name NAME` | `jeffresc-<hash>` | name of the `AuthentikCredentialsTemplate`; with several distinct templates it is a prefix (`NAME-<hash>`) |
 | `--secret-suffix S` | none | appended to every rendered Secret name, so new and old Secrets can exist side by side (recommended, see step 4) |
+| `--force` | off | write into a non-empty `--out` |
 | `--provider-suffix S` | none | appended to the `AuthentikOAuthProvider` resource names (default: same as the slug) |
 
 Emitted per JeffResc object:
@@ -65,8 +67,9 @@ Emitted per JeffResc object:
 
 ### Field map
 
-JeffResc v0.1.8 and v0.2.5 have the same fields (v0.2.x only renames the kind
-and adds validation). Fields JeffResc leaves unset take JeffResc's own CRD
+JeffResc 0.1.8 and v0.2.5 have the same fields (note that the 0.1.x tags have
+no `v` prefix); v0.2.x renames the kind, adds validation and parses rendered
+Secret templates differently (see the template section). Fields JeffResc leaves unset take JeffResc's own CRD
 defaults; the converter writes those defaults out so that adoption keeps the
 live value.
 
@@ -82,12 +85,12 @@ live value.
 | `spec.openInNewTab` (default `true`) | `AuthentikApplication.spec.openInNewTab` | |
 | `spec.provider.authorizationFlow`, `invalidationFlow` | same names (flow slugs) | |
 | `spec.provider.redirectUris[]` (strings) | `redirectUris[].url` | JeffResc sent every URI as `strict` matching; here `matchingMode: strict`, `type: authorization` (the defaults) |
-| `spec.provider.scopes` (default `openid, profile, email`) | `scopes` | same default; replaces the provider's scope mappings |
+| `spec.provider.scopes` (default `openid, profile, email`) | `scopes` | same default; replaces the provider's scope mappings. An explicit `scopes: []` is emitted as `scopes: []`. When several scope mappings share a scope name JeffResc takes the first result and this operator prefers the managed (built-in) mapping, which can show up as a `property_mappings` diff in the dry run |
 | `spec.provider.propertyMappings` | `propertyMappings` | |
 | `spec.provider.clientType` (default `confidential`) | `clientType` | |
 | `spec.provider.accessCodeValidity` (`minutes=1`), `accessTokenValidity` (`minutes=5`), `refreshTokenValidity` (`days=30`) | same names | same defaults |
 | `spec.provider.subMode` (`hashed_user_id`), `includeClaimsInIdToken` (`true`), `issuerMode` (`per_provider`) | same names | same defaults |
-| `spec.provider.signingKey` (default `authentik Self-signed Certificate`) | `signingKey` | this operator has no schema default (an adopted provider keeps its key); the converter writes JeffResc's default explicitly |
+| `spec.provider.signingKey` (default `authentik Self-signed Certificate`) | `signingKey` | this operator has no schema default (an adopted provider keeps its key); the converter writes JeffResc's default explicitly, and omits the field for an explicit `signingKey: ""` (the live key is kept) |
 | `spec.secret.name` (default `<name>-oauth`) | `AuthentikOAuthProvider.spec.secret.name` (+ `--secret-suffix`) | |
 | `spec.secret.template` | `AuthentikCredentialsTemplate.spec.template` | variables below |
 | `spec.secret.labels`, `spec.secret.annotations` | `AuthentikCredentialsTemplate.spec.labels`, `.annotations` | keys under `authentik.io/` are reserved here |
@@ -121,38 +124,64 @@ operator also restricts templates to text, `{{ .Var }}`, `if`/`else`,
 comparisons, `print` and `printf` with `%s`/`%q`/`%v`, rejects an unquoted
 `{{ .Name }}` (quote it: `{{ printf "%q" .Name }}`), and refuses variable
 values containing control characters. The converter renders each template with
-both operators' pipelines on sample values and fails unless the Secret data
-is identical, so it never emits a template that renders differently.
+both operators' pipelines on sample values (JeffResc 0.1.x parses the output with
+a line parser that strips one pair of quotes and keeps trailing comments; v0.2.x
+with a YAML decoder) and fails unless the Secret data is identical, so it never emits a template that renders differently.
 
 ## Runbook (zero downtime, credentials preserved)
 
-Do one application first, then the rest. Variables: `NS` is the application's
-namespace.
+Migrate one application first, then the rest; the commands below name
+resources one at a time for that reason. Variables: `NS` is the application's
+namespace (`OLD_NS` and `NEW_NS` where `--namespace` makes them differ).
 
 ### 1. Install this operator alongside
 
-Install this operator (CRDs and manager) next to JeffResc's; the API groups
-differ, so the CRDs do not clash. Give it access to Authentik, either with the
-default connection (`--authentik-url`, `--authentik-token-file`) or with an
-`AuthentikDeployment` (`mode: ConnectOnly`, `connection.tokenSecretRef`) in each
-namespace plus `--authentik-ref` below; see
-[scope.md, connection model](design/scope.md). Create the API token for it in
-Authentik. Check that the install does not collide with JeffResc's objects
-(`kubectl get deploy -A | grep -i authentik`).
-
-Back up what you are about to change:
+Install the Helm chart (see `dist/chart/README.md` for every value) **into a
+namespace other than JeffResc's**: JeffResc's chart and this project's
+kustomize default both use `authentik-operator-system`, and a shared namespace
+invites name clashes between the two controllers' objects.
 
 ```sh
-kubectl get authentikapplications.goauthentik.io,authentikoauth2applications.goauthentik.io -A -o yaml > jeffresc-backup.yaml
-kubectl get secret -n NS <old secret names> -o yaml > jeffresc-secrets-backup.yaml
+helm install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator --version X.Y.Z \
+  --namespace authentik-operator --create-namespace \
+  --set authentik.url=https://authentik.example.com \
+  --set authentik.tokenSecret.name=authentik-api     # Secret holding a new Authentik API token
+# from a checkout instead of the registry: helm install authentik-operator dist/chart ...
 ```
 
-Rollback: uninstall this operator and its CRDs. Nothing has been adopted.
+The CRDs ship with the chart (different API group, so no clash with
+JeffResc's). If `authentik.io` CRDs already exist from an earlier install
+(kubectl, kustomize), Helm refuses them with `invalid ownership metadata`:
+follow "Ownership metadata on kept CRDs" in `dist/chart/README.md` (adopt them
+or `--set crd.enabled=false`). The default connection is configured by
+`authentik.url` and a token Secret; alternatively use an `AuthentikDeployment`
+(`mode: ConnectOnly`) per namespace plus `--authentik-ref` below; see
+[scope.md, connection model](design/scope.md). Create the API token in
+Authentik first. Check that nothing collides with JeffResc's objects
+(`kubectl get deploy -A | grep -i authentik`).
+
+Back up what you are about to change. `kubectl get a,b` fails outright if one
+kind's CRD is missing (0.1.x clusters have no `authentikoauth2applications`),
+so list the kinds separately, and strip the server-populated fields so the
+backup can be re-applied:
+
+```sh
+for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
+  kubectl get crd "$r" >/dev/null 2>&1 || continue
+  kubectl get "$r" -A -o json \
+    | jq 'del(.items[].metadata | .resourceVersion, .uid, .managedFields, .generation, .creationTimestamp, .selfLink, .ownerReferences)
+          | del(.items[].status)' > "jeffresc-backup-$r.json"
+done
+kubectl -n OLD_NS get secret <old secret names> -o yaml > jeffresc-secrets-backup.yaml   # contains credentials; keep it safe
+```
+
+Rollback: uninstall this operator (`helm uninstall`, then delete the CRDs if
+you kept them). Nothing has been adopted.
 
 ### 2. Convert; the platform admin applies the templates
 
 ```sh
-bin/convert-jeffresc --out out/ --secret-suffix -v2 jeffresc-backup.yaml     # add --authentik-ref NAME if used
+bin/convert-jeffresc --out out/ --secret-suffix -v2 jeffresc-backup-*.json     # add --authentik-ref NAME if used
 # read the files and the report printed on stderr before applying anything
 ```
 
@@ -216,15 +245,29 @@ next reconcile.
 ### 4. Confirm the new Secret is byte-identical, then point consumers at it
 
 With `--secret-suffix -v2` the new operator renders `<old name>-v2` next to the
-old Secret. Compare, key by key (`.data` is base64 of the exact bytes, so a
-different key value or trailing newline shows; map order does not matter):
+old Secret, in `NEW_NS` (which differs from `OLD_NS` only if you used
+`--namespace`). It appears on the provider's next reconcile, which can be up to
+a resync interval after adoption. Compare key by key (`.data` is base64 of the
+exact bytes, so a different value or trailing newline shows; map order does
+not matter):
 
 ```sh
-diff <(kubectl -n NS get secret gitlab-oidc-credentials -o json | jq -S .data) \
-     <(kubectl -n NS get secret gitlab-oidc-credentials-v2 -o json | jq -S .data) && echo identical
+diff <(kubectl -n OLD_NS get secret gitlab-oidc-credentials -o json | jq -S .data) \
+     <(kubectl -n NEW_NS get secret gitlab-oidc-credentials-v2 -o json | jq -S .data) && echo identical
 ```
 
 The two Secrets have different labels and owners; only `.data` is compared.
+
+**Endpoint URLs.** JeffResc wrote the URLs exactly as Authentik returned them,
+which Authentik builds from the host JeffResc connected to (often an internal
+service name). This operator rewrites them from the connection's base URL to
+its external URL (`credentials.Rewrite`, `internal/controller/oauthprovider_secret.go`),
+set with `authentik.externalUrl` in the chart (`--authentik-external-url`) or
+`AuthentikDeployment.spec.connection.externalURL`. If `diff` shows only the
+host part of `issuer`/`auth`/`token`/`userinfo` URLs, this is why: set the new
+connection URL and external URL so the output matches what JeffResc rendered.
+A URL outside the connection's base is reported as `ExternalURLMismatch`.
+
 Point consumers (Deployment `secretKeyRef`s, mounts, secret-sync tools) at the
 `-v2` names and roll them. To get back to the original names, once the old
 Secrets are gone (step 5) set `spec.secret.name` to the original name: the
@@ -232,11 +275,12 @@ operator creates it, then deletes `-v2`; point consumers back before that
 second move.
 
 Without `--secret-suffix` the new provider cannot render a Secret under the
-old name while JeffResc's CR owns it: it reports `SecretConflict` and does not
-overwrite it. The Secret is only freed when the old CR is deleted in step 5
-(garbage collection removes it), and the new operator then creates it on its
-next reconcile; pods started in between cannot find it. Prefer the suffix for
-anything that is not tolerant of that gap.
+old name while JeffResc's CR owns it. This shows on the **credentials
+condition** (`CredentialsReady`, reason `SecretConflict`), not on `Ready`, and
+the operator does not overwrite the Secret. It is only freed when the old CR is
+deleted in step 5 (garbage collection removes it); the new operator then
+creates it on its next reconcile, and pods started in between cannot find it.
+Prefer the suffix for anything that is not tolerant of that gap.
 
 Rollback: point consumers back at the old Secret names; the old Secrets are
 untouched until step 5.
@@ -244,42 +288,110 @@ untouched until step 5.
 ### 5. Retire the old CRs without deleting the Authentik objects
 
 JeffResc deletes the Authentik provider and application when its CR is
-deleted, **adopted or not**. So first stop it, then strip its finalizer, then
-delete:
+deleted, **adopted or not**, and its reconcile re-adds `goauthentik.io/finalizer`
+whenever it is missing. Its Secrets have a controller owner reference to their
+CR, so deleting a CR also garbage-collects that application's Secret. So:
+migrate and retire **one application at a time**; scaling the old operator to
+0 once is fine (the unmigrated applications keep their existing Secrets and
+Authentik objects, they just stop being reconciled). Only after every
+application has been migrated is the cluster-wide variant at the end of this
+step acceptable.
+
+Work through these gates in order and stop at the first one that fails.
+
+1. **Stop anything that would bring the old operator back.** Suspend GitOps
+   reconciliation of it, or set replicas to 0 in Git:
+
+   ```sh
+   flux suspend helmrelease <old release> -n <ns>        # and/or: flux suspend kustomization <name> -n <ns>
+   # Argo CD: disable auto-sync for the application (argocd app set <app> --sync-policy none)
+   ```
+
+2. **Scale to 0 and wait until the pod is gone** (`scale` returns before the
+   pod exits, and a running pod would re-add finalizers):
+
+   ```sh
+   kubectl -n <old ns> scale deploy/<old deployment> --replicas=0
+   kubectl -n <old ns> wait --for=delete pod -l <old operator selector> --timeout=120s
+   ```
+
+3. **v0.2.x only: delete the old ValidatingWebhookConfiguration if present.**
+   With no backend and `failurePolicy: Fail` it blocks the finalizer update in
+   the next gate:
+
+   ```sh
+   kubectl get validatingwebhookconfiguration | grep -i authentik
+   kubectl delete validatingwebhookconfiguration <old webhook configuration>
+   ```
+
+4. **Strip the finalizer** from the one application (use the right resource
+   name: `authentikapplications.goauthentik.io` for 0.1.x,
+   `authentikoauth2applications.goauthentik.io` for v0.2.x). The jq is
+   tolerant of an absent finalizers list:
+
+   ```sh
+   set -euo pipefail
+   R=authentikapplications.goauthentik.io; NAME=gitlab
+   kubectl -n OLD_NS get $R $NAME -o json \
+     | jq '.metadata.finalizers = ((.metadata.finalizers // []) - ["goauthentik.io/finalizer"])' \
+     | kubectl replace -f -
+   ```
+
+5. **Assert before deleting.** The finalizer is gone and the old operator is
+   still at zero. If either check prints anything or fails, stop:
+
+   ```sh
+   test -z "$(kubectl -n OLD_NS get $R $NAME -o jsonpath='{.metadata.finalizers}')"
+   REPLICAS=$(kubectl -n <old ns> get deploy/<old deployment> -o jsonpath='{.status.replicas}')
+   test -z "$REPLICAS" || test "$REPLICAS" = 0
+   ```
+
+6. **Delete that CR**, then check the Authentik objects survived (`Ready`
+   True on the new objects, and the application still present in Authentik):
+
+   ```sh
+   kubectl -n OLD_NS delete $R $NAME
+   kubectl -n NEW_NS get authentikoauthproviders.authentik.io,authentikapplications.authentik.io
+   ```
+
+Repeat 4-6 per application (the gates 1-3 need doing once). After the last
+application has been migrated, the same can be done for everything at once, run
+per kind (`kubectl get a,b` fails when one CRD is missing):
 
 ```sh
-kubectl -n <old operator namespace> scale deploy/<old operator deployment> --replicas=0
+set -euo pipefail
 for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
-  kubectl get $r -A -o json | jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name)"' | while read ns name; do
-    kubectl -n "$ns" get $r "$name" -o json \
-      | jq '.metadata.finalizers -= ["goauthentik.io/finalizer"]' | kubectl replace -f -
+  kubectl get crd "$r" >/dev/null 2>&1 || continue
+  kubectl get "$r" -A -o json | jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name)"' | while read -r ns name; do
+    kubectl -n "$ns" get "$r" "$name" -o json \
+      | jq '.metadata.finalizers = ((.metadata.finalizers // []) - ["goauthentik.io/finalizer"])' | kubectl replace -f -
   done
 done
-# only now:
-kubectl delete authentikapplications.goauthentik.io,authentikoauth2applications.goauthentik.io -A --all
+# gate 5 for every CR, then:
+for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
+  kubectl get crd "$r" >/dev/null 2>&1 && kubectl delete "$r" -A --all
+done
 ```
 
 Never scale the old operator back up while an unstripped CR is being deleted.
-Deleting the old CRs also deletes the old Secrets (they are owned by them),
-which is why consumers were moved first. Check that the objects survived:
 
-```sh
-kubectl -n NS get authentikoauthproviders.authentik.io,authentikapplications.authentik.io   # still READY True
-```
-
-and the applications still exist in Authentik.
-
-Rollback: re-apply `jeffresc-backup.yaml` and scale the old operator up; it
-looks the provider up by its `<slug>-provider` name, so it should manage it
-again (verify one application before relying on this). Delete the new objects
-first, or the two operators fight over the same Authentik objects.
+Rollback: re-apply the backup (`kubectl apply -f jeffresc-backup-<kind>.json`)
+and scale the old operator up; it looks the provider up by its `<slug>-provider`
+name, so it should manage it again (verify one application before relying on
+this). Delete the new objects first, or the two operators fight over the same
+Authentik objects.
 
 ### 6. Uninstall the old chart and CRDs, verify
 
 ```sh
 helm -n <old operator namespace> uninstall <old release>
-kubectl delete crd authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io authentiksamlapplications.goauthentik.io
+kubectl delete crd authentikapplications.goauthentik.io     # and authentikoauth2applications.goauthentik.io if it exists
 ```
+
+If you have `AuthentikSAMLApplication` objects (this operator cannot take
+them), do not do this step: after step 5 has removed every OAuth CR, scale the
+old operator back up (it only manages the SAML objects then) and keep its chart
+and the SAML CRD. Delete the SAML CRD only when no SAML objects remain.
 
 Delete the CRDs only after step 5: deleting a CRD deletes its CRs, and a CR
 still carrying the finalizer would be processed by any running JeffResc
@@ -288,7 +400,7 @@ The new objects keep `deletionPolicy: Retain`, so deleting one later releases
 the Authentik object instead of deleting it; set `deletionPolicy: Delete`
 only if you want the new operator to own its lifecycle.
 
-Rollback: reinstall the old chart and CRDs and re-apply `jeffresc-backup.yaml`.
+Rollback: reinstall the old chart and CRDs and re-apply the backups.
 
 ### 7. Leave adopt-only mode
 
@@ -322,6 +434,13 @@ With adoption disabled (step 7):
   adopted object automatically. To let it create, clear `status.providerPk`,
   `status.provenance` and `status.clientId` (applications: `applicationUid`,
   `provenance`), or delete and re-apply the CR.
+
+- **Cluster rebuilt, Authentik intact, CRs re-applied without status, adoption
+  disabled.** The object already exists, so the operator reports `Conflict`
+  and changes nothing (safe). To take it over: set `adoption.enabled: true`
+  with `dryRun: true`, read the diff, set `dryRun: false`, then disable
+  adoption again. Deleting and re-applying a provider CR garbage-collects its
+  rendered Secret (the operator renders it again once the provider is Ready).
 
 For the in-place toggle (`createIfMissing`) see
 [scope.md, "API-object adoption"](design/scope.md#api-object-adoption-task-05).
