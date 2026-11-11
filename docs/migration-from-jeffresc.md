@@ -299,78 +299,101 @@ step acceptable.
 
 Work through these gates in order and stop at the first one that fails.
 
-1. **Stop anything that would bring the old operator back.** Suspend GitOps
-   reconciliation of it, or set replicas to 0 in Git:
-
-   ```sh
-   flux suspend helmrelease <old release> -n <ns>        # and/or: flux suspend kustomization <name> -n <ns>
-   # Argo CD: disable auto-sync for the application (argocd app set <app> --sync-policy none)
-   ```
-
-2. **Scale to 0 and wait until the pod is gone** (`scale` returns before the
-   pod exits, and a running pod would re-add finalizers):
-
-   ```sh
-   kubectl -n <old ns> scale deploy/<old deployment> --replicas=0
-   kubectl -n <old ns> wait --for=delete pod -l <old operator selector> --timeout=120s
-   ```
-
-3. **v0.2.x only: delete the old ValidatingWebhookConfiguration if present.**
-   With no backend and `failurePolicy: Fail` it blocks the finalizer update in
-   the next gate:
-
-   ```sh
-   kubectl get validatingwebhookconfiguration | grep -i authentik
-   kubectl delete validatingwebhookconfiguration <old webhook configuration>
-   ```
-
-4. **Strip the finalizer** from the one application (use the right resource
-   name: `authentikapplications.goauthentik.io` for 0.1.x,
-   `authentikoauth2applications.goauthentik.io` for v0.2.x). The jq is
-   tolerant of an absent finalizers list:
-
-   ```sh
-   set -euo pipefail
-   R=authentikapplications.goauthentik.io; NAME=gitlab
-   kubectl -n OLD_NS get $R $NAME -o json \
-     | jq '.metadata.finalizers = ((.metadata.finalizers // []) - ["goauthentik.io/finalizer"])' \
-     | kubectl replace -f -
-   ```
-
-5. **Assert before deleting.** The finalizer is gone and the old operator is
-   still at zero. If either check prints anything or fails, stop:
-
-   ```sh
-   test -z "$(kubectl -n OLD_NS get $R $NAME -o jsonpath='{.metadata.finalizers}')"
-   REPLICAS=$(kubectl -n <old ns> get deploy/<old deployment> -o jsonpath='{.status.replicas}')
-   test -z "$REPLICAS" || test "$REPLICAS" = 0
-   ```
-
-6. **Delete that CR**, then check the Authentik objects survived (`Ready`
-   True on the new objects, and the application still present in Authentik):
-
-   ```sh
-   kubectl -n OLD_NS delete $R $NAME
-   kubectl -n NEW_NS get authentikoauthproviders.authentik.io,authentikapplications.authentik.io
-   ```
-
-Repeat 4-6 per application (the gates 1-3 need doing once). After the last
-application has been migrated, the same can be done for everything at once, run
-per kind (`kubectl get a,b` fails when one CRD is missing):
+**Gate 1 (by hand): stop anything that would bring the old operator back.**
+Suspend GitOps reconciliation of it, or set replicas to 0 in Git:
 
 ```sh
-set -euo pipefail
-for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
+flux suspend helmrelease <old release> -n <ns>        # and/or: flux suspend kustomization <name> -n <ns>
+# Argo CD: disable auto-sync for the application (argocd app set <app> --sync-policy none)
+```
+
+Find the old operator's pod selector (JeffResc's chart labels its pods
+`app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=<release>`;
+verify in its chart):
+
+```sh
+kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.selector.matchLabels}'
+```
+
+**Gates 2 to 6 as one script**, so every failure stops the whole sequence and
+your interactive shell is never the one that exits. Fill in the variables at the
+top (`R` is `authentikapplications.goauthentik.io` for 0.1.x,
+`authentikoauth2applications.goauthentik.io` for v0.2.x; `OLD_WEBHOOK` is the
+old ValidatingWebhookConfiguration on v0.2.x, empty on 0.1.x: with no backend
+and `failurePolicy: Fail` it would block the finalizer update):
+
+```sh
+bash -euo pipefail <<'EOF'
+OLD_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
+SELECTOR='app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=authentik-operator'
+OLD_WEBHOOK=''
+R=authentikapplications.goauthentik.io; NAME=gitlab; NEW_NS=authentik-operator-system
+
+# gate 2: scale to 0 and wait until the pods are really gone (a running pod re-adds finalizers)
+kubectl -n "$OLD_NS" scale deploy/"$OLD_DEPLOY" --replicas=0
+for _ in $(seq 24); do
+  PODS=$(kubectl -n "$OLD_NS" get pods -l "$SELECTOR" -o name)
+  test -z "$PODS" && break
+  sleep 5
+done
+test -z "$PODS"
+
+# gate 3 (v0.2.x): remove the old webhook configuration
+if test -n "$OLD_WEBHOOK"; then kubectl delete validatingwebhookconfiguration "$OLD_WEBHOOK"; fi
+
+# gate 4: strip the finalizer (null-tolerant)
+kubectl -n "$OLD_NS" get "$R" "$NAME" -o json \
+  | jq '.metadata.finalizers = ((.metadata.finalizers // []) - ["goauthentik.io/finalizer"])' \
+  | kubectl replace -f -
+
+# gate 5: assert, with plain assignments so a failing kubectl stops the script
+F=$(kubectl -n "$OLD_NS" get "$R" "$NAME" -o jsonpath='{.metadata.finalizers}')
+test -z "$F"
+SPEC=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
+test "$SPEC" = 0
+STATUS=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.status.replicas}')
+test -z "$STATUS" || test "$STATUS" = 0
+
+# gate 6: delete that CR, then show the new objects
+kubectl -n "$OLD_NS" delete "$R" "$NAME"
+kubectl -n "$NEW_NS" get authentikoauthproviders.authentik.io,authentikapplications.authentik.io
+echo GATES-OK
+EOF
+```
+
+Check that `GATES-OK` printed, that the new objects are `Ready` True, and that
+the application is still present in Authentik. Repeat for the next application
+with its own `NAME` (gate 1 is once; the scale and wait in gate 2 is harmless to
+repeat).
+
+After the last application has been migrated, the same can be done for
+everything at once, run per kind (`kubectl get a,b` fails when one CRD is
+missing), again as one script:
+
+```sh
+bash -euo pipefail <<'EOF'
+OLD_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
+KINDS="authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io"
+for r in $KINDS; do
   kubectl get crd "$r" >/dev/null 2>&1 || continue
   kubectl get "$r" -A -o json | jq -r '.items[] | "\(.metadata.namespace) \(.metadata.name)"' | while read -r ns name; do
     kubectl -n "$ns" get "$r" "$name" -o json \
       | jq '.metadata.finalizers = ((.metadata.finalizers // []) - ["goauthentik.io/finalizer"])' | kubectl replace -f -
   done
 done
-# gate 5 for every CR, then:
-for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
-  kubectl get crd "$r" >/dev/null 2>&1 && kubectl delete "$r" -A --all
+# assertion gate: no old CR still carries a finalizer, and the old operator is at zero
+for r in $KINDS; do
+  kubectl get crd "$r" >/dev/null 2>&1 || continue
+  LEFT=$(kubectl get "$r" -A -o json | jq '[.items[] | select((.metadata.finalizers // []) | length > 0)] | length')
+  test "$LEFT" = 0
 done
+SPEC=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
+test "$SPEC" = 0
+for r in $KINDS; do
+  if kubectl get crd "$r" >/dev/null 2>&1; then kubectl delete "$r" -A --all; fi
+done
+echo GATES-OK
+EOF
 ```
 
 Never scale the old operator back up while an unstripped CR is being deleted.
@@ -389,8 +412,10 @@ kubectl delete crd authentikapplications.goauthentik.io     # and authentikoauth
 ```
 
 If you have `AuthentikSAMLApplication` objects (this operator cannot take
-them), do not do this step: after step 5 has removed every OAuth CR, scale the
-old operator back up (it only manages the SAML objects then) and keep its chart
+them), do not do this step: after step 5 has removed every OAuth CR, resume the old
+operator (`flux resume helmrelease <old release> -n <ns>` restores its replicas
+and, on v0.2.x, the webhook configuration deleted in gate 3; with Argo CD,
+re-enable auto-sync). It then only manages the SAML objects. Keep its chart
 and the SAML CRD. Delete the SAML CRD only when no SAML objects remain.
 
 Delete the CRDs only after step 5: deleting a CRD deletes its CRs, and a CR
