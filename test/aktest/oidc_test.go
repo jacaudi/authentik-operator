@@ -52,6 +52,9 @@ type fakeAuthentik struct {
 	chall   string
 	issuer  string
 	pwField bool // identification stage carries the password field
+	// next is the challenge the executor serves on the next GET: real
+	// Authentik answers a POST with a 302 to the same URL (post/redirect/get).
+	next map[string]any
 }
 
 func newFake(t *testing.T) *fakeAuthentik {
@@ -95,7 +98,13 @@ func (f *fakeAuthentik) executor(w http.ResponseWriter, r *http.Request) {
 			"to": fakeRedirect + "?" + url.Values{"code": {"the-code"}, "state": {f.state}}.Encode()})
 		return
 	}
+	reply = f.prg(w, r, reply)
 	if r.Method == http.MethodGet {
+		if c := f.next; c != nil {
+			f.next = nil // served once, as a flow advances
+			reply(c)
+			return
+		}
 		reply(map[string]any{fieldComp: stageIdent, "password_fields": f.pwField})
 		return
 	}
@@ -117,6 +126,17 @@ func (f *fakeAuthentik) executor(w http.ResponseWriter, r *http.Request) {
 	case stagePass:
 		f.authed = in["password"] == "pw"
 		f.finishAuthn(reply, r)
+	}
+}
+
+// prg turns replies to a POST into "remember the challenge, redirect to GET".
+func (f *fakeAuthentik) prg(w http.ResponseWriter, r *http.Request, direct func(map[string]any)) func(map[string]any) {
+	if r.Method != http.MethodPost {
+		return direct
+	}
+	return func(v map[string]any) {
+		f.next = v
+		http.Redirect(w, r, r.URL.RequestURI(), http.StatusFound)
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -173,6 +174,20 @@ func login(ctx context.Context, c creds, redirect string) (*aktest.OIDCResult, e
 		RedirectURI: redirect,
 		Username:    bootstrapUser, Password: bootstrapPassword,
 	})
+}
+
+// updatedEvents counts the operator's "Updated" events (it emits one per
+// PATCH it sends) for objects in the test namespace.
+func updatedEvents(ctx context.Context) int {
+	var evs eventsv1.EventList
+	ExpectWithOffset(1, k8s.List(ctx, &evs, client.InNamespace(appsNS))).To(Succeed())
+	n := 0
+	for i := range evs.Items {
+		if evs.Items[i].Reason == "Updated" {
+			n++
+		}
+	}
+	return n
 }
 
 // oauthWrites counts audit events for writes to providers and applications.

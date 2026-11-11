@@ -314,6 +314,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			a0, err := reconcileTotal(m, appCtl)
 			Expect(err).NotTo(HaveOccurred())
 			settled := oauthWrites(ctx)
+			updatesSettled := updatedEvents(ctx)
 			const rounds = 3
 			for range rounds {
 				for _, n := range []string{createdName, adoptName} {
@@ -336,6 +337,8 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Consistently(func() int { return oauthWrites(ctx) }).WithContext(ctx).
 				WithTimeout(15*time.Second).WithPolling(3*time.Second).
 				Should(Equal(settled), "a reconcile of a Ready object wrote to Authentik")
+
+			Expect(updatedEvents(ctx)).To(Equal(updatesSettled), "the operator reported an Updated event")
 
 			for _, n := range []string{createdName, adoptName} {
 				providerCondition(ctx, n, metav1.ConditionTrue, "Synced")

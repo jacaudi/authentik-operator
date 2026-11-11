@@ -257,7 +257,31 @@ func (l *login) runFlow(ctx context.Context, page *url.URL, slug string) (*url.U
 	return nil, fmt.Errorf("flow %s did not finish within %d challenges", slug, maxHops)
 }
 
+// executor sends one request to the flow executor and returns the challenge
+// it answers with. A POST is answered with a 302 back to the executor URL
+// (post/redirect/get): the next challenge is on the GET it names.
 func (l *login) executor(ctx context.Context, method, u string, body map[string]any) (map[string]any, error) {
+	for range 3 {
+		resp, err := l.executorRequest(ctx, method, u, body)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode < 300 || resp.StatusCode > 399 {
+			return decodeChallenge(resp, method, u)
+		}
+		loc, err := resp.Location()
+		if cerr := resp.Body.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: redirect without a usable Location: %w", method, u, err)
+		}
+		method, u, body = http.MethodGet, loc.String(), nil
+	}
+	return nil, fmt.Errorf("flow executor redirected more than 3 times at %s", u)
+}
+
+func (l *login) executorRequest(ctx context.Context, method, u string, body map[string]any) (*http.Response, error) {
 	rd := io.Reader(http.NoBody)
 	if body != nil {
 		rd = strings.NewReader(string(mustJSON(body)))
@@ -277,10 +301,10 @@ func (l *login) executor(ctx context.Context, method, u string, body map[string]
 			}
 		}
 	}
-	resp, err := l.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	return l.hc.Do(req)
+}
+
+func decodeChallenge(resp *http.Response, method, u string) (map[string]any, error) {
 	raw, err := readBody(resp, 1<<20)
 	if err != nil {
 		return nil, err
