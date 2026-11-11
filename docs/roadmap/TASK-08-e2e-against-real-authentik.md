@@ -2,8 +2,8 @@
 
 ## Ticket
 - Ticket: none
-- Status: In Progress (suite written and green locally on Authentik 2026.2.3; see
-  "Progress" below for what has and has not run; the CI matrix has not run)
+- Status: In Progress (suite written and green locally on Authentik 2026.2.3 and 2026.8.5; the CI
+  matrix has not run on GitHub; see "Progress")
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -55,7 +55,7 @@ image archive; Authentik pulled by the cluster):
 | Authentik | Result |
 |---|---|
 | 2026.2.3 | 13 specs pass, 1 pending (JeffResc migration), about 225 s after the images are present |
-| 2026.8.5 | see the PR description; not recorded here until it has run |
+| 2026.8.5 | 13 specs pass, 1 pending, about 330 s (first image start was slower) |
 
 Operator bugs this suite found against a real 2026.2.3 (both fixed, with unit
 tests built from responses recorded from that server):
