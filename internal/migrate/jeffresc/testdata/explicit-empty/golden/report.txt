@@ -24,7 +24,7 @@ AuthentikApplication ns/demo
     - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
     - application.metaHide = false
   notes:
-    - provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] (adoption removes the scope mappings, as JeffResc did)
+    - provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] (the provider keeps only the propertyMappings)
     - provider.signingKey is explicitly empty in JeffResc: omitted, so adoption keeps the live signing key
     - Secret demo-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
     - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label

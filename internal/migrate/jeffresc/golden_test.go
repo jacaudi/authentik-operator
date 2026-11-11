@@ -48,6 +48,8 @@ func goldenCases() []goldenCase {
 		{name: "secret-suffix", opts: Options{DryRunAdoption: true, SecretSuffix: "-v2", ProviderSuffix: "-provider"}},
 		{name: "template-name-flag", opts: Options{DryRunAdoption: true, TemplateName: "oidc-env"}},
 		{name: "explicit-empty", opts: dry},
+		{name: "err-empty-scopes-no-mappings", opts: dry, wantErr: "propertyMappings"},
+		{name: "err-name-tab", opts: dry, wantErr: "does not render"},
 		{name: "claims-false", opts: dry},
 		{name: "err-v1-trailing-comment", opts: dry, wantErr: "differently"},
 		{name: "err-v1-block-scalar", opts: dry, wantErr: "differently"},

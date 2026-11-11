@@ -159,6 +159,11 @@ func validateSource(a source, ns, slug string) error {
 		errs = append(errs, fmt.Sprintf("metaLaunchUrl %q is not http(s), which this operator requires; "+
 			"remove the field to keep the live launch URL on adoption", l))
 	}
+	if sc := a.spec.Provider.Scopes; sc != nil && len(*sc) == 0 && len(a.spec.Provider.PropertyMappings) == 0 {
+		errs = append(errs, "provider.scopes is [] and propertyMappings is empty: JeffResc then leaves the live "+
+			"property mappings alone, but adoption would replace them with none (dropping openid, profile, email); "+
+			"set scopes and/or propertyMappings to the provider's live mappings")
+	}
 	if a.spec.Name == "" {
 		errs = append(errs, "spec.name is required")
 	}
@@ -181,7 +186,7 @@ func (b *builder) registerTemplate(a source, ns string) (string, error) {
 	body := ""
 	if sec.Template != "" {
 		var err error
-		if body, err = convertTemplate(sec.Template, a.kind == kindV1); err != nil {
+		if body, err = convertTemplate(sec.Template, a.kind == kindV1, a.spec.Name, cmp.Or(a.spec.Slug, a.name)); err != nil {
 			return "", fmt.Errorf("%s: %s: secret.template: %w", a.from, a.ref(), err)
 		}
 	}
@@ -238,7 +243,7 @@ func (b *builder) providerSpec(
 		spec.Scopes = nil
 		emptyScopes = true
 		rep.notes = append(rep.notes, "provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] "+
-			"(adoption removes the scope mappings, as JeffResc did)")
+			"(the provider keeps only the propertyMappings)")
 	default:
 		spec.Scopes = *p.Scopes
 	}

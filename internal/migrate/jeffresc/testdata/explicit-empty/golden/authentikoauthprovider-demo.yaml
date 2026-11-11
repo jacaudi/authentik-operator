@@ -19,6 +19,8 @@ spec:
   invalidationFlow: b
   issuerMode: per_provider
   name: demo-provider
+  propertyMappings:
+  - 11111111-2222-3333-4444-555555555555
   redirectUris:
   - url: https://demo.example.com/cb
   refreshTokenValidity: days=30

@@ -73,7 +73,7 @@ func TestConvertTemplateAccepts(t *testing.T) {
 		"a: {{ .ClientID }}\n",
 		"a: {{ printf \"%q\" .Name }}\nb: {{ if eq .Slug \"x\" }}1{{ else }}2{{ end }}\n",
 	} {
-		got, err := convertTemplate(body, false)
+		got, err := convertTemplate(body, false, "Example", "example")
 		if err != nil || got != body {
 			t.Errorf("convertTemplate(%q) = %q, %v", body, got, err)
 		}
@@ -86,7 +86,7 @@ func TestConvertTemplateRejects(t *testing.T) {
 		"a: {{ .ClientID \n":             "does not parse",
 		"a: {{ .ClientSecret | upper }}": "", // upper is not a function in either operator.
 	} {
-		if _, err := convertTemplate(body, false); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := convertTemplate(body, false, "Example", "example"); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("convertTemplate(%q): want error containing %q, got %v", body, want, err)
 		}
 	}

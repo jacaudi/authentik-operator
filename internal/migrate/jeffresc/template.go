@@ -60,7 +60,7 @@ type jeffSecretData struct {
 // variables; this operator's restricted template subset accepts it; and it
 // renders identically (as Secret data) to JeffResc's own rendering for
 // sample values.
-func convertTemplate(body string, v1 bool) (string, error) {
+func convertTemplate(body string, v1 bool, appName, slug string) (string, error) {
 	t, err := template.New("secret").Option("missingkey=error").Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("template does not parse: %w", err)
@@ -83,7 +83,7 @@ func convertTemplate(body string, v1 bool) (string, error) {
 	if err := credentials.Check(body); err != nil {
 		return "", fmt.Errorf("template is not accepted by this operator: %w", err)
 	}
-	if err := sameRendering(t, body, v1); err != nil {
+	if err := sameRendering(t, body, v1, appName, slug); err != nil {
 		return "", err
 	}
 	return body, nil
@@ -176,14 +176,16 @@ func jeffrescParse(out []byte, v1 bool) (map[string]string, error) {
 
 // sameRendering renders the template with JeffResc's pipeline (text/template
 // on a struct, YAML into map[string]string) and with this operator's, for
-// sample values, and requires identical Secret data.
-func sameRendering(t *template.Template, body string, v1 bool) error {
-	for _, name := range []string{"Example", "GitLab"} {
+// sample values and the source's own name and slug, and requires identical Secret data.
+func sameRendering(t *template.Template, body string, v1 bool, appName, slug string) error {
+	// The sample names and the source's own name and slug: quoting problems
+	// show only with the real values.
+	for _, name := range []string{"Example", "GitLab", appName} {
 		const u = "https://authentik.example.com/application/o/example/"
 		jd := jeffSecretData{
 			ClientID: "client-id-value", ClientSecret: "client-secret-value", IssuerURL: u, AuthURL: u + "authorize/",
 			TokenURL: u + "token/", UserInfoURL: u + "userinfo/", LogoutURL: u + "end-session/",
-			JWKSURL: u + "jwks/", ProviderInfoURL: u + ".well-known/openid-configuration", Slug: "example", Name: name,
+			JWKSURL: u + "jwks/", ProviderInfoURL: u + ".well-known/openid-configuration", Slug: slug, Name: name,
 		}
 		var buf bytes.Buffer
 		if err := t.Execute(&buf, jd); err != nil {
