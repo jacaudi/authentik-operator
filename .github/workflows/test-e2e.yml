@@ -13,13 +13,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Installs the official Authentik chart at each pinned version into a kind
+  # cluster, installs the operator from dist/chart, and runs the Ginkgo suite
+  # in test/e2e against that real server (docs/roadmap/TASK-08). One job, one
+  # cluster, per Authentik version.
   test-e2e:
-    name: Kind smoke test
+    name: e2e (Authentik ${{ matrix.authentik }})
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Chart version == Authentik version. An older supported release in
+        # the 2026.2 line, and the latest 2026.8 release.
+        # renovate: datasource=helm depName=authentik registryUrl=https://charts.goauthentik.io
+        authentik: ["2026.2.3", "2026.8.5"]
     env:
       KIND_VERSION: v0.33.0
+      KIND_CLUSTER: authentik-operator-test-e2e
+      AUTHENTIK_CHART_VERSION: ${{ matrix.authentik }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,7 +45,19 @@ jobs:
         run: |
           go install "sigs.k8s.io/kind@${KIND_VERSION}"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: Verify kind installation
-        run: kind version
+      - name: Verify tool versions
+        run: |
+          kind version
+          helm version --short
+          kubectl version --client
       - name: Run e2e tests
         run: make test-e2e
+      - name: Collect cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context "kind-${KIND_CLUSTER}" get pods -A -o wide || true
+          kubectl --context "kind-${KIND_CLUSTER}" -n authentik logs deploy/authentik-server --tail=200 || true
+          kubectl --context "kind-${KIND_CLUSTER}" -n authentik logs deploy/authentik-worker --tail=200 || true
+      - name: Delete the kind cluster
+        if: always()
+        run: kind delete cluster --name "${KIND_CLUSTER}" || true
