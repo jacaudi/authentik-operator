@@ -1,0 +1,61 @@
+# PostgreSQL for the e2e Authentik: a single throwaway Pod (emptyDir, no PVC).
+# The Authentik chart's bundled Bitnami subchart is avoided on purpose: its
+# images are no longer freely pullable, and a plain Deployment is independent
+# of the chart version under test. The official image is pulled through the
+# public ECR mirror to avoid Docker Hub anonymous rate limits on CI runners.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authentik-postgresql
+  namespace: authentik
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: authentik-postgresql
+  template:
+    metadata:
+      labels:
+        app: authentik-postgresql
+    spec:
+      containers:
+        - name: postgres
+          image: public.ecr.aws/docker/library/postgres:17-alpine
+          env:
+            - name: POSTGRES_DB
+              value: authentik
+            - name: POSTGRES_USER
+              value: authentik
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: authentik-postgresql
+                  key: password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "authentik", "-d", "authentik"]
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentik-postgresql
+  namespace: authentik
+spec:
+  selector:
+    app: authentik-postgresql
+  ports:
+    - port: 5432
+      targetPort: 5432

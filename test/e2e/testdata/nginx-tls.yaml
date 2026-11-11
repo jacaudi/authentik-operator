@@ -1,0 +1,71 @@
+# TLS terminator in front of Authentik for the custom-CA scenario. The
+# certificate is issued by a private CA generated per run (Secret
+# authentik-tls-cert, created by the suite); nothing outside the suite trusts
+# that CA. X-Forwarded-Proto makes Authentik build https URLs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-tls-nginx
+  namespace: authentik
+data:
+  default.conf: |
+    server {
+      listen 8443 ssl;
+      ssl_certificate /certs/tls.crt;
+      ssl_certificate_key /certs/tls.key;
+      location / {
+        proxy_pass http://authentik-server.authentik.svc.cluster.local:80;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authentik-tls
+  namespace: authentik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authentik-tls
+  template:
+    metadata:
+      labels:
+        app: authentik-tls
+    spec:
+      containers:
+        - name: nginx
+          image: public.ecr.aws/docker/library/nginx:1.29-alpine
+          ports:
+            - containerPort: 8443
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            periodSeconds: 2
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+            - name: certs
+              mountPath: /certs
+      volumes:
+        - name: conf
+          configMap:
+            name: authentik-tls-nginx
+        - name: certs
+          secret:
+            secretName: authentik-tls-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentik-tls
+  namespace: authentik
+spec:
+  selector:
+    app: authentik-tls
+  ports:
+    - port: 443
+      targetPort: 8443
