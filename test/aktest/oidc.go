@@ -115,11 +115,11 @@ func AuthorizationCodeLogin(ctx context.Context, p OIDCParams) (*OIDCResult, err
 	if err != nil {
 		return nil, err
 	}
-	if got := cb.Query().Get("state"); got != state {
-		return nil, fmt.Errorf("redirect state %q, want %q", got, state)
-	}
 	if e := cb.Query().Get("error"); e != "" {
 		return nil, fmt.Errorf("authorization failed: %s: %s", e, cb.Query().Get("error_description"))
+	}
+	if got := cb.Query().Get("state"); got != state {
+		return nil, fmt.Errorf("redirect state %q, want %q", got, state)
 	}
 	code := cb.Query().Get("code")
 	if code == "" {

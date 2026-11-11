@@ -116,10 +116,18 @@ func clusterTransport() http.RoundTripper {
 	}
 }
 
-// portForward is a kubectl port-forward child in its own process group.
+// portForward is a supervised kubectl port-forward: each child runs in its own
+// process group and is restarted on the same local port if it exits (it dies
+// when the pod it is attached to is replaced), until Stop.
 type portForward struct {
-	cmd  *exec.Cmd
-	Port int
+	ns, target string
+	remote     int
+	Port       int
+
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	stopped bool
+	done    chan struct{}
 }
 
 // startPortForward forwards a free local port to target ("svc/name" or
@@ -134,35 +142,19 @@ func startPortForward(ctx context.Context, ns, target string, remotePort int) (*
 	if !ok {
 		return nil, errors.New("listener has no TCP address")
 	}
-	local := addr.Port
 	if err := l.Close(); err != nil {
 		return nil, err
 	}
+	pf := &portForward{ns: ns, target: target, remote: remotePort, Port: addr.Port, done: make(chan struct{})}
+	if err := pf.spawn(ctx); err != nil {
+		return nil, err
+	}
+	go pf.supervise(ctx)
 
-	// The forward must outlive the (spec-scoped) ctx it was started from;
-	// Stop ends it.
-	cmd := exec.CommandContext(context.WithoutCancel(ctx), "kubectl", "port-forward", "-n", ns,
-		"--address", "127.0.0.1", target, fmt.Sprintf("%d:%d", local, remotePort))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = os.Environ()
-	out, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	go func() { // surface forwarding errors in the Ginkgo log
-		sc := bufio.NewScanner(out)
-		for sc.Scan() {
-			GinkgoWriter.Printf("port-forward %s: %s\n", target, sc.Text())
-		}
-	}()
-	pf := &portForward{cmd: cmd, Port: local}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		d := net.Dialer{Timeout: time.Second}
-		if c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", local)); err == nil {
+		if c, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", pf.Port)); err == nil {
 			if err := c.Close(); err != nil {
 				return nil, err
 			}
@@ -179,13 +171,74 @@ func startPortForward(ctx context.Context, ns, target string, remotePort int) (*
 	return nil, fmt.Errorf("port-forward to %s/%s did not open", ns, target)
 }
 
-// Stop kills the whole process group, so no kubectl child outlives the suite.
+// spawn starts one kubectl child. It must outlive the (spec-scoped) context
+// the forward was requested with; Stop ends it.
+func (p *portForward) spawn(ctx context.Context) error {
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), "kubectl", "port-forward", "-n", p.ns,
+		"--address", "127.0.0.1", p.target, fmt.Sprintf("%d:%d", p.Port, p.remote))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = os.Environ()
+	out, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.cmd = cmd
+	p.mu.Unlock()
+	go func() { // surface forwarding errors in the Ginkgo log
+		sc := bufio.NewScanner(out)
+		for sc.Scan() {
+			GinkgoWriter.Printf("port-forward %s: %s\n", p.target, sc.Text())
+		}
+	}()
+	return nil
+}
+
+func (p *portForward) supervise(ctx context.Context) {
+	defer close(p.done)
+	for {
+		p.mu.Lock()
+		cmd := p.cmd
+		p.mu.Unlock()
+		_ = cmd.Wait() // exit status is irrelevant: either we stopped it or it must be restarted
+		for {
+			p.mu.Lock()
+			stopped := p.stopped
+			p.mu.Unlock()
+			if stopped {
+				return
+			}
+			time.Sleep(time.Second)
+			if err := p.spawn(ctx); err != nil {
+				GinkgoWriter.Printf("port-forward %s: restart failed: %v\n", p.target, err)
+				continue
+			}
+			GinkgoWriter.Printf("port-forward %s: restarted\n", p.target)
+			break
+		}
+	}
+}
+
+// Stop ends the forward for good and kills the child's whole process group,
+// so no kubectl outlives the suite.
 func (p *portForward) Stop() {
-	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+	if p == nil {
 		return
 	}
-	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
-	_ = p.cmd.Wait()
+	p.mu.Lock()
+	p.stopped = true
+	cmd := p.cmd
+	p.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 // waitDeployment blocks until the Deployment is fully available.

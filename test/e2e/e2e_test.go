@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -81,7 +82,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 	It("runs the chart-installed operator and serves reconcile metrics", func(ctx SpecContext) {
 		Eventually(func() bool { return deploymentReady(ctx, operatorNS, operatorRelease+"-controller-manager") }).
-			WithContext(ctx).Should(BeTrue())
+			WithContext(ctx).WithTimeout(waitTimeout).Should(BeTrue())
 		Eventually(func(g Gomega) {
 			m, err := scrapeMetrics(ctx)
 			g.Expect(err).NotTo(HaveOccurred())
@@ -104,7 +105,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			providerCondition(ctx, createdName, metav1.ConditionTrue, "Synced")
 			applicationCondition(ctx, createdName, metav1.ConditionTrue)
 
-			got := getProvider(ctx, createdName)
+			got := getProvider(ctx, Default, createdName)
 			Expect(got.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 			Expect(got.Status.ProviderPK).NotTo(BeZero())
 
@@ -165,7 +166,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			beforeApp, err = ak.ApplicationBySlug(ctx, adoptName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(aktest.Str(before, "client_secret")).NotTo(BeEmpty())
-			writesBefore = oauthWrites(ctx)
+			writesBefore = oauthWrites(ctx, Default)
 		})
 
 		It("reports a dry run and changes nothing in Authentik", func(ctx SpecContext) {
@@ -183,35 +184,34 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			providerCondition(ctx, adoptName, metav1.ConditionFalse, "AdoptionDryRun")
 			applicationCondition(ctx, adoptName, metav1.ConditionFalse, "AdoptionDryRun", "ProviderNotReady")
 
-			// Let a further reconcile pass so "unchanged" is not just "not yet".
-			poke(ctx, getProvider(ctx, adoptName))
-			time.Sleep(10 * time.Second)
+			// Let a further reconcile finish so "unchanged" is not just "not yet".
+			pokeAndWait(ctx, getProvider(ctx, Default, adoptName))
 
-			Expect(getProvider(ctx, adoptName).Status.Provenance).To(BeEmpty(), "a dry run decides nothing")
+			Expect(getProvider(ctx, Default, adoptName).Status.Provenance).To(BeEmpty(), "a dry run decides nothing")
 			after, err := ak.OAuthProvider(ctx, pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(after).To(Equal(before), "provider changed during a dry run")
 			afterApp, err := ak.ApplicationBySlug(ctx, adoptName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(afterApp).To(Equal(beforeApp), "application changed during a dry run")
-			Expect(oauthWrites(ctx)).To(Equal(writesBefore), "Authentik recorded a write during a dry run")
+			Expect(oauthWrites(ctx, Default)).To(Equal(writesBefore), "Authentik recorded a write during a dry run")
 			var s corev1.Secret
 			Expect(k8s.Get(ctx, key("e2e-adopt-creds"), &s)).NotTo(Succeed(), "a dry run renders no Secret")
 		})
 
 		It("adopts for real, keeping client_id and client_secret byte for byte", func(ctx SpecContext) {
-			p := getProvider(ctx, adoptName)
+			p := getProvider(ctx, Default, adoptName)
 			p.Spec.Adoption.DryRun = false
 			Expect(k8s.Update(ctx, p)).To(Succeed())
 			providerCondition(ctx, adoptName, metav1.ConditionTrue, "Synced")
-			Expect(getProvider(ctx, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
-			Expect(getProvider(ctx, adoptName).Status.ProviderPK).To(BeEquivalentTo(pk))
+			Expect(getProvider(ctx, Default, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			Expect(getProvider(ctx, Default, adoptName).Status.ProviderPK).To(BeEquivalentTo(pk))
 
-			a := getApplication(ctx, adoptName)
+			a := getApplication(ctx, Default, adoptName)
 			a.Spec.Adoption.DryRun = false
 			Expect(k8s.Update(ctx, a)).To(Succeed())
 			applicationCondition(ctx, adoptName, metav1.ConditionTrue)
-			Expect(getApplication(ctx, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			Expect(getApplication(ctx, Default, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 
 			data := eventuallySecret(ctx, "e2e-adopt-creds")
 			Expect(data["client-id"]).To(Equal(aktest.Str(before, "client_id")))
@@ -222,6 +222,9 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(aktest.Str(now, "client_secret")).To(Equal(aktest.Str(before, "client_secret")))
 		})
 
+		// The pre-created provider has whatever grant types Authentik gave it;
+		// adoption writes the spec's. On the 2026.8 leg this login is the
+		// guard for JeffResc #279 (no grant types: "Invalid grant_type").
 		It("lets a user log in with the adopted credentials", func(ctx SpecContext) {
 			res, err := login(ctx, defaultCreds(secretData(ctx, "e2e-adopt-creds")), adoptRedirect)
 			Expect(err).NotTo(HaveOccurred())
@@ -245,8 +248,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 			providerCondition(ctx, "e2e-miss", metav1.ConditionFalse, "AdoptionTargetNotFound")
 			applicationCondition(ctx, "e2e-miss", metav1.ConditionFalse, "AdoptionTargetNotFound", "ProviderNotReady")
-			poke(ctx, getProvider(ctx, "e2e-miss"))
-			time.Sleep(10 * time.Second)
+			pokeAndWait(ctx, getProvider(ctx, Default, "e2e-miss"))
 
 			for _, n := range []string{"e2e-miss", "e2e-miss-provider"} {
 				pr, err := ak.OAuthProviderByName(ctx, n)
@@ -256,18 +258,25 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			app, err := ak.ApplicationBySlug(ctx, "e2e-miss")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(app).To(BeNil(), "an application was created")
-			providersAfter, _ := ak.Count(ctx, "/api/v3/providers/oauth2/")
-			appsAfter, _ := ak.Count(ctx, "/api/v3/core/applications/")
+			providersAfter, err := ak.Count(ctx, "/api/v3/providers/oauth2/")
+			Expect(err).NotTo(HaveOccurred())
+			appsAfter, err := ak.Count(ctx, "/api/v3/core/applications/")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(providersAfter).To(Equal(providersBefore))
 			Expect(appsAfter).To(Equal(appsBefore))
-			Expect(getProvider(ctx, "e2e-miss").Status.Provenance).To(BeEmpty())
+			Expect(getProvider(ctx, Default, "e2e-miss").Status.Provenance).To(BeEmpty())
+
+			// Remove them again: their one-minute requeues would otherwise
+			// add reconciles to the counts the idempotency spec relies on.
+			deleteAndWait(ctx, getApplication(ctx, Default, "e2e-miss"))
+			deleteAndWait(ctx, getProvider(ctx, Default, "e2e-miss"))
 		})
 	})
 
 	// Scenario 6.
 	Context("drift", func() {
 		It("restores fields changed in Authentik behind the operator's back", func(ctx SpecContext) {
-			pk := int(getProvider(ctx, createdName).Status.ProviderPK)
+			pk := int(getProvider(ctx, Default, createdName).Status.ProviderPK)
 			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{
 				"access_token_validity": "minutes=10", // spec default: minutes=5
 				"redirect_uris":         []aktest.Obj{{"matching_mode": "strict", "url": "https://drift.invalid/cb"}},
@@ -277,8 +286,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 			// The sync interval when in sync is five minutes; poking the CRs
 			// is the same reconcile, without the wait.
-			poke(ctx, getProvider(ctx, createdName))
-			poke(ctx, getApplication(ctx, createdName))
+			pokeAndWait(ctx, getProvider(ctx, Default, createdName), getApplication(ctx, Default, createdName))
 			Eventually(func(g Gomega) {
 				prov, err := ak.OAuthProvider(ctx, pk)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -302,49 +310,46 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 	// differences would make Ready providers PATCH forever.
 	Context("idempotency", func() {
 		It("sends no writes to Authentik when Ready objects are reconciled again", func(ctx SpecContext) {
-			Expect(createdName).NotTo(BeEmpty())
-			pk := int(getProvider(ctx, createdName).Status.ProviderPK)
+			pk := int(getProvider(ctx, Default, createdName).Status.ProviderPK)
 
-			By("proving the measurement: a no-op PATCH is visible as an audit event")
-			base := oauthWrites(ctx)
+			By("proving the audit measurement: the model filter is selective and a no-op PATCH is counted")
+			none, err := ak.ModelWriteCount(ctx, "authentik_core", "nosuchmodel", "model_updated")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(none).To(BeZero(), "the audit event filter is ignored")
+			base := oauthWrites(ctx, Default)
 			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"name": createdName})).To(Succeed())
-			Eventually(func() int { return oauthWrites(ctx) }).WithContext(ctx).WithTimeout(waitTimeout).
-				Should(BeNumerically(">", base))
-
-			By("forcing reconciles of every kind and waiting until the operator has run them")
-			provCtl, appCtl := "authentikoauthprovider", "authentikapplication"
-			m, err := scrapeMetrics(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			p0, err := reconcileTotal(m, provCtl)
-			Expect(err).NotTo(HaveOccurred())
-			a0, err := reconcileTotal(m, appCtl)
-			Expect(err).NotTo(HaveOccurred())
-			settled := oauthWrites(ctx)
-			updatesSettled := updatedEvents(ctx)
-			const rounds = 3
-			for range rounds {
-				for _, n := range []string{createdName, adoptName} {
-					poke(ctx, getProvider(ctx, n))
-					poke(ctx, getApplication(ctx, n))
-				}
-				time.Sleep(3 * time.Second)
-			}
 			Eventually(func(g Gomega) {
-				m, err := scrapeMetrics(ctx)
-				g.Expect(err).NotTo(HaveOccurred())
-				p1, err := reconcileTotal(m, provCtl)
-				g.Expect(err).NotTo(HaveOccurred())
-				a1, err := reconcileTotal(m, appCtl)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(p1-p0).To(BeNumerically(">=", 2*rounds), "provider reconciles")
-				g.Expect(a1-a0).To(BeNumerically(">=", 2*rounds), "application reconciles")
+				g.Expect(oauthWrites(ctx, g)).To(BeNumerically(">", base))
 			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 
-			Consistently(func() int { return oauthWrites(ctx) }).WithContext(ctx).
-				WithTimeout(15*time.Second).WithPolling(3*time.Second).
-				Should(Equal(settled), "a reconcile of a Ready object wrote to Authentik")
+			By("proving the operator-side measurement: a real change is counted as an Updated log line")
+			logBase := operatorUpdates(ctx, Default)
+			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"access_token_validity": "minutes=7"})).To(Succeed())
+			poke(ctx, Default, getProvider(ctx, Default, createdName))
+			Eventually(func(g Gomega) {
+				g.Expect(operatorUpdates(ctx, g)).To(BeNumerically(">", logBase))
+				prov, err := ak.OAuthProvider(ctx, pk)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(aktest.Str(prov, "access_token_validity")).To(Equal("minutes=5"))
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 
-			Expect(updatedEvents(ctx)).To(Equal(updatesSettled), "the operator reported an Updated event")
+			By("forcing reconciles of every kind, each waited for through the controller metrics")
+			settled := oauthWrites(ctx, Default)
+			updatesSettled := operatorUpdates(ctx, Default)
+			const rounds = 3
+			for range rounds {
+				var objs []client.Object
+				for _, n := range []string{createdName, adoptName} {
+					objs = append(objs, getProvider(ctx, Default, n), getApplication(ctx, Default, n))
+				}
+				pokeAndWait(ctx, objs...)
+			}
+
+			Consistently(func(g Gomega) {
+				g.Expect(oauthWrites(ctx, g)).To(Equal(settled), "a reconcile of a Ready object wrote to Authentik")
+			}).WithContext(ctx).WithTimeout(15 * time.Second).WithPolling(3 * time.Second).Should(Succeed())
+			Expect(operatorUpdates(ctx, Default)).To(Equal(updatesSettled),
+				"the operator sent a PATCH while reconciling Ready objects")
 
 			for _, n := range []string{createdName, adoptName} {
 				providerCondition(ctx, n, metav1.ConditionTrue, "Synced")
@@ -356,9 +361,9 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 	// Scenario 5.
 	Context("deleting resources", func() {
 		It("retains what an adopted resource adopted (default deletionPolicy)", func(ctx SpecContext) {
-			Expect(getProvider(ctx, adoptName).Spec.DeletionPolicy).To(BeEmpty())
-			deleteAndWait(ctx, getApplication(ctx, adoptName))
-			deleteAndWait(ctx, getProvider(ctx, adoptName))
+			Expect(getProvider(ctx, Default, adoptName).Spec.DeletionPolicy).To(BeEmpty())
+			deleteAndWait(ctx, getApplication(ctx, Default, adoptName))
+			deleteAndWait(ctx, getProvider(ctx, Default, adoptName))
 
 			prov, err := ak.OAuthProviderByName(ctx, adoptExisting)
 			Expect(err).NotTo(HaveOccurred())
@@ -369,9 +374,9 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		})
 
 		It("removes what a resource created (default deletionPolicy)", func(ctx SpecContext) {
-			pk := int(getProvider(ctx, createdName).Status.ProviderPK)
-			deleteAndWait(ctx, getApplication(ctx, createdName))
-			deleteAndWait(ctx, getProvider(ctx, createdName))
+			pk := int(getProvider(ctx, Default, createdName).Status.ProviderPK)
+			deleteAndWait(ctx, getApplication(ctx, Default, createdName))
+			deleteAndWait(ctx, getProvider(ctx, Default, createdName))
 
 			Eventually(func(g Gomega) {
 				prov, err := ak.OAuthProvider(ctx, pk)
@@ -381,8 +386,44 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(app).To(BeNil())
 			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
-			var s corev1.Secret
-			Expect(k8s.Get(ctx, key("e2e-oidc-creds"), &s)).NotTo(Succeed(), "the rendered Secret is owned and goes with it")
+			// Garbage collection of the owned Secret is asynchronous.
+			Eventually(func(g Gomega) {
+				var s corev1.Secret
+				g.Expect(apierrors.IsNotFound(k8s.Get(ctx, key("e2e-oidc-creds"), &s))).To(BeTrue(),
+					"the rendered Secret is owned and goes with its provider")
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
+		})
+
+		// An explicit deletionPolicy overrides what provenance would decide.
+		It("keeps what a resource created when deletionPolicy is Retain", func(ctx SpecContext) {
+			p := newProvider("e2e-keep", "https://e2e-keep.invalid/callback")
+			p.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyRetain
+			Expect(k8s.Create(ctx, p)).To(Succeed())
+			providerCondition(ctx, "e2e-keep", metav1.ConditionTrue, "Synced")
+			Expect(getProvider(ctx, Default, "e2e-keep").Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+			deleteAndWait(ctx, getProvider(ctx, Default, "e2e-keep"))
+			kept, err := ak.OAuthProviderByName(ctx, "e2e-keep")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kept).NotTo(BeNil(), "a Created provider with deletionPolicy Retain was deleted")
+			Expect(ak.DeleteOAuthProviderByNameIfExists(ctx, "e2e-keep")).To(Succeed()) // tidy up
+		})
+
+		It("deletes what a resource adopted when deletionPolicy is Delete", func(ctx SpecContext) {
+			_, err := ak.CreateOAuthProvider(ctx, "e2e-adel-provider", []string{"https://e2e-adel.invalid/callback"})
+			Expect(err).NotTo(HaveOccurred())
+			p := newProvider("e2e-adel", "https://e2e-adel.invalid/callback")
+			p.Spec.Adoption.Enabled = true
+			p.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: "e2e-adel-provider"}
+			p.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			Expect(k8s.Create(ctx, p)).To(Succeed())
+			providerCondition(ctx, "e2e-adel", metav1.ConditionTrue, "Synced")
+			Expect(getProvider(ctx, Default, "e2e-adel").Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			deleteAndWait(ctx, getProvider(ctx, Default, "e2e-adel"))
+			Eventually(func(g Gomega) {
+				gone, err := ak.OAuthProviderByName(ctx, "e2e-adel-provider")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(gone).To(BeNil(), "an Adopted provider with deletionPolicy Delete was kept")
+			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 		})
 	})
 
@@ -421,7 +462,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(k8s.Create(ctx, p)).To(Succeed())
 			Expect(k8s.Create(ctx, newApplication("e2e-ca", "E2E CA", "e2e-ca", "e2e-ca"))).To(Succeed())
 			Eventually(func(g Gomega) {
-				got := getProvider(ctx, "e2e-ca")
+				got := getProvider(ctx, g, "e2e-ca")
 				c := condition(got.Status.Conditions, condReady)
 				g.Expect(c).NotTo(BeNil())
 				g.Expect(c.Status).To(Equal(metav1.ConditionFalse))
@@ -435,8 +476,8 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(installOperator(ctx, tlsURL,
 				setString, "authentik.caBundle.configMap.name=authentik-ca")).To(Succeed())
 			Eventually(func(g Gomega) {
-				poke(ctx, getProvider(ctx, "e2e-ca"))
-				got := getProvider(ctx, "e2e-ca")
+				poke(ctx, g, getProvider(ctx, g, "e2e-ca"))
+				got := getProvider(ctx, g, "e2e-ca")
 				c := condition(got.Status.Conditions, condReady)
 				g.Expect(c).NotTo(BeNil())
 				g.Expect(c.Status).To(Equal(metav1.ConditionTrue), c.Message)

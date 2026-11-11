@@ -26,7 +26,6 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,15 +68,15 @@ func newApplication(name, display, slug, providerName string) *authentikiov1alph
 
 func key(name string) client.ObjectKey { return client.ObjectKey{Namespace: appsNS, Name: name} }
 
-func getProvider(ctx context.Context, name string) *authentikiov1alpha1.AuthentikOAuthProvider {
+func getProvider(ctx context.Context, g Gomega, name string) *authentikiov1alpha1.AuthentikOAuthProvider {
 	var p authentikiov1alpha1.AuthentikOAuthProvider
-	ExpectWithOffset(1, k8s.Get(ctx, key(name), &p)).To(Succeed())
+	g.Expect(k8s.Get(ctx, key(name), &p)).To(Succeed())
 	return &p
 }
 
-func getApplication(ctx context.Context, name string) *authentikiov1alpha1.AuthentikApplication {
+func getApplication(ctx context.Context, g Gomega, name string) *authentikiov1alpha1.AuthentikApplication {
 	var a authentikiov1alpha1.AuthentikApplication
-	ExpectWithOffset(1, k8s.Get(ctx, key(name), &a)).To(Succeed())
+	g.Expect(k8s.Get(ctx, key(name), &a)).To(Succeed())
 	return &a
 }
 
@@ -114,17 +113,54 @@ func applicationCondition(ctx context.Context, name string, status metav1.Condit
 }
 
 // poke changes an annotation so the operator reconciles the object now
-// instead of at its resync interval (five minutes when in sync).
-func poke(ctx context.Context, obj client.Object) {
+// instead of at its resync interval (five minutes when in sync). It takes the
+// Gomega of its caller so it can run inside Eventually.
+func poke(ctx context.Context, g Gomega, obj client.Object) {
 	base, ok := obj.DeepCopyObject().(client.Object)
-	ExpectWithOffset(1, ok).To(BeTrue())
+	g.Expect(ok).To(BeTrue())
 	a := obj.GetAnnotations()
 	if a == nil {
 		a = map[string]string{}
 	}
 	a[pokeAnnotation] = strconv.FormatInt(time.Now().UnixNano(), 10)
 	obj.SetAnnotations(a)
-	ExpectWithOffset(1, k8s.Patch(ctx, obj, client.MergeFrom(base))).To(Succeed())
+	g.Expect(k8s.Patch(ctx, obj, client.MergeFrom(base))).To(Succeed())
+}
+
+// pokeAndWait pokes the objects and returns once the operator has finished
+// at least one more reconcile for each controller involved, so a following
+// "nothing changed" assertion is about a reconcile that happened, not about
+// a sleep that elapsed.
+func pokeAndWait(ctx context.Context, objs ...client.Object) {
+	var wantProv, wantApp float64
+	for _, o := range objs {
+		switch o.(type) {
+		case *authentikiov1alpha1.AuthentikOAuthProvider:
+			wantProv++
+		case *authentikiov1alpha1.AuthentikApplication:
+			wantApp++
+		}
+	}
+	p0, a0 := reconcileTotals(ctx, Default)
+	for _, o := range objs {
+		poke(ctx, Default, o)
+	}
+	EventuallyWithOffset(1, func(g Gomega) {
+		p1, a1 := reconcileTotals(ctx, g)
+		g.Expect(p1-p0).To(BeNumerically(">=", wantProv), "provider reconciles")
+		g.Expect(a1-a0).To(BeNumerically(">=", wantApp), "application reconciles")
+	}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
+}
+
+// reconcileTotals scrapes the operator's finished reconciles per controller.
+func reconcileTotals(ctx context.Context, g Gomega) (prov, app float64) {
+	m, err := scrapeMetrics(ctx)
+	g.Expect(err).NotTo(HaveOccurred())
+	prov, err = reconcileTotal(m, "authentikoauthprovider")
+	g.Expect(err).NotTo(HaveOccurred())
+	app, err = reconcileTotal(m, "authentikapplication")
+	g.Expect(err).NotTo(HaveOccurred())
+	return prov, app
 }
 
 func secretData(ctx context.Context, name string) map[string]string {
@@ -177,14 +213,17 @@ func login(ctx context.Context, c creds, redirect string) (*aktest.OIDCResult, e
 	})
 }
 
-// updatedEvents counts the operator's "Updated" events (it emits one per
-// PATCH it sends) for objects in the test namespace.
-func updatedEvents(ctx context.Context) int {
-	var evs eventsv1.EventList
-	ExpectWithOffset(1, k8s.List(ctx, &evs, client.InNamespace(appsNS))).To(Succeed())
+// operatorUpdates counts the operator's "Updated ..." log lines (one per
+// PATCH it sends to Authentik, whatever the kind) in the operator's log. Unlike
+// the Kubernetes Events it also emits, log lines are never folded together, so
+// the same PATCH repeating is counted every time.
+func operatorUpdates(ctx context.Context, g Gomega) int {
+	out, err := kubectl(ctx, "-n", operatorNS, "logs", "deploy/"+operatorRelease+"-controller-manager",
+		"--tail=-1")
+	g.Expect(err).NotTo(HaveOccurred())
 	n := 0
-	for i := range evs.Items {
-		if evs.Items[i].Reason == "Updated" {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, `"msg":"Updated `) {
 			n++
 		}
 	}
@@ -193,18 +232,17 @@ func updatedEvents(ctx context.Context) int {
 
 // oauthWrites counts audit events for writes to providers and applications.
 // Authentik records one per API save whether or not a field changed, so the
-// count measures what the operator actually sent to the server.
-func oauthWrites(ctx context.Context) int {
-	ws, err := ak.ModelWrites(ctx, time.Time{}, "model_created", "model_updated", "model_deleted")
-	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-	n := 0
-	for _, w := range ws {
-		if strings.HasSuffix(w.Model, ".oauth2provider") || strings.HasSuffix(w.Model, ".application") {
-			n++
-		}
+// count measures what the operator actually sent to the server. Counting is
+// server side (filtered, via pagination.count): there is no page cap.
+func oauthWrites(ctx context.Context, g Gomega) int {
+	total := 0
+	for _, m := range [][2]string{
+		{"authentik_providers_oauth2", "oauth2provider"}, {"authentik_core", "application"}} {
+		n, err := ak.ModelWriteCount(ctx, m[0], m[1], "model_created", "model_updated", "model_deleted")
+		g.Expect(err).NotTo(HaveOccurred())
+		total += n
 	}
-	ExpectWithOffset(1, n).To(BeNumerically("<", 150), "audit event listing is paginated at 200 per action")
-	return n
+	return total
 }
 
 // resetTestResources removes what an earlier run on the same cluster left

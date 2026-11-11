@@ -21,6 +21,7 @@ package e2e
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -141,7 +142,7 @@ func startAuthentikAccess(ctx context.Context) (*portForward, *aktest.API) {
 	ver, err := api.Version(ctx)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	GinkgoWriter.Printf("Authentik reports version %s (chart %s)\n", ver, chartVersion)
-	gomega.Expect(ver).To(gomega.HavePrefix(strings.SplitN(chartVersion, ".", 3)[0]+"."),
+	gomega.Expect(ver).To(gomega.Equal(chartVersion),
 		"the running Authentik is not the chart version under test")
 	return pf, api
 }
@@ -161,6 +162,40 @@ func installOperator(ctx context.Context, url string, extra ...string) error {
 		setString, "authentik.tokenSecret.name=authentik-api",
 	}
 	args = append(args, extra...)
-	_, err := helm(ctx, args...)
-	return err
+	if _, err := helm(ctx, args...); err != nil {
+		return err
+	}
+	return waitOperatorLeader(ctx)
+}
+
+// waitOperatorLeader returns once the rollout has finished (old pod gone) and
+// the one remaining pod holds the leader lease, so nothing a spec does next is
+// handled by an operator still configured with the previous connection.
+func waitOperatorLeader(ctx context.Context) error {
+	dep := "deploy/" + operatorRelease + "-controller-manager"
+	if _, err := kubectl(ctx, "-n", operatorNS, "rollout", "status", dep, "--timeout=3m"); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		pods, err := kubectl(ctx, "-n", operatorNS, "get", "pods", "-l", "control-plane=controller-manager",
+			"-o", "name")
+		if err != nil {
+			return err
+		}
+		if names := utils.GetNonEmptyLines(pods); len(names) == 1 {
+			logs, err := kubectl(ctx, "-n", operatorNS, "logs", names[0], "--tail=-1")
+			if err == nil && strings.Contains(logs, "Successfully acquired lease") {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("operator pod did not become the single leader")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }

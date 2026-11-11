@@ -278,42 +278,29 @@ func (a *API) DeleteOAuthProviderByNameIfExists(ctx context.Context, name string
 	return a.Do(ctx, http.MethodDelete, "/api/v3/providers/oauth2/"+Str(p, "pk")+"/", nil, nil)
 }
 
-// ModelWrite is one audit event recording a write to an object.
-type ModelWrite struct {
-	Action  string // model_created | model_updated | model_deleted
-	Model   string // e.g. authentik_providers_oauth2.oauth2provider
-	Name    string
-	Created time.Time
-}
-
-// ModelWrites returns audit events of the given actions created at or after
-// since, newest first. Authentik writes one for every API save, even when no
-// field changed, which is what lets the suite measure idempotency on the
-// server instead of trusting the operator's own bookkeeping.
-func (a *API) ModelWrites(ctx context.Context, since time.Time, actions ...string) ([]ModelWrite, error) {
-	var out []ModelWrite
+// ModelWriteCount returns how many audit events of the given actions
+// (model_created, model_updated, model_deleted) Authentik holds for objects
+// of one model, e.g. app "authentik_providers_oauth2", model "oauth2provider".
+// Authentik writes one for every API save, even when no field changed, which
+// is what lets the suite measure idempotency on the server instead of
+// trusting the operator's own bookkeeping. Filtering and counting happen
+// server side, so the result is not limited by a page size.
+func (a *API) ModelWriteCount(ctx context.Context, app, model string, actions ...string) (int, error) {
+	total := 0
 	for _, act := range actions {
-		rs, err := a.list(ctx, "/api/v3/events/events/", url.Values{
-			"action": {act}, "ordering": {"-created"}, "page_size": {"200"}})
-		if err != nil {
-			return nil, err
+		var page struct {
+			Pagination struct {
+				Count int `json:"count"`
+			} `json:"pagination"`
 		}
-		for _, r := range rs {
-			ts, err := time.Parse(time.RFC3339Nano, Str(r, "created"))
-			if err != nil || ts.Before(since) {
-				continue
-			}
-			mw := ModelWrite{Action: act, Created: ts}
-			if ctxm, ok := r["context"].(map[string]any); ok {
-				if m, ok := ctxm["model"].(map[string]any); ok {
-					mw.Model = Str(m, "app") + "." + Str(m, "model_name")
-					mw.Name = Str(m, fName)
-				}
-			}
-			out = append(out, mw)
+		q := url.Values{"action": {act}, "context_model_app": {app}, "context_model_name": {model},
+			"page_size": {"1"}}
+		if err := a.Do(ctx, http.MethodGet, "/api/v3/events/events/?"+q.Encode(), nil, &page); err != nil {
+			return 0, err
 		}
+		total += page.Pagination.Count
 	}
-	return out, nil
+	return total, nil
 }
 
 // Str returns o[k] as a string, or "".

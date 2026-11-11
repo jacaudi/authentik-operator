@@ -32,14 +32,16 @@ real server.
   - [x] adoption of a pre-created app + `<slug>-provider` keeps client_id/secret
         byte for byte: dry run (Authentik unchanged, no Secret), real adoption,
         login with the adopted credentials; adopt-only miss creates nothing
-  - [x] Retain vs Delete on CR deletion
+  - [x] Retain vs Delete on CR deletion, defaults and explicit overrides
+        (Created+Retain keeps, Adopted+Delete deletes)
   - [x] drift: change a provider and an application field in Authentik, the
         operator restores them (triggered by annotating the CR, not by
         waiting out the five-minute resync)
   - [x] second reconcile writes nothing (see the TASK-02 note): measured as
-        Authentik's own `model_updated` audit events plus the operator's
-        `Updated` events, with a positive control proving the audit trail
-        sees a no-op PATCH
+        Authentik's own audit events (filtered and counted server side) plus
+        the operator's "Updated" log lines (Kubernetes Events are not used:
+        identical ones fold into one series), each with a positive control;
+        every forced reconcile is waited for via the controller metrics
   - [x] custom CA: the operator's default connection is pointed at an
         nginx TLS terminator with a per-run private CA; refuses without
         `authentik.caBundle` (x509, nothing created), works with it

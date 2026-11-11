@@ -36,6 +36,9 @@ const (
 	stagePass    = "ak-stage-password"
 	fieldComp    = "component"
 	fakeUser     = "akadmin"
+	fState       = "state"
+	fAud         = "aud"
+	fNonce       = "nonce"
 )
 
 // fakeAuthentik reproduces just the shape of Authentik's login: the authorize
@@ -43,15 +46,17 @@ const (
 // walks identification then password and answers with a redirect challenge,
 // and the token endpoint checks PKCE and the client secret.
 type fakeAuthentik struct {
-	t       *testing.T
-	srv     *httptest.Server
-	mu      sync.Mutex
-	authed  bool
-	state   string
-	nonce   string
-	chall   string
-	issuer  string
-	pwField bool // identification stage carries the password field
+	t      *testing.T
+	srv    *httptest.Server
+	mu     sync.Mutex
+	authed bool
+	state  string
+	nonce  string
+	chall  string
+	issuer string
+	// Misbehaviours for the negative tests.
+	badState, badNonce, badAud, denied bool
+	pwField                            bool // identification stage carries the password field
 	// next is the challenge the executor serves on the next GET: real
 	// Authentik answers a POST with a 302 to the same URL (post/redirect/get).
 	next map[string]any
@@ -75,7 +80,7 @@ func (f *fakeAuthentik) authorize(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	q := r.URL.Query()
-	f.state, f.nonce, f.chall = q.Get("state"), q.Get("nonce"), q.Get("code_challenge")
+	f.state, f.nonce, f.chall = q.Get(fState), q.Get(fNonce), q.Get("code_challenge")
 	if !f.authed {
 		next := url.Values{"next": {r.URL.RequestURI()}}.Encode()
 		http.Redirect(w, r, "/if/flow/default-authentication-flow/?"+next, http.StatusFound)
@@ -94,8 +99,15 @@ func (f *fakeAuthentik) executor(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthenticated", http.StatusForbidden)
 			return
 		}
-		reply(map[string]any{fieldComp: "xak-flow-redirect",
-			"to": fakeRedirect + "?" + url.Values{"code": {"the-code"}, "state": {f.state}}.Encode()})
+		st := f.state
+		if f.badState {
+			st = "forged"
+		}
+		cb := url.Values{"code": {"the-code"}, fState: {st}}
+		if f.denied {
+			cb = url.Values{"error": {"access_denied"}, "error_description": {"nope"}, fState: {"forged"}}
+		}
+		reply(map[string]any{fieldComp: "xak-flow-redirect", "to": fakeRedirect + "?" + cb.Encode()})
 		return
 	}
 	reply = f.prg(w, r, reply)
@@ -159,7 +171,14 @@ func (f *fakeAuthentik) token(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 		return
 	}
-	claims, _ := json.Marshal(map[string]any{"iss": f.issuer, "aud": fakeClient, "sub": "u1", "nonce": f.nonce})
+	aud, nonce := fakeClient, f.nonce
+	if f.badAud {
+		aud = "someone-else"
+	}
+	if f.badNonce {
+		nonce = "replayed"
+	}
+	claims, _ := json.Marshal(map[string]any{"iss": f.issuer, fAud: aud, "sub": "u1", fNonce: nonce})
 	idt := "e30." + base64.RawURLEncoding.EncodeToString(claims) + ".sig"
 	_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "at", "id_token": idt})
 }
@@ -237,5 +256,27 @@ func TestJWTClaims(t *testing.T) {
 	c, err := JWTClaims("e30." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"x"}`)) + ".s")
 	if err != nil || c["iss"] != "x" {
 		t.Fatalf("got %v, %v", c, err)
+	}
+}
+
+func TestLoginRejectsForgedStateAudienceAndNonce(t *testing.T) {
+	for name, tc := range map[string]struct {
+		set  func(*fakeAuthentik)
+		want string
+	}{
+		fState: {func(f *fakeAuthentik) { f.badState = true }, "redirect state"},
+		fAud:   {func(f *fakeAuthentik) { f.badAud = true }, fAud},
+		fNonce: {func(f *fakeAuthentik) { f.badNonce = true }, fNonce},
+		// An error redirect must be reported as the error, not as a state mismatch.
+		"denied": {func(f *fakeAuthentik) { f.denied = true }, "access_denied"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			tc.set(f)
+			_, err := AuthorizationCodeLogin(t.Context(), f.params())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error mentioning %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
