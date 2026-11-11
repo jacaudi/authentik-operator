@@ -125,7 +125,8 @@ func New(cfg Config) (*Client, error) {
 	baseTransport := defaultTransport.Clone()
 	baseTransport.TLSClientConfig = tlsCfg
 
-	var rt http.RoundTripper = baseTransport
+	// Innermost: sees the raw response before retry/limit layers and the decoder.
+	var rt http.RoundTripper = &compatTransport{next: baseTransport}
 	if limiter := newLimiter(cfg.RPS, cfg.burst); limiter != nil {
 		rt = &rateLimitTransport{next: rt, limiter: limiter}
 	}

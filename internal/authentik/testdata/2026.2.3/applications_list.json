@@ -1,0 +1,52 @@
+{
+  "pagination": {
+    "next": 0,
+    "previous": 0,
+    "count": 1,
+    "current": 1,
+    "total_pages": 1,
+    "start_index": 1,
+    "end_index": 1
+  },
+  "results": [
+    {
+      "pk": "15308793-22c0-4b17-80ed-4c0c2b8901cb",
+      "name": "E2E OIDC",
+      "slug": "e2e-oidc",
+      "provider": 1,
+      "provider_obj": {
+        "pk": 1,
+        "name": "e2e-oidc",
+        "authentication_flow": null,
+        "authorization_flow": "dc5cd15f-8b08-46bb-9577-83a24d69e2bc",
+        "invalidation_flow": "8e448bf8-1a0e-4011-8c67-dd00f208d658",
+        "property_mappings": [
+          "b49f130a-b2c7-4933-aff5-d75e1a3cb228",
+          "4751bb70-a0bb-44fe-9d56-0e50a96db6af",
+          "eb651a86-de31-4349-a966-2b2a411161e3"
+        ],
+        "component": "ak-provider-oauth2-form",
+        "assigned_application_slug": "e2e-oidc",
+        "assigned_application_name": "E2E OIDC",
+        "assigned_backchannel_application_slug": null,
+        "assigned_backchannel_application_name": null,
+        "verbose_name": "OAuth2/OpenID Provider",
+        "verbose_name_plural": "OAuth2/OpenID Providers",
+        "meta_model_name": "authentik_providers_oauth2.oauth2provider"
+      },
+      "backchannel_providers": [],
+      "backchannel_providers_obj": [],
+      "launch_url": "https://e2e-oidc.invalid",
+      "open_in_new_tab": true,
+      "meta_launch_url": "",
+      "meta_icon": "",
+      "meta_icon_url": null,
+      "meta_icon_themed_urls": null,
+      "meta_description": "",
+      "meta_publisher": "e2e-publisher",
+      "policy_engine_mode": "any",
+      "group": ""
+    }
+  ],
+  "autocomplete": {}
+}
