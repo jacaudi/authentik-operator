@@ -17,6 +17,7 @@ limitations under the License.
 package authentik
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,7 +110,7 @@ func TestAuthentik20262ProviderReportsNoGrantTypes(t *testing.T) {
 // Responses from a release that already sends the properties, and responses
 // that are not what a rule expects, pass through unchanged.
 func TestCompatLeavesPresentAndForeignContentAlone(t *testing.T) {
-	fill := compatRule("/api/v3/core/applications/x/")
+	fill := compatRule("/api/v3/core/applications/x/").fill
 	got, ok := patchJSON([]byte(`{"slug":"x","pbm_uuid":"abc","pk":12345678901234567890}`), fill)
 	if !ok || !strings.Contains(string(got), `"pbm_uuid":"abc"`) ||
 		!strings.Contains(string(got), "12345678901234567890") {
@@ -124,5 +125,87 @@ func TestCompatLeavesPresentAndForeignContentAlone(t *testing.T) {
 	}
 	if compatRule("/api/v3/providers/oauth2/") != nil {
 		t.Fatal("no rule expected for the provider endpoint itself")
+	}
+}
+
+// roundTrip runs compatTransport over a canned response.
+func roundTrip(t *testing.T, path string, status int, ctype string, body io.ReadCloser) (*http.Response, []byte) {
+	t.Helper()
+	next := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		h := http.Header{}
+		h.Set("Content-Type", ctype)
+		return &http.Response{StatusCode: status, Header: h, Body: body}, nil
+	})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://x"+path, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&compatTransport{next: next}).RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return resp, got
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type closeSpy struct {
+	io.Reader
+
+	closed bool
+}
+
+func (c *closeSpy) Close() error { c.closed = true; return nil }
+
+const appPath = "/api/v3/core/applications/x/"
+
+func TestCompatAddsMissingProperty(t *testing.T) {
+	_, got := roundTrip(t, appPath, 200, "application/json", io.NopCloser(strings.NewReader(`{"slug":"x"}`)))
+	if !strings.Contains(string(got), `"pbm_uuid":null`) {
+		t.Fatalf("not patched: %s", got)
+	}
+}
+
+// A body over the limit must reach the decoder complete and unmodified.
+func TestCompatOverLimitBodyPassesThroughUntruncated(t *testing.T) {
+	big := `{"slug":"x","pad":"` + strings.Repeat("a", maxCompatBody) + `"}`
+	spy := &closeSpy{Reader: strings.NewReader(big)}
+	resp, got := roundTrip(t, appPath, 200, "application/json", spy)
+	if string(got) != big {
+		t.Fatalf("body changed: got %d bytes, want %d", len(got), len(big))
+	}
+	if !spy.closed {
+		t.Fatal("the original body was not closed")
+	}
+	_ = resp
+}
+
+func TestCompatPassesThroughNon2xxAndNonJSON(t *testing.T) {
+	_, got := roundTrip(t, appPath, 404, "application/json", io.NopCloser(strings.NewReader(`{"slug":"x"}`)))
+	if string(got) != `{"slug":"x"}` {
+		t.Fatalf("non-2xx rewritten: %s", got)
+	}
+	_, got = roundTrip(t, appPath, 200, "text/html", io.NopCloser(strings.NewReader(`{"slug":"x"}`)))
+	if string(got) != `{"slug":"x"}` {
+		t.Fatalf("non-JSON rewritten: %s", got)
+	}
+}
+
+// When the key is already there the body is returned byte for byte (no
+// decode and re-encode, so no reordering or reformatting).
+func TestCompatSkipsRewriteWhenKeyPresent(t *testing.T) {
+	in := `{ "slug" : "x",   "pbm_uuid": "abc" }`
+	_, got := roundTrip(t, appPath, 200, "application/json", io.NopCloser(strings.NewReader(in)))
+	if string(got) != in {
+		t.Fatalf("rewritten: %s", got)
 	}
 }

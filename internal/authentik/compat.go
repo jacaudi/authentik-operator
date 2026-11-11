@@ -19,6 +19,7 @@ package authentik
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -31,7 +32,8 @@ const maxCompatBody = 16 << 20
 // compatTransport lets the generated client (which tracks Authentik 2026.8
 // and treats every property the schema marks required as mandatory) decode
 // responses from an older supported release. A property that release does
-// not send yet is added as null where the generated type accepts it; nothing
+// not send yet is added as null (a no-op for the non-pointer string PbmUuid, a null for the
+// NullableString DcrRegistration); nothing
 // present is ever changed. Found by the end-to-end suite against 2026.2.3:
 //
 //   - Application.pbm_uuid (new after 2026.2; the operator does not use it)
@@ -48,20 +50,29 @@ func (t *compatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode < 200 || resp.StatusCode > 299 || resp.Body == nil {
 		return resp, err
 	}
-	fill := compatRule(req.URL.Path)
-	if fill == nil || !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+	rule := compatRule(req.URL.Path)
+	if rule == nil || !strings.Contains(resp.Header.Get("Content-Type"), "json") {
 		return resp, nil
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCompatBody+1))
-	if cerr := resp.Body.Close(); err == nil {
-		err = cerr
-	}
+	orig := resp.Body
+	raw, err := io.ReadAll(io.LimitReader(orig, maxCompatBody+1))
 	if err != nil {
+		return nil, errors.Join(err, orig.Close())
+	}
+	if len(raw) > maxCompatBody {
+		// Too large to rewrite: hand the decoder everything, untouched.
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(raw), orig), orig}
+		return resp, nil
+	}
+	if err := orig.Close(); err != nil {
 		return nil, err
 	}
 	out := raw
-	if len(raw) <= maxCompatBody {
-		if patched, ok := patchJSON(raw, fill); ok {
+	if !rule.satisfied(raw) {
+		if patched, ok := patchJSON(raw, rule.fill); ok {
 			out = patched
 		}
 	}
@@ -71,14 +82,32 @@ func (t *compatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// compatRule returns the function that fills missing properties of a
-// decoded JSON object for the request path, or nil for paths with no rule.
-func compatRule(path string) func(map[string]any) {
+// compat describes one rule: the properties it may add and how.
+type compat struct {
+	keys []string
+	fill func(map[string]any)
+}
+
+// satisfied reports whether every property the rule adds already appears in
+// raw (a cheap byte check; a false positive only skips a needless rewrite of a
+// body that then fails to decode exactly as it would have without this shim).
+func (c *compat) satisfied(raw []byte) bool {
+	for _, k := range c.keys {
+		if !bytes.Contains(raw, []byte(`"`+k+`"`)) {
+			return false
+		}
+	}
+	return true
+}
+
+// compatRule returns the rule for the request path, or nil for paths with none.
+func compatRule(path string) *compat {
 	switch {
 	case strings.Contains(path, "/core/applications/"):
-		return func(o map[string]any) { addMissing(o, "slug", "pbm_uuid") }
+		return &compat{keys: []string{"pbm_uuid"}, fill: func(o map[string]any) { addMissing(o, "slug", "pbm_uuid") }}
 	case strings.HasSuffix(path, "/setup_urls/"):
-		return func(o map[string]any) { addMissing(o, "issuer", "dcr_registration") }
+		return &compat{keys: []string{"dcr_registration"},
+			fill: func(o map[string]any) { addMissing(o, "issuer", "dcr_registration") }}
 	}
 	return nil
 }
