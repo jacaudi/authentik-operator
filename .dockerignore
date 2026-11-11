@@ -68,11 +68,10 @@ Thumbs.db
 !internal
 
 # Re-include Go source files (but not *_test.go)
-# If you use Podman, re-include your source directories by name,
-# such as !cmd, !api, and !internal.
-# See https://github.com/containers/buildah/issues/6417
 !**/*.go
 **/*_test.go
+# The re-included trees may hold fixtures (e.g. internal/authentik/testdata).
+**/testdata
 
 # Re-include Go module files
 !go.mod
