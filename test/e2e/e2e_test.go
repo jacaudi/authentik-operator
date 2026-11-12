@@ -490,12 +490,4 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		})
 	})
 
-	// Scenario 9.
-	PIt("migrates a JeffResc-managed install end to end", func() {
-		// TODO(TASK-09): the converter and runbook arrive on their own branch.
-		// Apply JeffResc CRs, convert them with the converter, adopt with
-		// dryRun then for real, and prove client_id/secret and a login survive.
-		Skip("pending TASK-09 converter and runbook")
-	})
-
 })

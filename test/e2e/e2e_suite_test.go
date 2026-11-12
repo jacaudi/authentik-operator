@@ -27,6 +27,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/jacaudi/authentik-operator/test/aktest"
 )
 
@@ -91,9 +93,9 @@ var _ = BeforeSuite(func(ctx SpecContext) {
 			Name: operatorRelease + "-metrics-reader"},
 		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "e2e-metrics", Namespace: operatorNS}},
 	}
-	if err := k8s.Create(ctx, crb); err != nil {
-		Expect(isAlreadyExists(err)).To(BeTrue(), err)
-	}
+	// roleRef is immutable: replace a binding left by an earlier run.
+	Expect(client.IgnoreNotFound(k8s.Delete(ctx, crb.DeepCopy()))).To(Succeed())
+	Expect(k8s.Create(ctx, crb)).To(Succeed())
 })
 
 var _ = AfterSuite(func() {

@@ -35,8 +35,8 @@ const (
 	authentikHost = "authentik-server." + authentikNS + ".svc.cluster.local"
 	authentikURL  = "http://" + authentikHost
 
-	operatorNS      = "authentik-operator-system"
-	operatorRelease = "authentik-operator"
+	operatorNS      = "authentik-operator"
+	operatorRelease = "jacaudi-authentik-operator"
 	appsNS          = "e2e-apps"
 
 	bootstrapUser     = "akadmin"
