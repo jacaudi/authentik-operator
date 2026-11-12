@@ -142,12 +142,18 @@ kustomize default both use `authentik-operator-system`, and a shared namespace
 invites name clashes between the two controllers' objects.
 
 ```sh
-helm install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator --version X.Y.Z \
+helm install jacaudi-authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator --version X.Y.Z \
   --namespace authentik-operator --create-namespace \
   --set authentik.url=https://authentik.example.com \
   --set authentik.tokenSecret.name=authentik-api     # Secret holding a new Authentik API token
-# from a checkout instead of the registry: helm install authentik-operator dist/chart ...
+# from a checkout instead of the registry: helm install jacaudi-authentik-operator dist/chart ...
 ```
+
+**Use a release name different from JeffResc's** (above: `jacaudi-authentik-operator`;
+JeffResc's chart is usually released as `authentik-operator`). Both charts name their
+cluster-scoped objects after the release (`<release>-manager-role` and its binding),
+so two releases both called `authentik-operator` make the second install fail with
+`invalid ownership metadata` on the ClusterRole, whatever the namespaces.
 
 The CRDs ship with the chart (different API group, so no clash with
 JeffResc's). If `authentik.io` CRDs already exist from an earlier install
@@ -165,6 +171,7 @@ kind's CRD is missing (0.1.x clusters have no `authentikoauth2applications`),
 so list the kinds separately, and strip the server-populated fields so the
 backup can be re-applied:
 
+<!-- e2e:backup:begin -->
 ```sh
 for r in authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io; do
   kubectl get crd "$r" >/dev/null 2>&1 || continue
@@ -172,6 +179,10 @@ for r in authentikapplications.goauthentik.io authentikoauth2applications.goauth
     | jq 'del(.items[].metadata | .resourceVersion, .uid, .managedFields, .generation, .creationTimestamp, .selfLink, .ownerReferences)
           | del(.items[].status)' > "jeffresc-backup-$r.json"
 done
+```
+<!-- e2e:backup:end -->
+
+```sh
 kubectl -n OLD_NS get secret <old secret names> -o yaml > jeffresc-secrets-backup.yaml   # contains credentials; keep it safe
 ```
 
@@ -251,10 +262,12 @@ a resync interval after adoption. Compare key by key (`.data` is base64 of the
 exact bytes, so a different value or trailing newline shows; map order does
 not matter):
 
+<!-- e2e:compare:begin -->
 ```sh
 diff <(kubectl -n OLD_NS get secret gitlab-oidc-credentials -o json | jq -S .data) \
      <(kubectl -n NEW_NS get secret gitlab-oidc-credentials-v2 -o json | jq -S .data) && echo identical
 ```
+<!-- e2e:compare:end -->
 
 The two Secrets have different labels and owners; only `.data` is compared.
 
@@ -312,27 +325,31 @@ Find the old operator's pod selector (JeffResc's chart labels its pods
 verify in its chart):
 
 ```sh
-kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.selector.matchLabels}'
+kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.selector.matchLabels}'
 ```
 
 **Gates 2 to 6 as one script**, so every failure stops the whole sequence and
 your interactive shell is never the one that exits. Fill in the variables at the
-top (`R` is `authentikapplications.goauthentik.io` for 0.1.x,
+top (`OLD_OP_NS` is the namespace of the old operator's Deployment and `OLD_NS` the
+namespace of the old CR, which is usually an application namespace, not the operator's;
+`R` is `authentikapplications.goauthentik.io` for 0.1.x,
 `authentikoauth2applications.goauthentik.io` for v0.2.x; `OLD_WEBHOOK` is the
 old ValidatingWebhookConfiguration on v0.2.x, empty on 0.1.x: with no backend
 and `failurePolicy: Fail` it would block the finalizer update):
 
+<!-- e2e:retire-one:begin -->
 ```sh
 bash -euo pipefail <<'EOF'
-OLD_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
+OLD_OP_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
+OLD_NS=authentik-operator-system   # the namespace of the old CR (often an application namespace)
 SELECTOR='app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=authentik-operator'
 OLD_WEBHOOK=''
 R=authentikapplications.goauthentik.io; NAME=gitlab; NEW_NS=authentik-operator
 
 # gate 2: scale to 0 and wait until the pods are really gone (a running pod re-adds finalizers)
-kubectl -n "$OLD_NS" scale deploy/"$OLD_DEPLOY" --replicas=0
+kubectl -n "$OLD_OP_NS" scale deploy/"$OLD_DEPLOY" --replicas=0
 for _ in $(seq 24); do
-  PODS=$(kubectl -n "$OLD_NS" get pods -l "$SELECTOR" -o name)
+  PODS=$(kubectl -n "$OLD_OP_NS" get pods -l "$SELECTOR" -o name)
   test -z "$PODS" && break
   sleep 5
 done
@@ -349,9 +366,9 @@ kubectl -n "$OLD_NS" get "$R" "$NAME" -o json \
 # gate 5: assert, with plain assignments so a failing kubectl stops the script
 F=$(kubectl -n "$OLD_NS" get "$R" "$NAME" -o jsonpath='{.metadata.finalizers}')
 test -z "$F"
-SPEC=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
+SPEC=$(kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
 test "$SPEC" = 0
-STATUS=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.status.replicas}')
+STATUS=$(kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.status.replicas}')
 test -z "$STATUS" || test "$STATUS" = 0
 
 # gate 6: delete that CR, then show the new objects
@@ -360,6 +377,7 @@ kubectl -n "$NEW_NS" get authentikoauthproviders.authentik.io,authentikapplicati
 echo GATES-OK
 EOF
 ```
+<!-- e2e:retire-one:end -->
 
 Check that `GATES-OK` printed, that the new objects are `Ready` True, and that
 the application is still present in Authentik. Repeat for the next application
@@ -372,7 +390,7 @@ missing), again as one script:
 
 ```sh
 bash -euo pipefail <<'EOF'
-OLD_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
+OLD_OP_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
 KINDS="authentikapplications.goauthentik.io authentikoauth2applications.goauthentik.io"
 for r in $KINDS; do
   kubectl get crd "$r" >/dev/null 2>&1 || continue
@@ -387,7 +405,7 @@ for r in $KINDS; do
   LEFT=$(kubectl get "$r" -A -o json | jq '[.items[] | select((.metadata.finalizers // []) | length > 0)] | length')
   test "$LEFT" = 0
 done
-SPEC=$(kubectl -n "$OLD_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
+SPEC=$(kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.replicas}')
 test "$SPEC" = 0
 for r in $KINDS; do
   if kubectl get crd "$r" >/dev/null 2>&1; then kubectl delete "$r" -A --all; fi
@@ -406,10 +424,12 @@ Authentik objects.
 
 ### 6. Uninstall the old chart and CRDs, verify
 
+<!-- e2e:uninstall:begin -->
 ```sh
 helm -n <old operator namespace> uninstall <old release>
 kubectl delete crd authentikapplications.goauthentik.io     # and authentikoauth2applications.goauthentik.io if it exists
 ```
+<!-- e2e:uninstall:end -->
 
 If you have `AuthentikSAMLApplication` objects (this operator cannot take
 them), do not do this step: after step 5 has removed every OAuth CR, resume the old
