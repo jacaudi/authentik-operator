@@ -51,5 +51,8 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
 - Blocks: first release recommended to JeffResc users
 
 ## Completion Checklist
-- [ ] Runbook exercised end to end in e2e (old operator installed, migrated,
-      removed, login still works with unchanged client credentials)
+- [x] Runbook exercised end to end in e2e (old operator installed, migrated,
+      removed, login still works with unchanged client credentials): scenario 9
+      of `test/e2e`, green locally on Authentik 2026.2.3 and 2026.8.5; runs
+      the runbook's marked scripts (`<!-- e2e:... -->`), so a runbook edit that
+      breaks them fails the suite

@@ -45,8 +45,12 @@ real server.
   - [x] custom CA: the operator's default connection is pointed at an
         nginx TLS terminator with a per-run private CA; refuses without
         `authentik.caBundle` (x509, nothing created), works with it
-  - [ ] JeffResc migration end to end: pending spec, waits for the converter
-        and runbook (TASK-09)
+  - [x] JeffResc migration end to end (TASK-09): JeffResc 0.1.8 (chart fetched
+        at the tag's commit, GPL so not vendored; image by digest) installed in
+        `authentik-operator-system`, this operator in `authentik-operator`,
+        converter + runbook steps 1 to 7, with the runbook's own gated script
+        executed. Pre-migration login works on 2026.2 and fails on 2026.8+
+        (#279, `invalid_request`), the post-migration login works on both
 - [ ] Run in CI on PRs (matrix over Authentik versions): workflow written in
       `test-e2e.yml` (actionlint and zizmor clean); has not run on GitHub
 
@@ -56,8 +60,8 @@ image archive; Authentik pulled by the cluster):
 
 | Authentik | Result |
 |---|---|
-| 2026.2.3 | 13 specs pass, 1 pending (JeffResc migration), about 225 s after the images are present |
-| 2026.8.5 | 13 specs pass, 1 pending, about 330 s (first image start was slower) |
+| 2026.2.3 | 26 specs pass, about 280 s after the images are present |
+| 2026.8.5 | 26 specs pass, about 328 s |
 
 Operator bugs this suite found against a real 2026.2.3 (both fixed, with unit
 tests built from responses recorded from that server):
@@ -69,6 +73,11 @@ tests built from responses recorded from that server):
 2. `grantTypes` was PATCHed on every reconcile (and an `Updated` event emitted)
    because 2026.2 has no `grant_types` property to compare with. Fixed in
    `oauth2ProviderPatch`: not reported means nothing to compare.
+
+Runbook bugs found by running it (fixed in the doc): both charts name their
+ClusterRole after the release, so this operator must not be released as
+`authentik-operator` beside JeffResc's; and the step 5 script used one variable
+for the old operator's namespace and the old CR's.
 
 Gotchas for anyone extending the suite:
 - An `Eventually` given a context has no timeout; pass `WithTimeout` (see
