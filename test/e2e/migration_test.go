@@ -19,6 +19,8 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,10 +55,10 @@ const (
 	jrNS        = "authentik-operator-system" // JeffResc's chart default, as in the runbook
 	jrRelease   = "authentik-operator"
 	jrCRD       = "authentikapplications.goauthentik.io"
-	// jrImageTag pins the single-platform linux/amd64 digest of 0.1.8, so a
-	// node never has to resolve an index (see the repo's CLAUDE.md on zot).
+	// jrImageTag pins 0.1.8 by the digest of its multi-arch index, so the
+	// image cannot change and arm64 kind nodes work as well as amd64.
 	jrImageRepo = "ghcr.io/jeffresc/authentik-operator"
-	jrImageTag  = "0.1.8@sha256:edc53eb42e8e7619ffe3d17d70329746275060ff1eba8120a3b540bde8550e51"
+	jrImageTag  = "0.1.8@sha256:3bb21de76e254d99fa5af52cb0533e9adccb6ea42094d8ce18f9e0695764d64e"
 
 	jrApp       = "jr-app"
 	jrProvider  = "jr-app-provider" // what JeffResc names the provider in Authentik
@@ -67,9 +69,22 @@ const (
 	jrTokenName = "jeffresc-token"
 )
 
-var jrChartFiles = []string{"Chart.yaml", "values.yaml", "templates/_helpers.tpl", "templates/clusterrole.yaml",
-	"templates/clusterrolebinding.yaml", "templates/deployment.yaml", "templates/leader-election-role.yaml",
-	"templates/service.yaml", "templates/serviceaccount.yaml", "templates/servicemonitor.yaml"}
+// jrFiles are the fetched files (chart-relative path, or "@crd" for the CRD) with
+// the sha256 of their content at jrCommit; a mismatch
+// fails the fetch, as defence in depth beside the commit pin.
+var jrFiles = map[string]string{
+	"Chart.yaml":                          "e70909c9035f6fbe966094dd2c4eab65a93e144965bb23603d1ee6f4f59f95c4",
+	"values.yaml":                         "65d3468c9981e30f105a7c2d9bb5b0a2bc00adf3701549bdd9e304f8b5842b56",
+	"templates/_helpers.tpl":              "b00072d4c303437b0bf82276c72a60c2eea197bf5387795cccad5d72f0f72132",
+	"templates/clusterrole.yaml":          "22e6038027400c1e9c45255c2404eb0db8d980332a15a83bdc5ec959673d045a",
+	"templates/clusterrolebinding.yaml":   "e3deb920cb92cc8dfb75db0318df7f63a429deef231b947cedf59af914d9e781",
+	"templates/deployment.yaml":           "7d071449423f394962edfd5627da423f80ce9351bbdeed237ea6e6d525b55a13",
+	"templates/leader-election-role.yaml": "60b8d1cb00ba532afccbd66474c4a9c9dbedd02392c5a00dfe5ab074b6a618ec",
+	"templates/service.yaml":              "a7c209e32e1be876369871a28bfeff4edf08b3027747a274fe7299b641042f89",
+	"templates/serviceaccount.yaml":       "96949eccac5c5b2f5cd339bad4aff9860bdd6f0f8c5d1bb70ad8dc01d56b10b3",
+	"templates/servicemonitor.yaml":       "eaefd226f9251f9a2ff6487c53ebad38d5c0f0569d603d01ca2f42ba15f89d08",
+	jrCRDFile:                             "449b9841828b33f27472864d4af76c1f597046d4a01931e6a39b8a256bacd332",
+}
 
 // jeffrescTemplate is a typical JeffResc 0.1.x secret template.
 const jeffrescTemplate = `CLIENT_ID: {{ .ClientID }}
@@ -118,12 +133,17 @@ func atLeast(major, minor int) bool {
 }
 
 func fetchJeffResc(ctx context.Context, dir string) error {
-	get := func(path, dest string) error {
+	hc := &http.Client{Timeout: 60 * time.Second}
+	for rel, want := range jrFiles {
+		path := jrChartPath + rel
+		if rel == "@crd" {
+			path = jrCRDFile
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jrRawBase+path, http.NoBody)
 		if err != nil {
 			return err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := hc.Do(req)
 		if err != nil {
 			return err
 		}
@@ -137,17 +157,21 @@ func fetchJeffResc(ctx context.Context, dir string) error {
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
 		}
+		if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) != want {
+			return fmt.Errorf("%s at %s has sha256 %x, want %s", path, jrCommit, sum, want)
+		}
+		dest := filepath.Join(dir, "chart", rel)
+		if rel == "@crd" {
+			dest = filepath.Join(dir, "crd.yaml")
+		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 			return err
 		}
-		return os.WriteFile(dest, b, 0o600)
-	}
-	for _, f := range jrChartFiles {
-		if err := get(jrChartPath+f, filepath.Join(dir, "chart", f)); err != nil {
+		if err := os.WriteFile(dest, b, 0o600); err != nil {
 			return err
 		}
 	}
-	return get(jrCRDFile, filepath.Join(dir, "crd.yaml"))
+	return nil
 }
 
 // bash runs a script from the runbook (or a step that stands for one) in dir.
@@ -171,9 +195,9 @@ func runbookBlock(name string) string {
 	return blk
 }
 
-func podsIn(ctx context.Context, ns string) int {
+func podsIn(ctx context.Context, g Gomega, ns string) int {
 	var l corev1.PodList
-	ExpectWithOffset(1, k8s.List(ctx, &l, client.InNamespace(ns))).To(Succeed())
+	g.Expect(k8s.List(ctx, &l, client.InNamespace(ns))).To(Succeed())
 	return len(l.Items)
 }
 
@@ -208,11 +232,11 @@ var _ = Describe("migration from JeffResc, following docs/migration-from-jeffres
 			g.Expect(c.Status).To(Equal(metav1.ConditionTrue), "%s: %s", c.Reason, c.Message)
 		}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 	}
-	provenance := func(ctx context.Context) (authentikiov1alpha1.Provenance, authentikiov1alpha1.Provenance) {
+	provenance := func(ctx context.Context, g Gomega) (authentikiov1alpha1.Provenance, authentikiov1alpha1.Provenance) {
 		var p authentikiov1alpha1.AuthentikOAuthProvider
-		ExpectWithOffset(1, k8s.Get(ctx, newKey(jrApp), &p)).To(Succeed())
+		g.Expect(k8s.Get(ctx, newKey(jrApp), &p)).To(Succeed())
 		var a authentikiov1alpha1.AuthentikApplication
-		ExpectWithOffset(1, k8s.Get(ctx, newKey(jrApp), &a)).To(Succeed())
+		g.Expect(k8s.Get(ctx, newKey(jrApp), &a)).To(Succeed())
 		return p.Status.Provenance, a.Status.Provenance
 	}
 
@@ -300,7 +324,12 @@ stringData:
 	It("logs in with the old Secret on 2026.2 and fails to on 2026.8+ (JeffResc #279)", func(ctx SpecContext) {
 		_, err := login(ctx, templateCreds(oldData), jrRedirect)
 		if atLeast(2026, 8) {
+			// The cause: JeffResc sends no grant types, so the provider has none.
+			grants, _ := beforeProv["grant_types"].([]any)
+			Expect(grants).To(BeEmpty(), "the JeffResc-created provider already has grant types")
 			Expect(err).To(HaveOccurred(), "JeffResc's provider is expected to reject logins on 2026.8+")
+			// What 2026.8 actually answers (recorded: invalid_request, "The request is otherwise malformed").
+			Expect(err.Error()).To(ContainSubstring("invalid_request"))
 			GinkgoWriter.Printf("pre-migration login failed as expected: %v\n", err)
 		} else {
 			Expect(err).NotTo(HaveOccurred())
@@ -361,7 +390,7 @@ stringData:
 		app, err := ak.ApplicationBySlug(ctx, jrApp)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(app).To(Equal(beforeApp), "the application changed during the dry run")
-		p, a := provenance(ctx)
+		p, a := provenance(ctx, Default)
 		Expect(p).To(BeEmpty())
 		Expect(a).To(BeEmpty())
 	})
@@ -376,9 +405,16 @@ stringData:
 			"--type", "merge", "-p", patch)
 		Expect(err).NotTo(HaveOccurred())
 		wantAppReady(ctx)
-		p, a := provenance(ctx)
+		p, a := provenance(ctx, Default)
 		Expect(p).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 		Expect(a).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		if atLeast(2026, 8) {
+			// Adoption wrote the spec's grant types: the fix for #279.
+			after, err := ak.OAuthProvider(ctx, pk)
+			Expect(err).NotTo(HaveOccurred())
+			grants, _ := after["grant_types"].([]any)
+			Expect(grants).NotTo(BeEmpty(), "adoption did not give the provider grant types")
+		}
 	})
 
 	It("runbook 4: the new Secret is byte-identical to the old one", func(ctx SpecContext) {
@@ -388,11 +424,32 @@ stringData:
 		}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 		// Connection URL and external URL match JeffResc's, so the runbook's
 		// diff must be exactly empty, with no host difference to excuse.
-		script := strings.NewReplacer("gitlab-oidc-credentials-v2", newSecret, "gitlab-oidc-credentials", jrSecret,
-			"OLD_NS", appsNS, "NEW_NS", migratedNS).Replace(runbookBlock("compare"))
+		script, err := aktest.ReplaceAll(runbookBlock("compare"), "gitlab-oidc-credentials-v2", newSecret,
+			"gitlab-oidc-credentials", jrSecret, "OLD_NS", appsNS, "NEW_NS", migratedNS)
+		Expect(err).NotTo(HaveOccurred())
 		out, err := bash(ctx, work, script)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(out).To(ContainSubstring("identical"))
+
+		// Both operators are running and own the same Authentik objects: forcing
+		// a reconcile in each must not start a write fight.
+		By("no write fight while both operators run")
+		var prov authentikiov1alpha1.AuthentikOAuthProvider
+		Expect(k8s.Get(ctx, newKey(jrApp), &prov)).To(Succeed())
+		var app authentikiov1alpha1.AuthentikApplication
+		Expect(k8s.Get(ctx, newKey(jrApp), &app)).To(Succeed())
+		pokeAndWait(ctx, &prov, &app)
+		_, err = kubectl(ctx, "-n", appsNS, "annotate", jrCRD, jrApp, "--overwrite",
+			pokeAnnotation+"="+strconv.FormatInt(time.Now().UnixNano(), 10))
+		Expect(err).NotTo(HaveOccurred())
+		pokeAndWait(ctx, &prov, &app)
+		writes := oauthWrites(ctx, Default)
+		updates := operatorUpdates(ctx, Default)
+		pokeAndWait(ctx, &prov, &app)
+		Consistently(func(g Gomega) {
+			g.Expect(oauthWrites(ctx, g)).To(Equal(writes), "the operators are writing to each other's objects")
+		}).WithContext(ctx).WithTimeout(20 * time.Second).WithPolling(4 * time.Second).Should(Succeed())
+		Expect(operatorUpdates(ctx, Default)).To(Equal(updates), "this operator sent a PATCH during the overlap")
 	})
 
 	It("runbook 5: retires the old CR with the runbook's own gated script", func(ctx SpecContext) {
@@ -400,7 +457,6 @@ stringData:
 		// hand and does not apply in kind: nothing here would bring it back.
 		script, err := aktest.SetVars(runbookBlock("retire-one"), map[string]string{
 			"OLD_OP_NS": jrNS, "OLD_NS": appsNS, "OLD_DEPLOY": jrRelease,
-			"SELECTOR":    "app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=" + jrRelease,
 			"OLD_WEBHOOK": "", "R": jrCRD, "NAME": jrApp, "NEW_NS": migratedNS,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -417,6 +473,7 @@ stringData:
 		app, err := ak.ApplicationBySlug(ctx, jrApp)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(app).NotTo(BeNil())
+		Expect(aktest.Str(app, "pk")).To(Equal(aktest.Str(beforeApp, "pk")), "the application was recreated")
 		_, err = kubectl(ctx, "-n", appsNS, "get", jrCRD, jrApp)
 		Expect(err).To(HaveOccurred(), "the old CR is still there")
 		Eventually(func(g Gomega) {
@@ -427,17 +484,20 @@ stringData:
 	})
 
 	It("runbook 6: uninstalls the old chart and its CRD", func(ctx SpecContext) {
-		script := strings.NewReplacer("<old operator namespace>", jrNS, "<old release>", jrRelease).
-			Replace(runbookBlock("uninstall"))
-		_, err := bash(ctx, work, script)
+		script, err := aktest.ReplaceAll(runbookBlock("uninstall"), "<old operator namespace>", jrNS,
+			"<old release>", jrRelease)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = bash(ctx, work, script)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = kubectl(ctx, "get", "crd", jrCRD)
 		Expect(err).To(HaveOccurred(), "the old CRD is still installed")
-		Eventually(func() int { return podsIn(ctx, jrNS) }).WithContext(ctx).WithTimeout(waitTimeout).Should(BeZero())
+		Eventually(func(g Gomega) {
+			g.Expect(podsIn(ctx, g, jrNS)).To(BeZero())
+		}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 	})
 
 	It("logs in with the new Secret, whose credentials are the pre-migration ones", func(ctx SpecContext) {
-		data := secretDataIn(ctx, migratedNS, newSecret)
+		data := secretDataIn(ctx, Default, migratedNS, newSecret)
 		c := templateCreds(data)
 		Expect(c.ClientID).To(Equal(clientID))
 		Expect(c.ClientSecret).To(Equal(clientSec))
@@ -455,7 +515,7 @@ stringData:
 		}
 		wantReady(ctx, metav1.ConditionTrue, "Synced")
 		wantAppReady(ctx)
-		p, a := provenance(ctx)
+		p, a := provenance(ctx, Default)
 		Expect(p).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 		Expect(a).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 
@@ -474,9 +534,9 @@ stringData:
 	})
 })
 
-func secretDataIn(ctx context.Context, ns, name string) map[string]string {
+func secretDataIn(ctx context.Context, g Gomega, ns, name string) map[string]string {
 	var s corev1.Secret
-	ExpectWithOffset(1, k8s.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &s)).To(Succeed())
+	g.Expect(k8s.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &s)).To(Succeed())
 	out := map[string]string{}
 	for k, v := range s.Data {
 		out[k] = string(v)

@@ -213,17 +213,20 @@ func login(ctx context.Context, c creds, redirect string) (*aktest.OIDCResult, e
 	})
 }
 
-// operatorUpdates counts the operator's "Updated ..." log lines (one per
-// PATCH it sends to Authentik, whatever the kind) in the operator's log. Unlike
-// the Kubernetes Events it also emits, log lines are never folded together, so
-// the same PATCH repeating is counted every time.
+// operatorUpdates counts the operator's "Updated OAuth2 provider" and
+// "Updated Application" log lines: one per PATCH it sends to Authentik. (The
+// credentials Secret's own "Updated credentials Secret" line is a Kubernetes
+// write, not an Authentik one, and is not counted.) Unlike the Kubernetes
+// Events it also emits, log lines are never folded together, so the same PATCH
+// repeating is counted every time.
 func operatorUpdates(ctx context.Context, g Gomega) int {
 	out, err := kubectl(ctx, "-n", operatorNS, "logs", "deploy/"+operatorRelease+"-controller-manager",
 		"--tail=-1")
 	g.Expect(err).NotTo(HaveOccurred())
 	n := 0
 	for line := range strings.SplitSeq(out, "\n") {
-		if strings.Contains(line, `"msg":"Updated `) {
+		if strings.Contains(line, `"msg":"Updated OAuth2 provider"`) ||
+			strings.Contains(line, `"msg":"Updated Application"`) {
 			n++
 		}
 	}

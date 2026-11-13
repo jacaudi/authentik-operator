@@ -182,10 +182,17 @@ func (p *portForward) spawn(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Start under the lock, after re-checking stopped, so a Stop that has
+	// already run cannot be followed by a child nobody will kill.
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		return nil
+	}
 	if err := cmd.Start(); err != nil {
+		p.mu.Unlock()
 		return err
 	}
-	p.mu.Lock()
 	p.cmd = cmd
 	p.mu.Unlock()
 	go func() { // surface forwarding errors in the Ginkgo log

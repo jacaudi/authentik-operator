@@ -396,6 +396,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 		// An explicit deletionPolicy overrides what provenance would decide.
 		It("keeps what a resource created when deletionPolicy is Retain", func(ctx SpecContext) {
+			Expect(ak.DeleteOAuthProviderByNameIfExists(ctx, "e2e-keep")).To(Succeed()) // leftover of an earlier run
 			p := newProvider("e2e-keep", "https://e2e-keep.invalid/callback")
 			p.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyRetain
 			Expect(k8s.Create(ctx, p)).To(Succeed())
@@ -409,6 +410,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		})
 
 		It("deletes what a resource adopted when deletionPolicy is Delete", func(ctx SpecContext) {
+			Expect(ak.DeleteOAuthProviderByNameIfExists(ctx, "e2e-adel-provider")).To(Succeed()) // leftover
 			_, err := ak.CreateOAuthProvider(ctx, "e2e-adel-provider", []string{"https://e2e-adel.invalid/callback"})
 			Expect(err).NotTo(HaveOccurred())
 			p := newProvider("e2e-adel", "https://e2e-adel.invalid/callback")
