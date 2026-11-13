@@ -27,7 +27,7 @@ import (
 	"os/exec"
 	"strings"
 
-	. "github.com/onsi/ginkgo/v2" //nolint:revive,staticcheck // dot-imports: Ginkgo DSL, as in the specs
+	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // dot-imports: Ginkgo DSL, as in the specs
 )
 
 const (
