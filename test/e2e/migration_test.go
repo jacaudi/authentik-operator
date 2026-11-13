@@ -50,6 +50,7 @@ import (
 const (
 	jrCommit    = "744d218d53fbab726229bcaeb11aef05d8c6a674"
 	jrRawBase   = "https://raw.githubusercontent.com/JeffResc/authentik-k8s-operator/" + jrCommit + "/"
+	jrCRDKey    = "@crd" // key of the CRD in jrFiles
 	jrCRDFile   = "config/crd/bases/goauthentik.io_authentikapplications.yaml"
 	jrChartPath = "charts/authentik-operator/"
 	jrNS        = "authentik-operator-system" // JeffResc's chart default, as in the runbook
@@ -83,7 +84,7 @@ var jrFiles = map[string]string{
 	"templates/service.yaml":              "a7c209e32e1be876369871a28bfeff4edf08b3027747a274fe7299b641042f89",
 	"templates/serviceaccount.yaml":       "96949eccac5c5b2f5cd339bad4aff9860bdd6f0f8c5d1bb70ad8dc01d56b10b3",
 	"templates/servicemonitor.yaml":       "eaefd226f9251f9a2ff6487c53ebad38d5c0f0569d603d01ca2f42ba15f89d08",
-	"@crd":                                "449b9841828b33f27472864d4af76c1f597046d4a01931e6a39b8a256bacd332",
+	jrCRDKey:                              "449b9841828b33f27472864d4af76c1f597046d4a01931e6a39b8a256bacd332",
 }
 
 // jeffrescTemplate is a typical JeffResc 0.1.x secret template.
@@ -136,7 +137,7 @@ func fetchJeffResc(ctx context.Context, dir string) error {
 	hc := &http.Client{Timeout: 60 * time.Second}
 	for rel, want := range jrFiles {
 		path := jrChartPath + rel
-		if rel == "@crd" {
+		if rel == jrCRDKey {
 			path = jrCRDFile
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jrRawBase+path, http.NoBody)
@@ -161,7 +162,7 @@ func fetchJeffResc(ctx context.Context, dir string) error {
 			return fmt.Errorf("%s at %s has sha256 %x, want %s", path, jrCommit, sum, want)
 		}
 		dest := filepath.Join(dir, "chart", rel)
-		if rel == "@crd" {
+		if rel == jrCRDKey {
 			dest = filepath.Join(dir, "crd.yaml")
 		}
 		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
