@@ -83,7 +83,7 @@ var jrFiles = map[string]string{
 	"templates/service.yaml":              "a7c209e32e1be876369871a28bfeff4edf08b3027747a274fe7299b641042f89",
 	"templates/serviceaccount.yaml":       "96949eccac5c5b2f5cd339bad4aff9860bdd6f0f8c5d1bb70ad8dc01d56b10b3",
 	"templates/servicemonitor.yaml":       "eaefd226f9251f9a2ff6487c53ebad38d5c0f0569d603d01ca2f42ba15f89d08",
-	jrCRDFile:                             "449b9841828b33f27472864d4af76c1f597046d4a01931e6a39b8a256bacd332",
+	"@crd":                                "449b9841828b33f27472864d4af76c1f597046d4a01931e6a39b8a256bacd332",
 }
 
 // jeffrescTemplate is a typical JeffResc 0.1.x secret template.
