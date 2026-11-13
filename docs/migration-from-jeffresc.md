@@ -264,8 +264,14 @@ not matter):
 
 <!-- e2e:compare:begin -->
 ```sh
-diff <(kubectl -n OLD_NS get secret gitlab-oidc-credentials -o json | jq -S .data) \
-     <(kubectl -n NEW_NS get secret gitlab-oidc-credentials-v2 -o json | jq -S .data) && echo identical
+bash -euo pipefail <<'EOF'
+# plain assignments: a failing kubectl stops the script (a diff of two process
+# substitutions would report "identical" when both kubectl calls fail)
+OLD=$(kubectl -n OLD_NS get secret gitlab-oidc-credentials -o json | jq -S .data)
+NEW=$(kubectl -n NEW_NS get secret gitlab-oidc-credentials-v2 -o json | jq -S .data)
+test -n "$OLD"; test "$OLD" != null
+if test "$OLD" = "$NEW"; then echo identical; else diff <(echo "$OLD") <(echo "$NEW"); exit 1; fi
+EOF
 ```
 <!-- e2e:compare:end -->
 
@@ -320,13 +326,9 @@ flux suspend helmrelease <old release> -n <ns>        # and/or: flux suspend kus
 # Argo CD: disable auto-sync for the application (argocd app set <app> --sync-policy none)
 ```
 
-Find the old operator's pod selector (JeffResc's chart labels its pods
-`app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=<release>`;
-verify in its chart):
-
-```sh
-kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" -o jsonpath='{.spec.selector.matchLabels}'
-```
+The script below derives the old operator's pod selector from its Deployment
+(`.spec.selector.matchLabels`), so a mistyped selector cannot make the
+"pods are gone" check pass vacuously.
 
 **Gates 2 to 6 as one script**, so every failure stops the whole sequence and
 your interactive shell is never the one that exits. Fill in the variables at the
@@ -342,11 +344,15 @@ and `failurePolicy: Fail` it would block the finalizer update):
 bash -euo pipefail <<'EOF'
 OLD_OP_NS=authentik-operator-system; OLD_DEPLOY=authentik-operator
 OLD_NS=authentik-operator-system   # the namespace of the old CR (often an application namespace)
-SELECTOR='app.kubernetes.io/name=authentik-operator,app.kubernetes.io/instance=authentik-operator'
 OLD_WEBHOOK=''
 R=authentikapplications.goauthentik.io; NAME=gitlab; NEW_NS=authentik-operator
 
-# gate 2: scale to 0 and wait until the pods are really gone (a running pod re-adds finalizers)
+# gate 2: scale to 0 and wait until the pods are really gone (a running pod re-adds finalizers).
+# The selector comes from the Deployment itself; an empty one stops the script.
+SELECTOR=$(kubectl -n "$OLD_OP_NS" get deploy "$OLD_DEPLOY" \
+  -o go-template='{{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}')
+SELECTOR=${SELECTOR%,}
+test -n "$SELECTOR"
 kubectl -n "$OLD_OP_NS" scale deploy/"$OLD_DEPLOY" --replicas=0
 for _ in $(seq 24); do
   PODS=$(kubectl -n "$OLD_OP_NS" get pods -l "$SELECTOR" -o name)
