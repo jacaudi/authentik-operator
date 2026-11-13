@@ -57,3 +57,59 @@ func TestRunbookHasTheMarkedBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestSetVarsIsTwoWay(t *testing.T) {
+	script := "bash -euo pipefail <<'EOF'\n# a comment, X=ignored\nA=1; B=2   # trailing\n\n" +
+		"C=$(date)\nD=4\nkubectl get \"$A\"\n"
+	// Header is A and B: C is computed and ends the header, so D is a later use.
+	if _, err := SetVars(script, map[string]string{"A": "x", "B": "y"}); err != nil {
+		t.Fatalf("exact set rejected: %v", err)
+	}
+	// A header variable the caller does not set must fail (runbook gained one).
+	if _, err := SetVars(script, map[string]string{"A": "x"}); err == nil {
+		t.Fatal("a header variable without a value must be an error")
+	}
+	// A key that is not in the header must fail (runbook dropped one).
+	if _, err := SetVars(script, map[string]string{"A": "x", "B": "y", "D": "z"}); err == nil {
+		t.Fatal("a value for a non-header variable must be an error")
+	}
+	out, err := SetVars(script, map[string]string{"A": "x", "B": "y"})
+	if err != nil || !strings.Contains(out, "A='x'; B='y'   # trailing") || !strings.Contains(out, "D=4") {
+		t.Fatalf("unexpected rewrite: %q, %v", out, err)
+	}
+}
+
+func TestReplaceAllFailsOnMissingPlaceholder(t *testing.T) {
+	got, err := ReplaceAll("a OLD b OLD", "OLD", "x")
+	if err != nil || got != "a x b x" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := ReplaceAll("a b", "OLD", "x"); err == nil {
+		t.Fatal("a missing placeholder must be an error")
+	}
+}
+
+// The header variables of the real runbook script, so adding or renaming one
+// fails here (and in the suite) rather than leaving a doc default in place.
+func TestRunbookRetireHeaderVariables(t *testing.T) {
+	b, err := os.ReadFile("../../docs/migration-from-jeffresc.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blk, err := DocBlock(string(b), "retire-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range headerVars(blk) {
+		got[n] = true
+	}
+	for _, n := range []string{"OLD_OP_NS", "OLD_DEPLOY", "OLD_NS", "OLD_WEBHOOK", "R", "NAME", "NEW_NS"} {
+		if !got[n] {
+			t.Errorf("header variable %s not found in %v", n, got)
+		}
+	}
+	if len(got) != 7 {
+		t.Errorf("unexpected header variables: %v", got)
+	}
+}

@@ -56,24 +56,81 @@ func DocBlock(markdown, name string) (string, error) {
 	return body[:closeIdx+1], nil
 }
 
-// SetVars replaces the value of each shell assignment NAME=value (value
-// single-quoted or unquoted, ended by whitespace or ';') in script, and fails
-// if a variable is not assigned in it, so a renamed variable in the runbook
-// cannot silently leave the old value in place.
+var (
+	headerAssign = regexp.MustCompile(`(?:^|;\s*)([A-Za-z_][A-Za-z0-9_]*)=('[^']*'|[^\s;]*)`)
+	assignLine   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+)
+
+// headerVars returns the names assigned in the script's header: the lines
+// before the first command, ignoring blank lines, comments and a leading
+// `bash ... <<'EOF'` wrapper. A value computed with $( ) is not configuration
+// and is not a header assignment.
+func headerVars(script string) []string {
+	var names []string
+	for line := range strings.SplitSeq(script, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case t == "", strings.HasPrefix(t, "#"), strings.HasPrefix(t, "bash "):
+			continue
+		case !assignLine.MatchString(t):
+			return names
+		}
+		ms := headerAssign.FindAllStringSubmatch(t, -1)
+		if len(ms) > 0 && strings.HasPrefix(ms[0][2], "$(") {
+			return names
+		}
+		for _, m := range ms {
+			names = append(names, m[1])
+		}
+	}
+	return names
+}
+
+// SetVars replaces the value of each header assignment NAME=value (value
+// single-quoted or unquoted) in script. The set of header variables must equal
+// the keys of vars: a variable missing from the script, or one the runbook
+// gained that the caller does not set, is an error, so no variable silently
+// keeps its documentation default.
 func SetVars(script string, vars map[string]string) (string, error) {
+	have := map[string]bool{}
+	for _, n := range headerVars(script) {
+		have[n] = true
+	}
+	for n := range have {
+		if _, ok := vars[n]; !ok {
+			return "", fmt.Errorf("the script assigns %s in its header but no value was given", n)
+		}
+	}
+	for n := range vars {
+		if !have[n] {
+			return "", fmt.Errorf("variable %s is not assigned in the script header", n)
+		}
+	}
 	for name, val := range vars {
-		re, err := regexp.Compile(`(^|[\s;])` + regexp.QuoteMeta(name) + `=('[^']*'|[^\s;]*)`)
-		if err != nil {
-			return "", err
-		}
-		if !re.MatchString(script) {
-			return "", fmt.Errorf("variable %s is not assigned in the script", name)
-		}
+		re := regexp.MustCompile(`(^|[\s;])` + regexp.QuoteMeta(name) + `=('[^']*'|[^\s;]*)`)
 		quoted := "'" + strings.ReplaceAll(val, "'", `'\''`) + "'"
+		done := false
 		script = re.ReplaceAllStringFunc(script, func(m string) string {
-			prefix := m[:len(m)-len(re.FindStringSubmatch(m)[2])-len(name)-1]
-			return prefix + name + "=" + quoted
+			if done {
+				return m // only the header assignment, never a later use
+			}
+			done = true
+			sub := re.FindStringSubmatch(m)
+			return sub[1] + name + "=" + quoted
 		})
 	}
 	return script, nil
+}
+
+// ReplaceAll substitutes each old/new pair in text and fails if an old token
+// does not occur, so a renamed placeholder in the runbook is an error rather
+// than a silently unsubstituted script. Pairs are applied in order.
+func ReplaceAll(text string, pairs ...string) (string, error) {
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if !strings.Contains(text, pairs[i]) {
+			return "", fmt.Errorf("placeholder %q not found", pairs[i])
+		}
+		text = strings.ReplaceAll(text, pairs[i], pairs[i+1])
+	}
+	return text, nil
 }
