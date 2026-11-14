@@ -3,9 +3,20 @@
   "extends": [
     "github>jacaudi/renovate-config:base",
     "github>jacaudi/renovate-config:go",
-    "github>jacaudi/renovate-config:kubernetes"
+    "github>jacaudi/renovate-config:kubernetes",
+    "customManagers:githubActionsVersions"
   ],
   "minimumReleaseAge": "7 days",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tool pins annotated `# renovate: datasource=... depName=...` in the taskfiles (githubActionsVersions covers only .github/)",
+      "managerFilePatterns": ["/^\\.taskfiles/.*\\.ya?ml$/", "/^taskfile\\.yml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)\\s*\\n\\s*[A-Z_]+:\\s*['\"]?(?<currentValue>[^'\"\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?['\"]?"
+      ]
+    }
+  ],
   "packageRules": [
     {
       "description": "The Authentik API client is pinned to the Authentik version the operator is tested against; review these bumps on their own",

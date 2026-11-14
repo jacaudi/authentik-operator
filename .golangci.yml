@@ -421,6 +421,17 @@ linters:
         linters:
           - revive
         text: "^dot-imports: "
+      # deviation: test/utils is the shared Ginkgo helper package for the e2e specs and
+      # dot-imports the Ginkgo DSL like they do. A path rule instead of an inline
+      # nolint: nolintlint flagged that directive as unused in CI but not locally.
+      - path: ^test/utils/
+        linters:
+          - revive
+        text: "^dot-imports: "
+      - path: ^test/utils/
+        linters:
+          - staticcheck
+        text: "^ST1001: "
       # deviation: argument-limit targets APIs; wide test helpers are not flagged (UP-83, Phase 3 D82).
       - path: _test\.go
         linters:

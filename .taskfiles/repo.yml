@@ -40,8 +40,11 @@ tasks:
         files=$(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \))
         [ -n "${files}" ] || { echo "no workflow files — nothing to check"; exit 0; }
         fail=0
+        # Skips comment lines: the stock orchestrator ships release-artifact and
+        # release-chart commented out, and their `uses:` must not count.
+        # (Local fix over the fleet template, which flags them.)
         # shellcheck disable=SC2086  # deliberate word split over the file list
-        refs=$(awk '/uses:[[:space:]]*\.\//{
+        refs=$(awk '!/^[[:space:]]*#/ && /uses:[[:space:]]*\.\//{
                  sub(/.*uses:[[:space:]]*/,""); sub(/[[:space:]]*#.*/,""); sub(/[[:space:]]*$/,""); print
                }' ${files} | sort -u)
         for ref in ${refs}; do
