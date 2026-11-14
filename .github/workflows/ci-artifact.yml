@@ -1,4 +1,4 @@
-# Generated files → GitHub Release; checks out the TAG, verifies pinned images exist, then uploads. Rationale: github-actions-align/templates/README.md#ci-artifactyml
+# Generated files -> GitHub Release; checks out the TAG, verifies pinned images exist, then uploads. Rationale: github-actions-align/templates/README.md#ci-artifactyml
 name: ci-artifact
 
 on:
