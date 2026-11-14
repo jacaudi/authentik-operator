@@ -1,6 +1,6 @@
 # Build the manager binary
-# Override BASE_IMAGE to build from another registry, e.g. docker.io/library/golang:1.26
-ARG BASE_IMAGE=golang:1.26
+# Override BASE_IMAGE to build from another registry, e.g. docker.io/library/golang:1.27
+ARG BASE_IMAGE=golang:1.27
 # The builder runs on the build host's platform and cross-compiles for the
 # target (Go needs no emulation), so multi-arch builds do not use QEMU.
 FROM --platform=$BUILDPLATFORM ${BASE_IMAGE} AS builder
