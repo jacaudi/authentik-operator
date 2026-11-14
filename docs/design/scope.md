@@ -208,8 +208,13 @@ The `AuthentikDeployment` controller reports reachability in the `Connected`
 condition (checked via `GET /api/v3/core/users/me/` with a 15s overall
 deadline, every 5 minutes when healthy, 30 seconds when not) and the resolved
 base URL in `status.url`. Operator readiness does not depend on any Authentik
-being reachable, since one operator may serve several. `spec.mode` is
-immutable.
+being reachable, since one operator may serve several.
+
+`spec.mode` is mutable. Switching ConnectOnly → Managed in place is the
+migration path for an install that starts out Helm-managed: it must be
+possible without recreating the resource, and it takes over nothing by itself
+because adoption is gated by `spec.adoption.enabled` and is reversible. The
+only rule kept across updates is that ConnectOnly requires `spec.connection`.
 
 ## Known upstream defects this rewrite exists to fix
 

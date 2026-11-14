@@ -160,7 +160,12 @@ jobs:
             DATE=${{ steps.src.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=min
-          provenance: mode=min   # NOT max — embeds build-args/secrets. See README#ci-buildyml
+          # No attestation manifests in the index: their unknown/unknown entries
+          # break registry mirrors and pull-through caches that sync whole
+          # indexes (TASK-11 decision). If provenance/SBOM are wanted, attach
+          # them as separate attestations, not as index entries.
+          provenance: false
+          sbom: false
 
       - name: Expose image reference (by digest)
         id: ref

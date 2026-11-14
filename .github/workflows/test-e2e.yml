@@ -18,20 +18,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      KIND_VERSION: v0.33.0
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install kind
-        run: |
-          go install "sigs.k8s.io/kind@${KIND_VERSION}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: Verify kind installation
-        run: kind version
+      - name: Set up Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # The kind version and the suite live in the taskfile: `task e2e` locally
+      # runs exactly this.
       - name: Run e2e tests
-        run: make test-e2e
+        run: task e2e

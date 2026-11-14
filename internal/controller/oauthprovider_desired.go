@@ -36,23 +36,15 @@ const (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// referenceError is a spec reference (flow, scope, key, mapping) that does
-// not resolve to exactly one Authentik object. It is a user error: reported
-// in the Ready condition, retried on the slow interval.
-type referenceError struct {
-	reason string
-	err    error
-}
-
-func (e *referenceError) Error() string { return e.err.Error() }
-func (e *referenceError) Unwrap() error { return e.err }
-
-func asReferenceError(err error) error {
+// referenceError reports a spec reference (flow, scope, key, mapping) that
+// does not resolve to exactly one Authentik object under the matching
+// condition reason; any other error is returned as is.
+func referenceError(err error) error {
 	switch {
 	case errors.Is(err, authentik.ErrNotFound):
-		return &referenceError{reason: reasonReferenceNotFound, err: err}
+		return condErr(reasonReferenceNotFound, err)
 	case errors.Is(err, authentik.ErrAmbiguous):
-		return &referenceError{reason: reasonReferenceAmbiguous, err: err}
+		return condErr(reasonReferenceAmbiguous, err)
 	default:
 		return err
 	}
@@ -74,6 +66,15 @@ func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	return derivedClientID(p)
 }
 
+// ownsProvider reports whether got is the provider this resource created:
+// its client ID is the one recorded in status, or the one the spec asks for.
+// The second covers a spec.clientId change whose PATCH was applied but whose
+// status write was lost; in steady state the two are the same ID.
+func ownsProvider(p *authentikiov1alpha1.AuthentikOAuthProvider, got *api.OAuth2Provider) bool {
+	id := got.GetClientId()
+	return id == p.Status.ClientID || id == expectedClientID(p)
+}
+
 // providerName is the provider's name in Authentik.
 func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	if p.Spec.Name != "" {
@@ -84,8 +85,7 @@ func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 
 // desiredOAuth2Provider resolves every reference in the spec and returns the
 // full request the provider should match. Spec defaults are applied by the
-// API server; the fallbacks here only cover objects created before a
-// default existed.
+// API server, so every defaulted field is read as is.
 func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2ProviderRequest, error) {
 	s := p.Spec
@@ -93,14 +93,14 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	flowPK := func(slug string) (string, error) {
 		f, err := c.FlowBySlug(ctx, slug)
 		if err != nil {
-			return "", asReferenceError(err)
+			return "", referenceError(err)
 		}
 		return f.Pk, nil
 	}
 	certPK := func(name string) (string, error) {
 		k, err := c.CertificateByName(ctx, name)
 		if err != nil {
-			return "", asReferenceError(err)
+			return "", referenceError(err)
 		}
 		return k.Pk, nil
 	}
@@ -116,13 +116,11 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 
 	redirects := make([]api.RedirectURIRequest, 0, len(s.RedirectURIs))
 	for _, u := range s.RedirectURIs {
-		r := api.RedirectURIRequest{
-			Url:          u.URL,
-			MatchingMode: api.MatchingModeEnum(orDefault(string(u.MatchingMode), "strict")),
-		}
-		t := api.RedirectURITypeEnum(orDefault(string(u.Type), "authorization"))
-		r.RedirectUriType = &t
-		redirects = append(redirects, r)
+		redirects = append(redirects, api.RedirectURIRequest{
+			Url:             u.URL,
+			MatchingMode:    api.MatchingModeEnum(u.MatchingMode),
+			RedirectUriType: new(api.RedirectURITypeEnum(u.Type)),
+		})
 	}
 
 	req := api.NewOAuth2ProviderRequest(providerName(p), authz, invalidation, redirects)
@@ -137,61 +135,28 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 		req.SetAuthenticationFlowNil()
 	}
 
-	scopes := s.Scopes
-	if scopes == nil {
-		scopes = []string{"openid", "profile", "email"}
+	req.PropertyMappings, err = propertyMappingPKs(ctx, c, &p.Spec)
+	if err != nil {
+		return nil, err
 	}
-	mappings := make([]string, 0, len(scopes)+len(s.PropertyMappings))
-	for _, name := range scopes {
-		m, err := c.ScopeMappingByScopeName(ctx, name)
-		if err != nil {
-			return nil, asReferenceError(err)
-		}
-		mappings = append(mappings, m.Pk)
-	}
-	for _, ref := range s.PropertyMappings {
-		var (
-			m   *api.PropertyMapping
-			err error
-		)
-		if uuidPattern.MatchString(ref) {
-			m, err = c.PropertyMappingByUUID(ctx, ref)
-		} else {
-			m, err = c.PropertyMappingByName(ctx, ref)
-		}
-		if err != nil {
-			return nil, asReferenceError(fmt.Errorf("property mapping %q: %w", ref, err))
-		}
-		mappings = append(mappings, m.Pk)
-	}
-	slices.Sort(mappings)
-	req.PropertyMappings = slices.Compact(mappings)
 
-	req.SetClientType(api.ClientTypeEnum(orDefault(string(s.ClientType), "confidential")))
-	grants := s.GrantTypes
-	if len(grants) == 0 {
-		grants = []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
-	}
-	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(grants))
-	for _, g := range grants {
+	req.SetClientType(api.ClientTypeEnum(s.ClientType))
+	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(s.GrantTypes))
+	for _, g := range s.GrantTypes {
 		req.GrantTypes = append(req.GrantTypes, api.GrantTypeEnum(g))
 	}
 	slices.Sort(req.GrantTypes)
 	req.SetClientId(expectedClientID(p))
 
-	req.SetAccessCodeValidity(orDefault(s.AccessCodeValidity, "minutes=1"))
-	req.SetAccessTokenValidity(orDefault(s.AccessTokenValidity, "minutes=5"))
-	req.SetRefreshTokenValidity(orDefault(s.RefreshTokenValidity, "days=30"))
-	req.SetRefreshTokenThreshold(orDefault(s.RefreshTokenThreshold, "seconds=0"))
-	req.SetSubMode(api.SubModeEnum(orDefault(string(s.SubMode), "hashed_user_id")))
-	req.SetIssuerMode(api.IssuerModeEnum(orDefault(string(s.IssuerMode), "per_provider")))
-	includeClaims := true
-	if s.IncludeClaimsInIDToken != nil {
-		includeClaims = *s.IncludeClaimsInIDToken
-	}
-	req.SetIncludeClaimsInIdToken(includeClaims)
+	req.SetAccessCodeValidity(s.AccessCodeValidity)
+	req.SetAccessTokenValidity(s.AccessTokenValidity)
+	req.SetRefreshTokenValidity(s.RefreshTokenValidity)
+	req.SetRefreshTokenThreshold(s.RefreshTokenThreshold)
+	req.SetSubMode(api.SubModeEnum(s.SubMode))
+	req.SetIssuerMode(api.IssuerModeEnum(s.IssuerMode))
+	req.SetIncludeClaimsInIdToken(*s.IncludeClaimsInIDToken)
 
-	signing, err := certPK(orDefault(s.SigningKey, "authentik Self-signed Certificate"))
+	signing, err := certPK(s.SigningKey)
 	if err != nil {
 		return nil, err
 	}
@@ -207,8 +172,39 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	}
 
 	req.SetLogoutUri(s.LogoutURI)
-	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(orDefault(string(s.LogoutMethod), "backchannel")))
+	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
 	return req, nil
+}
+
+// propertyMappingPKs resolves the scope mappings and property mappings the
+// spec names to a sorted, de-duplicated list of pks.
+func propertyMappingPKs(ctx context.Context, c *authentik.Client,
+	s *authentikiov1alpha1.AuthentikOAuthProviderSpec) ([]string, error) {
+	mappings := make([]string, 0, len(s.Scopes)+len(s.PropertyMappings))
+	for _, name := range s.Scopes {
+		m, err := c.ScopeMappingByScopeName(ctx, name)
+		if err != nil {
+			return nil, referenceError(err)
+		}
+		mappings = append(mappings, m.Pk)
+	}
+	for _, ref := range s.PropertyMappings {
+		var (
+			m   *api.PropertyMapping
+			err error
+		)
+		if uuidPattern.MatchString(ref) {
+			m, err = c.PropertyMappingByUUID(ctx, ref)
+		} else {
+			m, err = c.PropertyMappingByName(ctx, ref)
+		}
+		if err != nil {
+			return nil, referenceError(fmt.Errorf("property mapping %q: %w", ref, err))
+		}
+		mappings = append(mappings, m.Pk)
+	}
+	slices.Sort(mappings)
+	return slices.Compact(mappings), nil
 }
 
 // oauth2ProviderPatch compares desired with actual field by field and
@@ -218,92 +214,38 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 // resets it.
 func oauth2ProviderPatch(want *api.OAuth2ProviderRequest,
 	got *api.OAuth2Provider) (api.PatchedOAuth2ProviderRequest, []string) {
-	var (
-		patch   api.PatchedOAuth2ProviderRequest
-		changed []string
-	)
-	mark := func(field string) { changed = append(changed, field) }
-
-	if want.Name != got.Name {
-		patch.SetName(want.Name)
-		mark("name")
-	}
-	if want.AuthorizationFlow != got.AuthorizationFlow {
-		patch.SetAuthorizationFlow(want.AuthorizationFlow)
-		mark("authorizationFlow")
-	}
-	if want.InvalidationFlow != got.InvalidationFlow {
-		patch.SetInvalidationFlow(want.InvalidationFlow)
-		mark("invalidationFlow")
-	}
-	if nullable(want.AuthenticationFlow.Get()) != nullable(got.AuthenticationFlow.Get()) {
-		patch.AuthenticationFlow = want.AuthenticationFlow
-		mark("authenticationFlow")
-	}
-	if !sameSet(want.PropertyMappings, got.PropertyMappings) {
-		patch.PropertyMappings = want.PropertyMappings
-		mark("propertyMappings")
-	}
-	if want.GetClientType() != got.GetClientType() {
-		patch.SetClientType(want.GetClientType())
-		mark("clientType")
-	}
-	if !sameSet(want.GrantTypes, got.GrantTypes) {
-		patch.GrantTypes = want.GrantTypes
-		mark("grantTypes")
-	}
-	if want.GetClientId() != got.GetClientId() {
-		patch.SetClientId(want.GetClientId())
-		mark("clientId")
-	}
-	if want.GetAccessCodeValidity() != got.GetAccessCodeValidity() {
-		patch.SetAccessCodeValidity(want.GetAccessCodeValidity())
-		mark("accessCodeValidity")
-	}
-	if want.GetAccessTokenValidity() != got.GetAccessTokenValidity() {
-		patch.SetAccessTokenValidity(want.GetAccessTokenValidity())
-		mark("accessTokenValidity")
-	}
-	if want.GetRefreshTokenValidity() != got.GetRefreshTokenValidity() {
-		patch.SetRefreshTokenValidity(want.GetRefreshTokenValidity())
-		mark("refreshTokenValidity")
-	}
-	if want.GetRefreshTokenThreshold() != got.GetRefreshTokenThreshold() {
-		patch.SetRefreshTokenThreshold(want.GetRefreshTokenThreshold())
-		mark("refreshTokenThreshold")
-	}
-	if want.GetIncludeClaimsInIdToken() != got.GetIncludeClaimsInIdToken() {
-		patch.SetIncludeClaimsInIdToken(want.GetIncludeClaimsInIdToken())
-		mark("includeClaimsInIdToken")
-	}
-	if nullable(want.SigningKey.Get()) != nullable(got.SigningKey.Get()) {
-		patch.SigningKey = want.SigningKey
-		mark("signingKey")
-	}
-	if nullable(want.EncryptionKey.Get()) != nullable(got.EncryptionKey.Get()) {
-		patch.EncryptionKey = want.EncryptionKey
-		mark("encryptionKey")
-	}
-	if !sameRedirects(want.RedirectUris, got.RedirectUris) {
-		patch.RedirectUris = want.RedirectUris
-		mark("redirectUris")
-	}
-	if want.GetLogoutUri() != got.GetLogoutUri() {
-		patch.SetLogoutUri(want.GetLogoutUri())
-		mark("logoutUri")
-	}
-	if want.GetLogoutMethod() != got.GetLogoutMethod() {
-		patch.SetLogoutMethod(want.GetLogoutMethod())
-		mark("logoutMethod")
-	}
-	if want.GetSubMode() != got.GetSubMode() {
-		patch.SetSubMode(want.GetSubMode())
-		mark("subMode")
-	}
-	if want.GetIssuerMode() != got.GetIssuerMode() {
-		patch.SetIssuerMode(want.GetIssuerMode())
-		mark("issuerMode")
-	}
+	var patch api.PatchedOAuth2ProviderRequest
+	changed := changedFields([]managedField{
+		diff("name", want.Name, got.Name, patch.SetName),
+		diff("authorizationFlow", want.AuthorizationFlow, got.AuthorizationFlow, patch.SetAuthorizationFlow),
+		diff("invalidationFlow", want.InvalidationFlow, got.InvalidationFlow, patch.SetInvalidationFlow),
+		{"authenticationFlow", nullable(want.AuthenticationFlow.Get()) == nullable(got.AuthenticationFlow.Get()),
+			func() { patch.AuthenticationFlow = want.AuthenticationFlow }},
+		{"propertyMappings", sameSet(want.PropertyMappings, got.PropertyMappings),
+			func() { patch.PropertyMappings = want.PropertyMappings }},
+		diff("clientType", want.GetClientType(), got.GetClientType(), patch.SetClientType),
+		{"grantTypes", sameSet(want.GrantTypes, got.GrantTypes), func() { patch.GrantTypes = want.GrantTypes }},
+		diff("clientId", want.GetClientId(), got.GetClientId(), patch.SetClientId),
+		diff("accessCodeValidity", want.GetAccessCodeValidity(), got.GetAccessCodeValidity(), patch.SetAccessCodeValidity),
+		diff("accessTokenValidity", want.GetAccessTokenValidity(), got.GetAccessTokenValidity(),
+			patch.SetAccessTokenValidity),
+		diff("refreshTokenValidity", want.GetRefreshTokenValidity(), got.GetRefreshTokenValidity(),
+			patch.SetRefreshTokenValidity),
+		diff("refreshTokenThreshold", want.GetRefreshTokenThreshold(), got.GetRefreshTokenThreshold(),
+			patch.SetRefreshTokenThreshold),
+		diff("includeClaimsInIdToken", want.GetIncludeClaimsInIdToken(), got.GetIncludeClaimsInIdToken(),
+			patch.SetIncludeClaimsInIdToken),
+		{"signingKey", nullable(want.SigningKey.Get()) == nullable(got.SigningKey.Get()),
+			func() { patch.SigningKey = want.SigningKey }},
+		{"encryptionKey", nullable(want.EncryptionKey.Get()) == nullable(got.EncryptionKey.Get()),
+			func() { patch.EncryptionKey = want.EncryptionKey }},
+		{"redirectUris", sameRedirects(want.RedirectUris, got.RedirectUris),
+			func() { patch.RedirectUris = want.RedirectUris }},
+		diff("logoutUri", want.GetLogoutUri(), got.GetLogoutUri(), patch.SetLogoutUri),
+		diff("logoutMethod", want.GetLogoutMethod(), got.GetLogoutMethod(), patch.SetLogoutMethod),
+		diff("subMode", want.GetSubMode(), got.GetSubMode(), patch.SetSubMode),
+		diff("issuerMode", want.GetIssuerMode(), got.GetIssuerMode(), patch.SetIssuerMode),
+	})
 	return patch, changed
 }
 
@@ -348,11 +290,4 @@ func nullable(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-func orDefault(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }

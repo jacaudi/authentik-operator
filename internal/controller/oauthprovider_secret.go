@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,7 +74,7 @@ func credentialsSecretName(p *authentikiov1alpha1.AuthentikOAuthProvider) string
 	if p.Spec.Secret == nil {
 		return ""
 	}
-	return orDefault(p.Spec.Secret.Name, p.Name+"-oauth")
+	return cmp.Or(p.Spec.Secret.Name, p.Name+"-oauth")
 }
 
 // syncSecret renders the credentials Secret after the provider itself is in
@@ -93,42 +94,16 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context,
 		return false, r.clearSecret(ctx, p)
 	}
 
-	tmpl, reason, msg, err := r.credentialsTemplate(ctx, p)
+	tmpl, err := r.credentialsTemplate(ctx, p)
 	if err != nil {
-		return false, err
+		return r.credentialsFailed(ctx, p, err, true)
 	}
-	if reason != "" {
-		// Access to the template is gone (or it is broken): what the
-		// template granted -- its labels and annotations, which may opt the
-		// Secret into replication or another controller -- is withdrawn.
-		// The data, this provider's own credentials, is kept so workloads
-		// keep working.
-		stripped, err := r.stripTemplateMetadata(ctx, p)
-		if err != nil {
-			return false, err
-		}
-		if stripped {
-			msg += fmt.Sprintf("; removed the template's labels and annotations from Secret %q (data kept)", p.Status.SecretName)
-		}
-		r.setCredentials(p, metav1.ConditionFalse, reason, msg, true)
-		return true, nil
-	}
-
-	data, reason, msg, err := r.renderSecretData(ctx, resolved, got, tmpl)
+	data, err := r.renderSecretData(ctx, resolved, got, tmpl)
 	if err != nil {
-		return false, err
+		return r.credentialsFailed(ctx, p, err, false)
 	}
-	if reason != "" {
-		r.setCredentials(p, metav1.ConditionFalse, reason, msg, reason == reasonTemplateError)
-		return true, nil
-	}
-
-	if reason, msg, err := r.applySecret(ctx, p, name, data, tmpl); err != nil || reason != "" {
-		if err != nil {
-			return false, err
-		}
-		r.setCredentials(p, metav1.ConditionFalse, reason, msg, true)
-		return true, nil
+	if err := r.applySecret(ctx, p, name, data, tmpl); err != nil {
+		return r.credentialsFailed(ctx, p, err, false)
 	}
 
 	// Only now that the new Secret exists is a previously rendered one
@@ -142,6 +117,37 @@ func (r *AuthentikOAuthProviderReconciler) syncSecret(ctx context.Context,
 	p.Status.SecretName = name
 	r.setCredentials(p, metav1.ConditionTrue, reasonSecretSynced, fmt.Sprintf("Secret %q is current", name), false)
 	return false, nil
+}
+
+// credentialsFailed records why the Secret was not rendered. A
+// conditionError is reported in CredentialsReady and retried on the slow
+// interval; anything else is transient and backs off. withdraw strips the
+// template's labels and annotations from the existing Secret: used when
+// access to the template is gone (or it is broken), since what it granted
+// -- opting the Secret into replication or another controller -- goes with
+// it. The data, this provider's own credentials, is kept so workloads keep
+// working.
+func (r *AuthentikOAuthProviderReconciler) credentialsFailed(ctx context.Context,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, err error, withdraw bool) (bool, error) {
+	ce, ok := errors.AsType[*conditionError](err)
+	if !ok {
+		return false, err
+	}
+	msg := err.Error()
+	if withdraw {
+		stripped, err := r.stripTemplateMetadata(ctx, p)
+		if err != nil {
+			return false, err
+		}
+		if stripped {
+			msg += fmt.Sprintf("; removed the template's labels and annotations from Secret %q (data kept)", p.Status.SecretName)
+		}
+	}
+	// A missing application is a normal transitional state and an external
+	// URL mismatch is already on the condition; neither gets a Warning event.
+	warn := ce.reason != reasonWaitingForApplication && ce.reason != reasonExternalURLMismatch
+	r.setCredentials(p, metav1.ConditionFalse, ce.reason, msg, warn)
+	return true, nil
 }
 
 // clearSecret removes a previously rendered Secret and the CredentialsReady
@@ -160,57 +166,55 @@ func (r *AuthentikOAuthProviderReconciler) clearSecret(ctx context.Context,
 
 // credentialsTemplate returns the template spec.secret.templateRef names,
 // or an empty template (default keys, no labels or annotations) without
-// one. A non-empty reason is a user-visible, non-transient problem; the
+// one. A conditionError is a user-visible, non-transient problem; the
 // previously rendered Secret is then left as it is.
 func (r *AuthentikOAuthProviderReconciler) credentialsTemplate(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider,
-) (*authentikiov1alpha1.AuthentikCredentialsTemplateSpec, string, string, error) {
+	p *authentikiov1alpha1.AuthentikOAuthProvider) (*authentikiov1alpha1.AuthentikCredentialsTemplateSpec, error) {
 	ref := p.Spec.Secret.TemplateRef
 	if ref == nil {
-		return &authentikiov1alpha1.AuthentikCredentialsTemplateSpec{}, "", "", nil
+		return &authentikiov1alpha1.AuthentikCredentialsTemplateSpec{}, nil
 	}
 	var t authentikiov1alpha1.AuthentikCredentialsTemplate
 	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name}, &t); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, reasonTemplateNotFound, fmt.Sprintf("AuthentikCredentialsTemplate %q not found", ref.Name), nil
+			return nil, condErrf(reasonTemplateNotFound, "AuthentikCredentialsTemplate %q not found", ref.Name)
 		}
-		return nil, "", "", fmt.Errorf("get AuthentikCredentialsTemplate %s: %w", ref.Name, err)
+		return nil, fmt.Errorf("get AuthentikCredentialsTemplate %s: %w", ref.Name, err)
 	}
 	sel, err := metav1.LabelSelectorAsSelector(&t.Spec.NamespaceSelector)
 	if err != nil {
-		return nil, reasonInvalidNamespaceSelector, fmt.Sprintf("AuthentikCredentialsTemplate %q has an invalid "+
-			"namespaceSelector: %v", ref.Name, err), nil
+		return nil, condErrf(reasonInvalidNamespaceSelector, "AuthentikCredentialsTemplate %q has an invalid "+
+			"namespaceSelector: %w", ref.Name, err)
 	}
 	if !sel.Empty() {
 		var ns corev1.Namespace
 		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: p.Namespace}, &ns); err != nil {
-			return nil, "", "", fmt.Errorf("get Namespace %s: %w", p.Namespace, err)
+			return nil, fmt.Errorf("get Namespace %s: %w", p.Namespace, err)
 		}
 		if !sel.Matches(labels.Set(ns.Labels)) {
-			return nil, reasonTemplateNotAllowed, fmt.Sprintf("AuthentikCredentialsTemplate %q does not allow namespace %q "+
-				"(its namespaceSelector does not match)", ref.Name, p.Namespace), nil
+			return nil, condErrf(reasonTemplateNotAllowed, "AuthentikCredentialsTemplate %q does not allow namespace %q "+
+				"(its namespaceSelector does not match)", ref.Name, p.Namespace)
 		}
 	}
-	return &t.Spec, "", "", nil
+	return &t.Spec, nil
 }
 
-// renderSecretData computes the Secret data. A non-empty reason is a
+// renderSecretData computes the Secret data. A conditionError is a
 // user-visible, non-transient problem.
 func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context, resolved *connection.Resolved,
-	got *api.OAuth2Provider, tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec,
-) (map[string][]byte, string, string, error) {
+	got *api.OAuth2Provider, tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) (map[string][]byte, error) {
 	slug := nullable(got.AssignedApplicationSlug.Get())
 	if slug == "" {
-		return nil, reasonWaitingForApplication,
-			"no AuthentikApplication uses this provider yet; the credentials Secret needs the application's slug", nil
+		return nil, condErrf(reasonWaitingForApplication,
+			"no AuthentikApplication uses this provider yet; the credentials Secret needs the application's slug")
 	}
 	urls, err := resolved.Client.OAuth2ProviderSetupURLs(ctx, got.Pk)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 	if urls.Issuer == "" || urls.Authorize == "" || urls.Token == "" {
 		// The application was detached between the two reads.
-		return nil, reasonWaitingForApplication, "Authentik returned no endpoint URLs for this provider yet", nil
+		return nil, condErrf(reasonWaitingForApplication, "Authentik returned no endpoint URLs for this provider yet")
 	}
 
 	var rewriteErr error
@@ -238,18 +242,17 @@ func (r *AuthentikOAuthProviderReconciler) renderSecretData(ctx context.Context,
 		Name:            nullable(got.AssignedApplicationName.Get()),
 	}
 	if rewriteErr != nil {
-		//nolint:nilerr // reported in the condition, not retried: the spec's external URL is wrong
-		return nil, reasonExternalURLMismatch, fmt.Sprintf("cannot rewrite Authentik endpoint URLs to the external URL "+
-			"(%v); they are built from the operator's API URL %s", rewriteErr, resolved.Client.BaseURL()), nil
+		return nil, condErrf(reasonExternalURLMismatch, "cannot rewrite Authentik endpoint URLs to the external URL "+
+			"(%w); they are built from the operator's API URL %s", rewriteErr, resolved.Client.BaseURL())
 	}
 	data, err := credentials.Render(tmpl.Template, vars)
 	if err != nil {
 		if credentials.IsTemplateError(err) {
-			return nil, reasonTemplateError, err.Error(), nil
+			return nil, condErr(reasonTemplateError, err)
 		}
-		return nil, "", "", err
+		return nil, err
 	}
-	return data, "", "", nil
+	return data, nil
 }
 
 // appliedMetadata is the content of annotationApplied.
@@ -268,16 +271,16 @@ func appliedTo(s *corev1.Secret) appliedMetadata {
 	return m
 }
 
-// applySecret creates or updates the owned Secret. A non-empty reason is a
+// applySecret creates or updates the owned Secret. A conditionError is a
 // user-visible problem (Secret owned by someone else, rejected by the API).
 func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, name string, data map[string][]byte,
-	tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) (string, string, error) {
+	tmpl *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) error {
 	tmplLabels, tmplAnnotations := tmpl.Labels, tmpl.Annotations
 	applied := appliedMetadata{Labels: sortedKeys(tmplLabels), Annotations: sortedKeys(tmplAnnotations)}
 	appliedJSON, err := json.Marshal(applied)
 	if err != nil {
-		return "", "", err
+		return err
 	}
 
 	var s corev1.Secret
@@ -293,27 +296,24 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context,
 		s.Annotations = mergeMetadata(nil, tmplAnnotations, nil,
 			map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
 		if err := controllerutil.SetControllerReference(p, &s, r.Scheme); err != nil {
-			return "", "", err
+			return err
 		}
 		if err := r.Create(ctx, &s); err != nil {
-			if reason, msg, ok := userWriteError(name, err); ok {
-				return reason, msg, nil
-			}
 			// AlreadyExists (created concurrently by someone else) and
 			// other errors retry; the next attempt sees the Secret and
 			// applies the ownership check.
-			return "", "", fmt.Errorf("create Secret %s/%s: %w", p.Namespace, name, err)
+			return secretWriteError("create", p.Namespace, name, err)
 		}
 		logf.FromContext(ctx).Info("Created credentials Secret", "secret", name)
 		r.event(p, corev1.EventTypeNormal, "SecretCreated", "Create", "Created credentials Secret %q", name)
-		return "", "", nil
+		return nil
 	case err != nil:
-		return "", "", fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
+		return fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
 	}
 
 	if !metav1.IsControlledBy(&s, p) {
-		return reasonSecretConflict, fmt.Sprintf("Secret %q already exists and is not managed by this resource; "+
-			"refusing to overwrite it. Choose another spec.secret.name or delete that Secret", name), nil
+		return condErrf(reasonSecretConflict, "Secret %q already exists and is not managed by this resource; "+
+			"refusing to overwrite it. Choose another spec.secret.name or delete that Secret", name)
 	}
 
 	previous := appliedTo(&s)
@@ -323,18 +323,15 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context,
 		map[string]string{annotationProvider: p.Name, annotationApplied: string(appliedJSON)})
 	if equality.Semantic.DeepEqual(s.Data, data) && equality.Semantic.DeepEqual(s.Labels, wantLabels) &&
 		equality.Semantic.DeepEqual(s.Annotations, wantAnnotations) {
-		return "", "", nil // unchanged: not rewritten
+		return nil // unchanged: not rewritten
 	}
 	s.Data, s.Labels, s.Annotations = data, wantLabels, wantAnnotations
 	if err := r.Update(ctx, &s); err != nil {
-		if reason, msg, ok := userWriteError(name, err); ok {
-			return reason, msg, nil
-		}
-		return "", "", fmt.Errorf("update Secret %s/%s: %w", p.Namespace, name, err)
+		return secretWriteError("update", p.Namespace, name, err)
 	}
 	logf.FromContext(ctx).Info("Updated credentials Secret", "secret", name)
 	r.event(p, corev1.EventTypeNormal, "SecretUpdated", "Update", "Updated credentials Secret %q", name)
-	return "", "", nil
+	return nil
 }
 
 // stripTemplateMetadata removes the labels and annotations a template
@@ -371,23 +368,15 @@ func (r *AuthentikOAuthProviderReconciler) stripTemplateMetadata(ctx context.Con
 	return true, nil
 }
 
-// userWriteError maps API rejections that retrying cannot fix (invalid
-// labels, oversized data, ...) to a user-visible reason.
-func userWriteError(name string, err error) (string, string, bool) {
+// secretWriteError classifies a failed Secret write. Rejections retrying
+// cannot fix (invalid labels, oversized data, ...) are the user's; the API
+// server's message describes the field problem and never echoes Secret
+// data. Anything else is wrapped and retried.
+func secretWriteError(verb, namespace, name string, err error) error {
 	if apierrors.IsInvalid(err) || apierrors.IsRequestEntityTooLargeError(err) {
-		return reasonSecretInvalid, fmt.Sprintf("the API server rejected Secret %q: %s", name, apiErrorMessage(err)), true
+		return condErrf(reasonSecretInvalid, "the API server rejected Secret %q: %w", name, err)
 	}
-	return "", "", false
-}
-
-// apiErrorMessage returns the API server's message, which describes field
-// problems; Secret data values are never echoed by the API server.
-func apiErrorMessage(err error) string {
-	var st apierrors.APIStatus
-	if errors.As(err, &st) {
-		return st.Status().Message
-	}
-	return err.Error()
+	return fmt.Errorf("%s Secret %s/%s: %w", verb, namespace, name, err)
 }
 
 // mergeMetadata computes labels or annotations for an owned Secret: keys

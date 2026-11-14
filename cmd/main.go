@@ -21,6 +21,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -43,6 +44,14 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
+// Set at build time with -ldflags -X (go-standards §9.2); the Dockerfile
+// passes them as build args.
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -55,57 +64,72 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-//nolint:gocyclo // kubebuilder scaffold wiring; the run() error split is PR 3
 func main() {
-	var metricsAddr string
-	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var webhookPort int
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var defaultConn connection.DefaultOptions
-	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
+	o := registerFlags()
+	flag.Parse()
+	if err := run(o); err != nil {
+		setupLog.Error(err, "Manager failed")
+		os.Exit(1)
+	}
+}
+
+// options holds the command-line flags.
+type options struct {
+	metricsAddr, metricsCertPath, metricsCertName, metricsCertKey string
+	webhookCertPath, webhookCertName, webhookCertKey              string
+	webhookPort                                                   int
+	probeAddr                                                     string
+	enableLeaderElection, secureMetrics, enableHTTP2              bool
+	defaultConn                                                   connection.DefaultOptions
+	zap                                                           zap.Options
+}
+
+// registerFlags defines the flags on flag.CommandLine; main parses them.
+func registerFlags() *options {
+	o := &options{zap: zap.Options{Development: true}}
+	flag.StringVar(&o.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.StringVar(&o.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&o.enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
+	flag.BoolVar(&o.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the webhook server listens on. "+
+	flag.StringVar(&o.webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
+	flag.StringVar(&o.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
+	flag.StringVar(&o.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.IntVar(&o.webhookPort, "webhook-port", 9443, "Port the webhook server listens on. "+
 		"Defaults to 9443. Set -1 to disable the webhook server.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+	flag.StringVar(&o.metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
+	flag.StringVar(&o.metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
+	flag.StringVar(&o.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.BoolVar(&o.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	opts := zap.Options{
-		Development: true,
-	}
-	flag.StringVar(&defaultConn.URL, "authentik-url", os.Getenv(connection.EnvURL),
+	flag.StringVar(&o.defaultConn.URL, "authentik-url", os.Getenv(connection.EnvURL),
 		"Default Authentik base URL for objects without spec.authentikRef (env "+connection.EnvURL+"). "+
 			"Empty disables the default connection.")
-	flag.StringVar(&defaultConn.ExternalURL, "authentik-external-url", os.Getenv(connection.EnvExternalURL),
+	flag.StringVar(&o.defaultConn.ExternalURL, "authentik-external-url", os.Getenv(connection.EnvExternalURL),
 		"Browser-facing base URL of the default Authentik, used in rendered credential Secrets "+
 			"(env "+connection.EnvExternalURL+"). Defaults to --authentik-url.")
-	flag.StringVar(&defaultConn.TokenFile, "authentik-token-file", "",
+	flag.StringVar(&o.defaultConn.TokenFile, "authentik-token-file", "",
 		"File holding the default connection's API token. If unset, the "+connection.EnvToken+" env var is used. "+
 			"Read once at startup: rotating the default token requires a restart.")
-	flag.StringVar(&defaultConn.CAFile, "authentik-ca-file", "",
+	flag.StringVar(&o.defaultConn.CAFile, "authentik-ca-file", "",
 		"Optional PEM CA bundle for the default connection, trusted in addition to system roots.")
-	flag.BoolVar(&defaultConn.InsecureSkipVerify, "authentik-insecure-skip-verify", false,
+	flag.BoolVar(&o.defaultConn.InsecureSkipVerify, "authentik-insecure-skip-verify", false,
 		"Disable TLS verification for the default connection. Testing only.")
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
+	o.zap.BindFlags(flag.CommandLine)
+	return o
+}
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+// run builds the manager, registers the controllers and runs until a
+// termination signal.
+func run(o *options) error {
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&o.zap)))
+	setupLog.Info("Starting manager", "version", version, "commit", commit, "date", date)
+
+	var tlsOpts []func(*tls.Config)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -118,7 +142,7 @@ func main() {
 		c.NextProtos = []string{"http/1.1"}
 	}
 
-	if !enableHTTP2 {
+	if !o.enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
@@ -126,16 +150,16 @@ func main() {
 	webhookTLSOpts := tlsOpts
 	webhookServerOptions := webhook.Options{
 		TLSOpts: webhookTLSOpts,
-		Port:    webhookPort,
+		Port:    o.webhookPort,
 	}
 
-	if webhookCertPath != "" {
+	if o.webhookCertPath != "" {
 		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+			"webhook-cert-path", o.webhookCertPath, "webhook-cert-name", o.webhookCertName, "webhook-cert-key", o.webhookCertKey)
 
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
+		webhookServerOptions.CertDir = o.webhookCertPath
+		webhookServerOptions.CertName = o.webhookCertName
+		webhookServerOptions.KeyName = o.webhookCertKey
 	}
 
 	webhookServer := webhook.NewServer(webhookServerOptions)
@@ -145,12 +169,12 @@ func main() {
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.25.0/pkg/metrics/server
 	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
+		BindAddress:   o.metricsAddr,
+		SecureServing: o.secureMetrics,
 		TLSOpts:       tlsOpts,
 	}
 
-	if secureMetrics {
+	if o.secureMetrics {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
@@ -166,21 +190,25 @@ func main() {
 	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
 	// managed by cert-manager for the metrics server.
 	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if metricsCertPath != "" {
+	if o.metricsCertPath != "" {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+			"metrics-cert-path", o.metricsCertPath, "metrics-cert-name", o.metricsCertName, "metrics-cert-key", o.metricsCertKey)
 
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
+		metricsServerOptions.CertDir = o.metricsCertPath
+		metricsServerOptions.CertName = o.metricsCertName
+		metricsServerOptions.KeyName = o.metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		return fmt.Errorf("load kubeconfig: %w", err)
+	}
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: o.probeAddr,
+		LeaderElection:         o.enableLeaderElection,
 		LeaderElectionID:       "a7f80c08.authentik.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
@@ -195,14 +223,12 @@ func main() {
 		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
-		setupLog.Error(err, "Failed to start manager")
-		os.Exit(1)
+		return fmt.Errorf("create manager: %w", err)
 	}
 
-	defaultCfg, err := connection.DefaultConfig(defaultConn, os.Getenv)
+	defaultCfg, err := connection.DefaultConfig(o.defaultConn, os.Getenv)
 	if err != nil {
-		setupLog.Error(err, "Invalid default Authentik connection")
-		os.Exit(1)
+		return fmt.Errorf("default Authentik connection: %w", err)
 	}
 	if defaultCfg != nil {
 		setupLog.Info("Configured default Authentik connection", "url", defaultCfg.URL)
@@ -210,72 +236,69 @@ func main() {
 		setupLog.Info("No default Authentik connection; objects must set spec.authentikRef")
 	}
 	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg,
-		DefaultExternalURL: defaultConn.ExternalURL}
+		DefaultExternalURL: o.defaultConn.ExternalURL}
 
-	if err := (&controller.AuthentikDeploymentReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Connections: connections,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikdeployment")
-		os.Exit(1)
-	}
-	if err := (&controller.AuthentikApplicationReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Connections: connections,
-		Recorder:    mgr.GetEventRecorder("authentikapplication"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikapplication")
-		os.Exit(1)
-	}
-	if err := (&controller.AuthentikUserReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Connections: connections,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikuser")
-		os.Exit(1)
-	}
-	if err := (&controller.AuthentikGroupReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Connections: connections,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikgroup")
-		os.Exit(1)
-	}
-	if err := (&controller.AuthentikOAuthProviderReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Connections: connections,
-		Recorder:    mgr.GetEventRecorder("authentikoauthprovider"),
-		APIReader:   mgr.GetAPIReader(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikoauthprovider")
-		os.Exit(1)
-	}
-	if err := (&controller.AuthentikCredentialsTemplateReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "authentikcredentialstemplate")
-		os.Exit(1)
+	if err := setupControllers(mgr, connections); err != nil {
+		return err
 	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up health check")
-		os.Exit(1)
+		return fmt.Errorf("set up health check: %w", err)
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up ready check")
-		os.Exit(1)
+		return fmt.Errorf("set up ready check: %w", err)
 	}
 
-	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "Failed to run manager")
-		os.Exit(1)
+		return fmt.Errorf("run manager: %w", err)
 	}
+	return nil
+}
+
+// setupControllers registers every reconciler with the manager.
+func setupControllers(mgr ctrl.Manager, connections *connection.Resolver) error {
+	controllers := []struct {
+		name       string
+		reconciler interface{ SetupWithManager(ctrl.Manager) error }
+	}{
+		{"authentikdeployment", &controller.AuthentikDeploymentReconciler{
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Connections: connections,
+		}},
+		{"authentikapplication", &controller.AuthentikApplicationReconciler{
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Connections: connections,
+			Recorder:    mgr.GetEventRecorder("authentikapplication"),
+		}},
+		{"authentikuser", &controller.AuthentikUserReconciler{
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Connections: connections,
+		}},
+		{"authentikgroup", &controller.AuthentikGroupReconciler{
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Connections: connections,
+		}},
+		{"authentikoauthprovider", &controller.AuthentikOAuthProviderReconciler{
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			Connections: connections,
+			Recorder:    mgr.GetEventRecorder("authentikoauthprovider"),
+			APIReader:   mgr.GetAPIReader(),
+		}},
+		{"authentikcredentialstemplate", &controller.AuthentikCredentialsTemplateReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}},
+	}
+	for _, c := range controllers {
+		if err := c.reconciler.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("create controller %s: %w", c.name, err)
+		}
+	}
+	return nil
 }
