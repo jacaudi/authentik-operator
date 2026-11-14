@@ -7,6 +7,7 @@ rules:
   self-repository:
     ignore:
       - ci.yaml
+      - ci-artifact.yml
       - ci-test.yml
       - ci-smoke.yml
       - ci-chart.yml
