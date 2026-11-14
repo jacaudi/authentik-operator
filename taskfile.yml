@@ -91,14 +91,28 @@ tasks:
       - GOBIN="${PWD}/bin" go install "sigs.k8s.io/kind@${KIND_VERSION}"
       - make test-e2e KIND="${PWD}/bin/kind"
 
-  # Wraps the kubebuilder install-manifest generator; attach dist/install.yaml
-  # to the Release once ci-artifact is wired. Note: `kustomize edit set image`
-  # rewrites config/manager/kustomization.yaml, so the tree is dirty afterwards.
+  # Run by ci-artifact on the checked-out release tag (VERSION=v1.2.3); the
+  # Release gets dist/install.yaml. The image comes from the release-please pin
+  # in config/default/kustomization.yaml, so this renders with `kustomize build`
+  # instead of `make build-installer` (whose `kustomize edit set image` dirties
+  # config/manager), and refuses to publish if the pin disagrees with VERSION.
+  # Locally: `task artifact VERSION=v0.0.0` on a tree whose pin is v0.0.0.
   artifact:
-    desc: Generate dist/install.yaml to attach to the GitHub Release
+    desc: Render dist/install.yaml for the release in VERSION
     requires:
       vars: [VERSION]
     env:
       VERSION: '{{.VERSION}}'
     cmds:
-      - make build-installer IMG=ghcr.io/jacaudi/authentik-operator:{{.VERSION}}
+      - make manifests kustomize
+      - |
+        set -eu
+        mkdir -p dist
+        bin/kustomize build config/default > dist/install.yaml
+        want="ghcr.io/jacaudi/authentik-operator:${VERSION}"
+        have=$(grep -E '^[[:space:]]+image: ' dist/install.yaml | sed -E 's/^[[:space:]]+image: //' | sort -u)
+        [ "${have}" = "${want}" ] || {
+          echo "dist/install.yaml pins '${have}', release is '${want}'" >&2
+          exit 1
+        }
+        echo "ok: dist/install.yaml pins ${want}"
