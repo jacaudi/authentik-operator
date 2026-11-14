@@ -23,6 +23,9 @@ rules:
 
 ignore: |
   .worktrees/
+  # Gitignored build output: tasks render scratch YAML there (e.g.
+  # trivy:config's bin/trivy/install.yaml), which is not source.
+  bin/
   node_modules/
   vendor/
   charts/
