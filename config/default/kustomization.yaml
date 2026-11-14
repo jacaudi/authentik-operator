@@ -8,6 +8,18 @@ namespace: authentik-operator-system
 # field above.
 namePrefix: authentik-operator-
 
+# Release image. release-please bumps newTag in each release PR (extra-files in
+# release-please-config.json), so `kubectl apply -k config/default` at a tag and
+# the install.yaml attached to that Release both run that tag's image. Lives
+# here, not in config/manager, because `kustomize edit set image` (make deploy,
+# build-installer, the e2e suite) rewrites config/manager/kustomization.yaml and
+# drops comments, which would lose the annotation below. An image set there
+# wins, since this entry only matches the unrenamed `controller` name.
+images:
+- name: controller
+  newName: ghcr.io/jacaudi/authentik-operator
+  newTag: v0.0.0 # x-release-please-version
+
 # Labels to add to all resources and selectors.
 #labels:
 #- includeSelectors: true

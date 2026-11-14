@@ -154,21 +154,23 @@ jobs:
     with:
       image: ${{ needs.release-image.outputs.image }}
 
-  # UNCOMMENT only in repos that ship a release manifest — the stock
-  # `task artifact` exits 1, so leaving this on breaks the first release.
-  # release-artifact:
-  #   needs: [release, release-image, release-smoke]
-  #   if: ${{ needs.release.outputs.release_created == 'true' }}
-  #   permissions: { contents: write, packages: read }
-  #   secrets:
-  #     APP_ID: ${{ secrets.APP_ID }}
-  #     APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-  #   uses: ./.github/workflows/ci-artifact.yml
-  #   with:
-  #     version: ${{ needs.release.outputs.tag_name }}
-  #     assets: release.yaml
-  #     verify-images: |
-  #       ghcr.io/${{ github.repository }}:${VERSION}
+  # Attaches dist/install.yaml (`task artifact` on the tag) to the Release, so
+  # `kubectl apply -f .../releases/download/<tag>/install.yaml` installs it.
+  # Waits on release-smoke, and verify-images re-checks the pinned image exists.
+  release-artifact:
+    needs: [release, release-image, release-smoke]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: write
+      packages: read
+    # No App secrets: GITHUB_TOKEN uploads release assets (contents: write) and
+    # reads GHCR (packages: read); the App holds no packages permission.
+    uses: ./.github/workflows/ci-artifact.yml
+    with:
+      version: ${{ needs.release.outputs.tag_name }}
+      assets: dist/install.yaml
+      verify-images: |
+        ghcr.io/${{ github.repository }}:${VERSION}
 
   # UNCOMMENT only in repos with a chart (conventionally at charts/). Waits on
   # release-smoke so a chart never ships pointing at an image that failed to

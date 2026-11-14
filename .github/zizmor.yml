@@ -7,5 +7,6 @@ rules:
   self-repository:
     ignore:
       - ci.yaml
+      - ci-artifact.yml
       - ci-test.yml
       - release-republish.yml
