@@ -6,7 +6,7 @@ toolchain go1.27.4
 
 require (
 	github.com/onsi/ginkgo/v2 v2.34.0
-	github.com/onsi/gomega v1.40.0
+	github.com/onsi/gomega v1.44.0
 	go.yaml.in/yaml/v3 v3.0.6
 	goauthentik.io/api/v3 v3.2026080.5
 	golang.org/x/time v0.15.0
