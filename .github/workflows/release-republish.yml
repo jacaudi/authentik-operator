@@ -35,7 +35,8 @@ jobs:
     outputs:
       image: ${{ steps.out.outputs.image }}
     env:
-      APP_ID: ${{ secrets.APP_ID }}
+      # APP_ID unset on purpose: the token step is skipped and GHCR login uses
+      # GITHUB_TOKEN, which this job's packages: write already covers.
       IMAGE: ghcr.io/${{ github.repository }}
     steps:
       - name: Resolve the tag to its commit
@@ -120,9 +121,8 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/ci-build.yml
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     with:
       version: ${{ inputs.tag }}
       ref: ${{ inputs.tag }}
@@ -134,8 +134,7 @@ jobs:
       contents: read
       packages: read
     uses: ./.github/workflows/ci-smoke.yml
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     with:
       image: ${{ needs.retag.outputs.image || needs.rebuild.outputs.image }}

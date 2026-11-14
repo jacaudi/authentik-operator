@@ -104,9 +104,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     uses: ./.github/workflows/ci-build.yml
 
   smoke:
@@ -114,9 +113,8 @@ jobs:
     permissions:
       contents: read
       packages: read
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     uses: ./.github/workflows/ci-smoke.yml
     with:
       image: ${{ needs.build.outputs.image }}
@@ -138,9 +136,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     uses: ./.github/workflows/ci-build.yml
     with:
       version: ${{ needs.release.outputs.tag_name }}
@@ -151,9 +148,8 @@ jobs:
     permissions:
       contents: read
       packages: read
-    secrets:
-      APP_ID: ${{ secrets.APP_ID }}
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
     uses: ./.github/workflows/ci-smoke.yml
     with:
       image: ${{ needs.release-image.outputs.image }}
