@@ -31,7 +31,7 @@ jobs:
         # renovate: datasource=helm depName=authentik registryUrl=https://charts.goauthentik.io
         authentik: ["2026.2.3", "2026.8.5"]
     env:
-      KIND_VERSION: v0.33.0
+      # The kind version is pinned in the taskfile (`task e2e`), not here.
       KIND_CLUSTER: authentik-operator-test-e2e
       AUTHENTIK_CHART_VERSION: ${{ matrix.authentik }}
     steps:
@@ -41,17 +41,19 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install kind
-        run: |
-          go install "sigs.k8s.io/kind@${KIND_VERSION}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Set up Task
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify tool versions
         run: |
-          kind version
           helm version --short
           kubectl version --client
+      # `task e2e` installs the pinned kind into bin/ and runs the suite; run
+      # it locally with AUTHENTIK_CHART_VERSION set to reproduce one matrix leg.
       - name: Run e2e tests
-        run: make test-e2e
+        run: task e2e
       - name: Collect cluster state on failure
         if: failure()
         run: |
@@ -60,4 +62,4 @@ jobs:
           kubectl --context "kind-${KIND_CLUSTER}" -n authentik logs deploy/authentik-worker --tail=200 || true
       - name: Delete the kind cluster
         if: always()
-        run: kind delete cluster --name "${KIND_CLUSTER}" || true
+        run: bin/kind delete cluster --name "${KIND_CLUSTER}" || true

@@ -16,6 +16,10 @@ includes:
   chart:
     taskfile: .taskfiles/chart.yml
 
+  # Repo-specific: Trivy image and manifest scans.
+  trivy:
+    taskfile: .taskfiles/trivy.yml
+
 tasks:
   default:
     desc: List all tasks
@@ -29,6 +33,7 @@ tasks:
       - task: go:ci
       - task: k8s:ci
       - task: chart:ci
+      - task: trivy:config
 
   lint:
     desc: Static checks only
@@ -51,7 +56,7 @@ tasks:
 
   # Runs locally: IMAGE=ghcr.io/jacaudi/authentik-operator@sha256:... task smoke
   smoke:
-    desc: Boot the built image and assert the manager binary runs
+    desc: Boot the built image, assert the manager binary runs, then scan it
     requires:
       vars: [IMAGE]
     # Accepts BOTH `IMAGE=… task smoke` and `task smoke IMAGE=…`. Without this,
@@ -70,6 +75,21 @@ tasks:
         # IMG override; once it does, run it here.
         docker run --rm "${IMAGE}" --help
         echo "ok: image boots"
+      # Scan what was just booted; CI's smoke stage is the one place holding the
+      # built image, and ci-smoke stays the stock template (it runs only this).
+      - task: trivy:image
+        vars: {IMAGE: '{{.IMAGE}}'}
+
+  # Runs locally too (needs Docker). Installs the pinned kind into bin/ so CI
+  # and a laptop create the cluster with the same version.
+  e2e:
+    desc: Kind-based end-to-end suite (creates and deletes its own cluster)
+    env:
+      # renovate: datasource=go depName=sigs.k8s.io/kind
+      KIND_VERSION: v0.33.0
+    cmds:
+      - GOBIN="${PWD}/bin" go install "sigs.k8s.io/kind@${KIND_VERSION}"
+      - make test-e2e KIND="${PWD}/bin/kind"
 
   # Wraps the kubebuilder install-manifest generator; attach dist/install.yaml
   # to the Release once ci-artifact is wired. Note: `kustomize edit set image`
