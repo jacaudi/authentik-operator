@@ -20,15 +20,18 @@ tasks:
     cmds:
       # The Makefile owns the kustomize version (see k8s:manifests).
       - make kustomize
+      # Rendered under bin/ (gitignored), not mktemp: a VM-backed Docker
+      # (colima, Docker Desktop) shares only the home directory, so a /var/folders
+      # mount arrives empty and Trivy passes having scanned nothing. Naming the
+      # file, not the directory, turns that into an error instead.
       - |
         set -eu
-        out=$(mktemp -d)
-        trap 'rm -rf "${out}"' EXIT
-        bin/kustomize build config/default > "${out}/install.yaml"
+        mkdir -p bin/trivy
+        bin/kustomize build config/default > bin/trivy/install.yaml
         docker run --rm \
           -v "${PWD}/.trivyignore:/work/.trivyignore:ro" \
-          -v "${out}:/scan:ro" \
-          "aquasec/trivy:${TRIVY_VERSION}" config {{.TRIVY_FLAGS}} /scan
+          -v "${PWD}/bin/trivy:/scan:ro" \
+          "aquasec/trivy:${TRIVY_VERSION}" config {{.TRIVY_FLAGS}} /scan/install.yaml
 
   image:
     desc: Scan a built image for known vulnerabilities
