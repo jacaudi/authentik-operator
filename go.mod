@@ -9,7 +9,7 @@ require (
 	github.com/onsi/gomega v1.40.0
 	go.yaml.in/yaml/v3 v3.0.6
 	goauthentik.io/api/v3 v3.2026080.5
-	golang.org/x/time v0.15.0
+	golang.org/x/time v0.16.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
