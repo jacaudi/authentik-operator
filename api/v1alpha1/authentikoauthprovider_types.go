@@ -79,7 +79,16 @@ type RedirectURI struct {
 // property mappings by UUID) -- never by display name alone.
 // +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 // +kubebuilder:validation:XValidation:rule="!has(self.logoutMethod) || self.logoutMethod != 'frontchannel' || has(self.logoutUri)",message="logoutMethod frontchannel requires logoutUri"
+// +kubebuilder:validation:XValidation:rule="!has(self.match) || (has(self.managementPolicy) && self.managementPolicy != 'Create')",message="match requires managementPolicy Adopt, AdoptOrCreate or ReadOnly"
 type AuthentikOAuthProviderSpec struct {
+	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
+	// An adopted provider's client ID and secret are kept as they are (the
+	// credentials Secret is rendered from the existing values) unless
+	// spec.clientId is set. Unset optional fields (authenticationFlow,
+	// encryptionKey, logoutUri, signingKey, name) are left as the existing
+	// provider has them.
+	APIManagementSpec `json:",inline"`
+
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
 	// operator's default connection is used.
@@ -226,29 +235,14 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	LogoutMethod OAuthLogoutMethod `json:"logoutMethod,omitempty"`
 
-	// adoption controls whether this resource may take over a provider that
-	// already exists in Authentik (for example one created by another
-	// operator) instead of reporting a Conflict. See APIAdoptionSpec for
-	// what adoption writes and which defaulted fields are included. An
-	// adopted provider's client ID and secret are kept as they are (the
-	// credentials Secret is rendered from the existing values) unless
-	// spec.clientId is set. Unset optional fields (authenticationFlow,
-	// encryptionKey, logoutUri, name) are left as the existing provider has
-	// them. The defaulted fields adoption will write are: scopes, clientType,
-	// grantTypes, accessCodeValidity, accessTokenValidity,
-	// refreshTokenValidity, refreshTokenThreshold, subMode,
-	// includeClaimsInIdToken, issuerMode, logoutMethod, and the
-	// matchingMode and type of each redirect URI.
+	// match selects the existing provider by name or pk, for managementPolicy
+	// Adopt, AdoptOrCreate or ReadOnly. When unset, the provider named like
+	// this resource's desired name (spec.name, else metadata.name) is the
+	// candidate. A miss is reported as AdoptionTargetNotFound under Adopt and
+	// ReadOnly, never a create, so a migration cannot silently mint new
+	// credentials; AdoptOrCreate creates the provider instead.
 	// +optional
-	Adoption ProviderAdoptionSpec `json:"adoption,omitzero"`
-
-	// deletionPolicy is what happens to the provider in Authentik when this
-	// resource is deleted: Delete or Retain. When unset: Delete for a
-	// provider this resource created, Retain for an adopted one. The
-	// rendered credentials Secret is a Kubernetes object owned by this
-	// resource and is garbage-collected with it under either policy.
-	// +optional
-	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
+	Match *ProviderMatch `json:"match,omitempty"`
 }
 
 // CredentialsSecretSpec describes the Secret holding a provider's client

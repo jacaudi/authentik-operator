@@ -88,12 +88,20 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		return p.Status.ProviderPK
 	}
 
-	newApp := func(name, provider string, adopt, dryRun bool) *authentikiov1alpha1.AuthentikApplication {
+	const (
+		policyCreate        = authentikiov1alpha1.ManagementPolicyCreate
+		policyAdopt         = authentikiov1alpha1.ManagementPolicyAdopt
+		policyAdoptOrCreate = authentikiov1alpha1.ManagementPolicyAdoptOrCreate
+		policyReadOnly      = authentikiov1alpha1.ManagementPolicyReadOnly
+	)
+
+	newApp := func(name, provider string, policy authentikiov1alpha1.ManagementPolicy,
+		dryRun bool) *authentikiov1alpha1.AuthentikApplication {
 		a := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{
-				Name:     "App " + name,
-				Adoption: authentikiov1alpha1.APIAdoptionSpec{Enabled: adopt, DryRun: dryRun},
+				Name:              "App " + name,
+				APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policy, DryRun: dryRun},
 			},
 		}
 		if provider != "" {
@@ -134,27 +142,27 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		fake.SetApplicationField(slug, "meta_icon", "https://legacy.example.com/icon.png")
 	}
 
-	It("stays a Conflict without adoption and says how to enable it", func() {
+	It("stays a Conflict under the Create policy and says how to adopt", func() {
 		seedLegacy("plain-app", nil)
-		a := newApp("plain-app", "", false, false)
+		a := newApp("plain-app", "", policyCreate, false)
 
 		mustReconcile(a)
 		Expect(ready(a).Reason).To(Equal(reasonConflict))
-		Expect(ready(a).Message).To(ContainSubstring("spec.adoption.enabled"))
+		Expect(ready(a).Message).To(ContainSubstring("spec.managementPolicy"))
 		Expect(get(a).Status.Provenance).To(BeEmpty(), "never infer Created for a fresh CR that found an object")
 		Expect(get(a).Status.ApplicationUID).To(BeEmpty())
 		Expect(fake.Requests(true)).To(BeEmpty())
 	})
 
 	It("records Created provenance for an application it creates", func() {
-		a := newApp("fresh-app", "", false, false)
+		a := newApp("fresh-app", "", policyCreate, false)
 		mustReconcile(a)
 		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 	})
 
 	It("adopts by slug and patches only the fields the spec sets", func() {
 		seedLegacy("legacy-app", nil)
-		a := newApp("legacy-app", "", true, false)
+		a := newApp("legacy-app", "", policyAdopt, false)
 
 		mustReconcile(a)
 		cur := get(a)
@@ -188,14 +196,14 @@ var _ = Describe("AuthentikApplication adoption", func() {
 	It("sets the provider link to providerRef when it differs, and leaves it alone when unset", func() {
 		pk := readyProvider("link-prov")
 		seedLegacy("link-app", nil)
-		a := newApp("link-app", "link-prov", true, false)
+		a := newApp("link-app", "link-prov", policyAdopt, false)
 		mustReconcile(a)
 		Expect(fake.Application("link-app")["provider"]).To(BeEquivalentTo(pk))
 		Expect(get(a).Status.ProviderPK).To(Equal(pk))
 
 		other := readyProvider("keep-prov")
 		seedLegacy("keep-app", other)
-		b := newApp("keep-app", "", true, false)
+		b := newApp("keep-app", "", policyAdopt, false)
 		mustReconcile(b)
 		Expect(fake.Application("keep-app")["provider"]).To(BeEquivalentTo(other))
 	})
@@ -203,7 +211,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 	It("makes no provider write when the link already matches providerRef", func() {
 		pk := readyProvider("same-prov")
 		seedLegacy("same-app", pk)
-		a := newApp("same-app", "same-prov", true, false)
+		a := newApp("same-app", "same-prov", policyAdopt, false)
 		before := len(fake.Requests(true))
 		mustReconcile(a)
 		writes := fake.Requests(true)[before:]
@@ -211,15 +219,48 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(writes[0].Body).NotTo(HaveKey("provider"))
 	})
 
-	It("does not create when adoption is enabled and nothing matches, unless createIfMissing", func() {
-		a := newApp("nothing-yet", "", true, false)
+	It("rejects an invalid combination of management fields at admission", func() {
+		cases := []struct {
+			name    string
+			policy  authentikiov1alpha1.ManagementPolicy
+			dryRun  bool
+			delete  bool
+			wantMsg string
+		}{
+			{"dryRun under Create", policyCreate, true, false, msgDryRunPolicy},
+			{"dryRun under ReadOnly", policyReadOnly, true, false, msgDryRunPolicy},
+			{"deletionPolicy Delete under ReadOnly", policyReadOnly, false, true, "ReadOnly never deletes"},
+			{"unknown policy", "Observe", false, false, "Unsupported value"},
+		}
+		for _, c := range cases {
+			a := &authentikiov1alpha1.AuthentikApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-management", Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "Bad",
+					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: c.policy, DryRun: c.dryRun}},
+			}
+			if c.delete {
+				a.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			}
+			err := k8sClient.Create(ctx, a)
+			Expect(err).To(HaveOccurred(), c.name)
+			Expect(err.Error()).To(ContainSubstring(c.wantMsg), c.name)
+		}
+	})
+
+	It("defaults managementPolicy to Create at admission", func() {
+		a := newApp("default-policy", "", "", false)
+		Expect(get(a).Spec.ManagementPolicy).To(Equal(policyCreate))
+	})
+
+	It("does not create under Adopt when nothing matches, but does once switched to AdoptOrCreate", func() {
+		a := newApp("nothing-yet", "", policyAdopt, false)
 		mustReconcile(a)
 		Expect(ready(a).Reason).To(Equal(reasonAdoptionTargetNotFound))
 		Expect(fake.ApplicationCount()).To(BeZero())
 		Expect(fake.Requests(true)).To(BeEmpty())
 
 		cur := get(a)
-		cur.Spec.Adoption.CreateIfMissing = true
+		cur.Spec.ManagementPolicy = policyAdoptOrCreate
 		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 		mustReconcile(a)
 		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
@@ -229,7 +270,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 	It("never recreates an adopted application that vanished", func() {
 		seedLegacy("vanish-app", nil)
-		a := newApp("vanish-app", "", true, false)
+		a := newApp("vanish-app", "", policyAdopt, false)
 		mustReconcile(a)
 		uid := get(a).Status.ApplicationUID
 		fake.DeleteApplication("vanish-app")
@@ -242,11 +283,11 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 	It("never recreates an adopted application that vanished, even after adoption is disabled", func() {
 		seedLegacy("vanish-off", nil)
-		a := newApp("vanish-off", "", true, false)
+		a := newApp("vanish-off", "", policyAdopt, false)
 		mustReconcile(a)
 		uid := get(a).Status.ApplicationUID
 		cur := get(a)
-		cur.Spec.Adoption.Enabled = false
+		cur.Spec.ManagementPolicy = policyCreate
 		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 		fake.DeleteApplication("vanish-off")
 
@@ -262,7 +303,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			a := &authentikiov1alpha1.AuthentikApplication{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: name, Slug: "raced-app",
-					Adoption: authentikiov1alpha1.APIAdoptionSpec{Enabled: true}},
+					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
 			}
 			Expect(k8sClient.Create(ctx, a)).To(Succeed())
 			cleanup(a)
@@ -294,13 +335,13 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 	It("refuses to adopt an application another resource already tracks", func() {
 		seedLegacy("shared-app", nil)
-		first := newApp("shared-app", "", true, false)
+		first := newApp("shared-app", "", policyAdopt, false)
 		mustReconcile(first)
 
 		second := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: "second-claim", Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "Second", Slug: "shared-app",
-				Adoption: authentikiov1alpha1.APIAdoptionSpec{Enabled: true}},
+				APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
 		}
 		Expect(k8sClient.Create(ctx, second)).To(Succeed())
 		cleanup(second)
@@ -311,19 +352,103 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(get(second).Status.Provenance).To(BeEmpty())
 	})
 
+	It("adopts when AdoptOrCreate finds the application, without creating a second one", func() {
+		seedLegacy("either-way", nil)
+		a := newApp("either-way", "", policyAdoptOrCreate, false)
+		mustReconcile(a)
+		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		Expect(fake.ApplicationCount()).To(Equal(1))
+	})
+
+	It("recreates an application this resource created when it vanishes, even under Adopt", func() {
+		a := newApp("was-created", "", policyAdoptOrCreate, false)
+		mustReconcile(a)
+		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		fake.DeleteApplication("was-created")
+
+		cur := get(a)
+		cur.Spec.ManagementPolicy = policyAdopt
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		mustReconcile(a)
+		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		Expect(fake.ApplicationCount()).To(Equal(1))
+	})
+
+	Context("read only", func() {
+		drifted := func(a *authentikiov1alpha1.AuthentikApplication) *metav1.Condition {
+			return meta.FindStatusCondition(get(a).Status.Conditions, ConditionDrifted)
+		}
+
+		It("finds the application and claims it, but never writes to Authentik", func() {
+			seedLegacy("ro-app", nil)
+			a := newApp("ro-app", "", policyReadOnly, false)
+
+			mustReconcile(a)
+			Expect(fake.Requests(true)).To(BeEmpty(), "read only must never write to Authentik")
+			cur := get(a)
+			Expect(cur.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			Expect(cur.Status.ApplicationUID).NotTo(BeEmpty())
+			Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready(a).Reason).To(Equal(reasonReadOnly))
+		})
+
+		It("reports drift in the Drifted condition and clears it once the live object matches", func() {
+			seedLegacy("drift-app", nil)
+			a := newApp("drift-app", "", policyReadOnly, false)
+			mustReconcile(a)
+			Expect(drifted(a).Status).To(Equal(metav1.ConditionTrue))
+			Expect(drifted(a).Message).To(ContainSubstring(`name: "drift-app" -> "App drift-app"`))
+
+			fake.SetApplicationField("drift-app", jsonName, "App drift-app")
+			fake.SetApplicationField("drift-app", "open_in_new_tab", true)
+			mustReconcile(a)
+			Expect(drifted(a).Status).To(Equal(metav1.ConditionFalse))
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("reports a miss as AdoptionTargetNotFound and never creates", func() {
+			a := newApp("ro-miss", "", policyReadOnly, false)
+			mustReconcile(a)
+			Expect(ready(a).Reason).To(Equal(reasonAdoptionTargetNotFound))
+			Expect(fake.ApplicationCount()).To(BeZero())
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("never recreates the application when it vanishes", func() {
+			seedLegacy("ro-vanish", nil)
+			a := newApp("ro-vanish", "", policyReadOnly, false)
+			mustReconcile(a)
+			fake.DeleteApplication("ro-vanish")
+
+			mustReconcile(a)
+			Expect(ready(a).Reason).To(Equal(reasonAdoptionTargetNotFound))
+			Expect(fake.ApplicationCount()).To(BeZero())
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("never deletes the application when the resource is deleted", func() {
+			seedLegacy("ro-keep", nil)
+			a := newApp("ro-keep", "", policyReadOnly, false)
+			mustReconcile(a)
+			Expect(k8sClient.Delete(ctx, get(a))).To(Succeed())
+			mustReconcile(a)
+			Expect(gone(a)).To(BeTrue())
+			Expect(fake.Application("ro-keep")).NotTo(BeNil())
+		})
+	})
+
 	Context("dry run with nothing to adopt", func() {
-		It("creates nothing and reports a would-create when createIfMissing is set", func() {
-			a := newApp("dry-miss", "", true, true)
-			a.Spec.Adoption.CreateIfMissing = true
-			Expect(k8sClient.Update(ctx, a)).To(Succeed())
+		It("creates nothing and reports a would-create under AdoptOrCreate", func() {
+			a := newApp("dry-miss", "", policyAdoptOrCreate, true)
 			mustReconcile(a)
 			Expect(fake.Requests(true)).To(BeEmpty())
 			Expect(ready(a).Reason).To(Equal(reasonAdoptionDryRun))
 			Expect(ready(a).Message).To(ContainSubstring("a new one would be created"))
 		})
 
-		It("reports AdoptionTargetNotFound when createIfMissing is false", func() {
-			a := newApp("dry-miss2", "", true, true)
+		It("reports AdoptionTargetNotFound under Adopt", func() {
+			a := newApp("dry-miss2", "", policyAdopt, true)
 			mustReconcile(a)
 			Expect(fake.Requests(true)).To(BeEmpty())
 			Expect(ready(a).Reason).To(Equal(reasonAdoptionTargetNotFound))
@@ -333,7 +458,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 	Context("dry run", func() {
 		It("writes nothing and reports the diff, then adopts when switched off", func() {
 			seedLegacy("dry-app", nil)
-			a := newApp("dry-app", "", true, true)
+			a := newApp("dry-app", "", policyAdopt, true)
 
 			res, err := reconcileApp(a)
 			Expect(err).NotTo(HaveOccurred())
@@ -348,7 +473,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("AdoptionDryRun")))
 
 			cur := get(a)
-			cur.Spec.Adoption.DryRun = false
+			cur.Spec.DryRun = false
 			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 			mustReconcile(a)
 			Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
@@ -365,7 +490,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 		It("retains an adopted application by default", func() {
 			seedLegacy("keep-me", nil)
-			a := newApp("keep-me", "", true, false)
+			a := newApp("keep-me", "", policyAdopt, false)
 			mustReconcile(a)
 			deleteAndFinalize(a)
 			Expect(fake.Application("keep-me")).NotTo(BeNil())
@@ -374,7 +499,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 		It("never deletes an application whose provenance is undecided", func() {
 			seedLegacy("unknown-app", nil)
-			a := newApp("unknown-app", "", false, false)
+			a := newApp("unknown-app", "", policyCreate, false)
 			mustReconcile(a) // Conflict: adds the finalizer
 			cur := get(a)
 			uid, ok := fake.Application("unknown-app")["pk"].(string)
@@ -390,14 +515,14 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		})
 
 		It("deletes a created application by default", func() {
-			a := newApp("drop-me", "", false, false)
+			a := newApp("drop-me", "", policyCreate, false)
 			mustReconcile(a)
 			deleteAndFinalize(a)
 			Expect(fake.Application("drop-me")).To(BeNil())
 		})
 
 		It("honours an explicit Retain on a created application", func() {
-			a := newApp("explicit-retain", "", false, false)
+			a := newApp("explicit-retain", "", policyCreate, false)
 			a.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyRetain
 			Expect(k8sClient.Update(ctx, a)).To(Succeed())
 			mustReconcile(a)
@@ -407,7 +532,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 
 		It("honours an explicit Delete on an adopted application", func() {
 			seedLegacy("explicit-delete", nil)
-			a := newApp("explicit-delete", "", true, false)
+			a := newApp("explicit-delete", "", policyAdopt, false)
 			a.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
 			Expect(k8sClient.Update(ctx, a)).To(Succeed())
 			mustReconcile(a)
@@ -417,10 +542,8 @@ var _ = Describe("AuthentikApplication adoption", func() {
 	})
 
 	Context("pendingCreate recovery", func() {
-		It("classifies a recovered own create as Created even with adoption enabled", func() {
-			a := newApp("lost-app", "", true, false)
-			a.Spec.Adoption.CreateIfMissing = true
-			Expect(k8sClient.Update(ctx, a)).To(Succeed())
+		It("classifies a recovered own create as Created even under AdoptOrCreate", func() {
+			a := newApp("lost-app", "", policyAdoptOrCreate, false)
 			fake.LoseNextApplicationCreate()
 			_, err := reconcileApp(a)
 			Expect(err).To(HaveOccurred())

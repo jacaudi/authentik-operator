@@ -77,8 +77,8 @@ type AuthentikApplicationReconciler struct {
 // Identity: status.applicationUid (Authentik's UUID pk) plus status.slug.
 // The pk is re-checked before every change or delete and is kept until a
 // replacement exists, so a transient 404 cannot lose track of it. A
-// pre-existing application with the same slug is a Conflict unless
-// spec.adoption.enabled, except when status.pendingCreate shows this
+// pre-existing application with the same slug is a Conflict under
+// managementPolicy Create, except when status.pendingCreate shows this
 // resource's own create was in flight (then it is its own, Created, never
 // Adopted): the marker is persisted before every create, so only a create
 // whose outcome was lost can match it.
@@ -131,7 +131,13 @@ func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentiki
 	a.Status.Slug = got.Slug
 	a.Status.ProviderPK = int32OrZero(got.Provider.Get())
 	a.Status.ObservedGeneration = a.Generation
-	r.setReady(a, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Application %q is in sync", got.Slug))
+	if readOnly(a.Spec.ManagementPolicy) {
+		r.setReady(a, metav1.ConditionTrue, reasonReadOnly,
+			fmt.Sprintf("Application %q found; observed read only", got.Slug))
+	} else {
+		meta.RemoveStatusCondition(&a.Status.Conditions, ConditionDrifted)
+		r.setReady(a, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Application %q is in sync", got.Slug))
+	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
 }
 
@@ -156,8 +162,16 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	if got == nil {
 		return r.createApplication(ctx, c, a, want, persist)
 	}
-	if a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted {
+	// An adopted application, and any application a ReadOnly resource
+	// observes, is compared on the fields the spec sets only.
+	observing := readOnly(a.Spec.ManagementPolicy)
+	if observing || a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted {
 		adoptionViewApplication(a, want, got)
+	}
+	if observing {
+		patch, changed := applicationPatch(want, got)
+		recordDrift(&a.Status.Conditions, a.Generation, patch, got, changed)
+		return got, nil
 	}
 	return r.updateApplication(ctx, c, a, want, got)
 }
@@ -189,7 +203,7 @@ func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *
 
 // observeApplication finds the application this resource manages: by
 // status.applicationUid, then by slug -- a create whose outcome was lost is
-// recovered, and with spec.adoption.enabled an existing application is
+// recovered, and under a policy that may adopt an existing application is
 // adopted. nil means it has to be created; an existing application that is
 // none of these is a Conflict.
 func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context, c *authentik.Client,
@@ -215,11 +229,12 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 			"Recovered application %q created by an earlier reconcile", existing.Slug)
 		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
 		return existing, nil
-	case err == nil && a.Spec.Adoption.Enabled:
+	case err == nil && a.Spec.ManagementPolicy.MayAdopt():
 		return r.adoptApplication(ctx, a, want, existing, persist)
 	case err == nil:
 		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
-			"created by this resource; set spec.adoption.enabled to adopt it", slug)
+			"created by this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it "+
+			"over or observe it", slug)
 	case authentik.IsNotFound(err):
 		return nil, r.missingApplication(a, slug)
 	default:
@@ -227,25 +242,30 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	}
 }
 
-// missingApplication decides what a miss means: nil to create (adoption
-// disabled, an application this resource created that vanished, or
-// createIfMissing), otherwise an error that writes nothing.
+// missingApplication decides what a miss means: nil to create (Create, an
+// application this resource created that vanished, or AdoptOrCreate),
+// otherwise an error that writes nothing.
 func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alpha1.AuthentikApplication,
 	slug string) error {
+	policy := a.Spec.ManagementPolicy
 	switch {
 	case a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted && a.Status.ApplicationUID != "":
-		// Whether or not adoption is still enabled: an adopted application
-		// that vanished is not silently replaced by an empty one. The uid
-		// stays in status.
+		// Whatever the policy now says: an adopted application that vanished
+		// is not silently replaced by an empty one. The uid stays in status.
 		return condErrf(reasonAdoptionTargetNotFound, "the adopted application %q no longer exists in Authentik; "+
 			"not recreating it. Restore it, or clear status.applicationUid, status.slug and status.provenance "+
-			"and set spec.adoption.createIfMissing to create a new one", slug)
-	case !a.Spec.Adoption.Enabled || a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
+			"and set spec.managementPolicy to AdoptOrCreate (or Create) to create a new one", slug)
+	case readOnly(policy):
+		return condErrf(reasonAdoptionTargetNotFound, "no application with slug %q exists in Authentik to observe; "+
+			"managementPolicy ReadOnly never writes to Authentik, so nothing is created", slug)
+	case a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated:
+		return nil // an application this resource created vanished: recreate, whatever the policy says
+	case !policy.MayAdopt():
 		return nil
-	case !a.Spec.Adoption.CreateIfMissing:
+	case !policy.MayCreate():
 		return condErrf(reasonAdoptionTargetNotFound, "no application with slug %q exists in Authentik to adopt; "+
-			"nothing was written. Fix the slug, or set spec.adoption.createIfMissing to create one", slug)
-	case a.Spec.Adoption.DryRun:
+			"nothing was written. Fix the slug, or set spec.managementPolicy to AdoptOrCreate to create one", slug)
+	case a.Spec.DryRun:
 		return condErrf(reasonAdoptionDryRun, "dry run: no existing application with slug %q; a new one would be "+
 			"created; nothing was written", slug)
 	}
@@ -305,7 +325,7 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 		return nil, condErrf(reasonConflict, "application %q is already managed by %s; "+
 			"two resources cannot manage one application", target.Slug, other)
 	}
-	if a.Spec.Adoption.DryRun {
+	if a.Spec.DryRun {
 		view := *want
 		adoptionViewApplication(a, &view, target)
 		patch, changed := applicationPatch(&view, target)
@@ -315,7 +335,7 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 		} else {
 			msg += "would change " + describeChanges(patch, target)
 		}
-		msg += "; nothing was written. Set spec.adoption.dryRun to false to adopt"
+		msg += "; nothing was written. Set spec.dryRun to false to adopt"
 		if cond := meta.FindStatusCondition(a.Status.Conditions, ConditionReady); cond == nil ||
 			cond.Reason != reasonAdoptionDryRun || cond.Message != msg {
 			r.event(a, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
@@ -333,7 +353,11 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	if err := r.yieldToLower(ctx, a); err != nil {
 		return nil, err
 	}
-	r.event(a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)
+	if readOnly(a.Spec.ManagementPolicy) {
+		r.event(a, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing application %q read only", target.Slug)
+	} else {
+		r.event(a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)
+	}
 	return target, nil
 }
 
@@ -428,7 +452,7 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 	log := logf.FromContext(ctx)
 
 	if a.Status.ApplicationUID != "" && authentikiov1alpha1.EffectiveDeletionPolicy(
-		a.Spec.DeletionPolicy, a.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
+		a.Spec.ManagementPolicy, a.Spec.DeletionPolicy, a.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining Application in Authentik", "slug", a.Status.Slug)
 		if a.Status.Provenance == "" && a.Spec.DeletionPolicy == "" {
 			r.event(a, corev1.EventTypeWarning, "Retained", "Delete",

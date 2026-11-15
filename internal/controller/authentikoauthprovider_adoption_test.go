@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -39,6 +40,9 @@ import (
 const (
 	jsonSigningKey = "signing_key"
 	otherName      = "elsewhere"
+
+	msgDryRunPolicy = "dryRun requires managementPolicy"
+	roCreds         = "ro-creds"
 )
 
 var _ = Describe("AuthentikOAuthProvider adoption", func() {
@@ -112,13 +116,14 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		return p
 	}
 
-	adopting := func(match *authentikiov1alpha1.ProviderMatch, dryRun bool) specMutator {
+	managing := func(policy authentikiov1alpha1.ManagementPolicy, match *authentikiov1alpha1.ProviderMatch,
+		dryRun bool) specMutator {
 		return func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
-			s.Adoption = authentikiov1alpha1.ProviderAdoptionSpec{
-				APIAdoptionSpec: authentikiov1alpha1.APIAdoptionSpec{Enabled: true, DryRun: dryRun},
-				Match:           match,
-			}
+			s.ManagementPolicy, s.Match, s.DryRun = policy, match, dryRun
 		}
+	}
+	adopting := func(match *authentikiov1alpha1.ProviderMatch, dryRun bool) specMutator {
+		return managing(authentikiov1alpha1.ManagementPolicyAdopt, match, dryRun)
 	}
 
 	reconcileOnce := func(p *authentikiov1alpha1.AuthentikOAuthProvider) (reconcile.Result, error) {
@@ -141,7 +146,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		return apierrors.IsNotFound(err)
 	}
 
-	It("stays a Conflict without adoption and says how to enable it", func() {
+	It("stays a Conflict under the Create policy and says how to adopt", func() {
 		foreign := seedLegacy("plain")
 		p := newProvider("plain", nil)
 
@@ -149,7 +154,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.RequeueAfter).To(Equal(userErrorRecheck))
 		Expect(ready(p).Reason).To(Equal(reasonConflict))
-		Expect(ready(p).Message).To(ContainSubstring("spec.adoption.enabled"))
+		Expect(ready(p).Message).To(ContainSubstring("spec.managementPolicy"))
 		Expect(get(p).Status.Provenance).To(BeEmpty(), "never infer Created for a fresh CR that found an object")
 		Expect(get(p).Status.ProviderPK).To(BeZero())
 		Expect(fake.Requests(true)).To(BeEmpty())
@@ -233,20 +238,64 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(fake.ProviderCount()).To(Equal(2))
 	})
 
-	It("rejects a match with both or neither of name and pk at admission", func() {
-		for _, m := range []*authentikiov1alpha1.ProviderMatch{{Name: "x", PK: 3}, {}} {
+	It("rejects an invalid combination of management fields at admission", func() {
+		cases := []struct {
+			name    string
+			mutate  specMutator
+			wantMsg string
+		}{
+			{"match with both name and pk", adopting(&authentikiov1alpha1.ProviderMatch{Name: "x", PK: 3}, false),
+				"exactly one of name or pk"},
+			{"match with neither name nor pk", adopting(&authentikiov1alpha1.ProviderMatch{}, false),
+				"exactly one of name or pk"},
+			{"match under the default Create policy", managing("", &authentikiov1alpha1.ProviderMatch{PK: 3}, false),
+				"match requires managementPolicy"},
+			{"match under an explicit Create policy",
+				managing(authentikiov1alpha1.ManagementPolicyCreate, &authentikiov1alpha1.ProviderMatch{PK: 3}, false),
+				"match requires managementPolicy"},
+			{"dryRun under Create", managing(authentikiov1alpha1.ManagementPolicyCreate, nil, true),
+				msgDryRunPolicy},
+			{"dryRun under ReadOnly", managing(authentikiov1alpha1.ManagementPolicyReadOnly, nil, true),
+				msgDryRunPolicy},
+			{"deletionPolicy Delete under ReadOnly", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				managing(authentikiov1alpha1.ManagementPolicyReadOnly, nil, false)(s)
+				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			}, "ReadOnly never deletes"},
+			{"unknown policy", managing("Observe", nil, false), "Unsupported value"},
+		}
+		for _, c := range cases {
 			p := &authentikiov1alpha1.AuthentikOAuthProvider{
-				ObjectMeta: metav1.ObjectMeta{Name: "bad-match", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "bad-management", Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
 					AuthorizationFlow: "a", InvalidationFlow: "b",
 					RedirectURIs: []authentikiov1alpha1.RedirectURI{{URL: callbackURL}},
 				},
 			}
-			adopting(m, false)(&p.Spec)
+			c.mutate(&p.Spec)
 			err := k8sClient.Create(ctx, p)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("exactly one of name or pk"))
+			Expect(err).To(HaveOccurred(), c.name)
+			Expect(err.Error()).To(ContainSubstring(c.wantMsg), c.name)
 		}
+	})
+
+	It("accepts every valid management combination at admission", func() {
+		valid := []specMutator{
+			managing(authentikiov1alpha1.ManagementPolicyAdopt, nil, true),
+			managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate, &authentikiov1alpha1.ProviderMatch{PK: 3}, true),
+			managing(authentikiov1alpha1.ManagementPolicyReadOnly, &authentikiov1alpha1.ProviderMatch{Name: "x"}, false),
+			func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				managing(authentikiov1alpha1.ManagementPolicyReadOnly, nil, false)(s)
+				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyRetain
+			},
+		}
+		for i, mutate := range valid {
+			newProvider(fmt.Sprintf("valid-management-%d", i), mutate)
+		}
+	})
+
+	It("defaults managementPolicy to Create at admission", func() {
+		p := newProvider("default-policy", nil)
+		Expect(get(p).Spec.ManagementPolicy).To(Equal(authentikiov1alpha1.ManagementPolicyCreate))
 	})
 
 	It("reports a missing explicit match instead of creating a provider", func() {
@@ -257,7 +306,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(fake.Requests(true)).To(BeEmpty())
 	})
 
-	It("does not create when adoption is enabled and nothing matches, unless createIfMissing", func() {
+	It("does not create under Adopt when nothing matches, but does once switched to AdoptOrCreate", func() {
 		p := newProvider("nothing-yet", adopting(nil, false))
 		mustReconcile(p)
 		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
@@ -265,8 +314,26 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(fake.Requests(true)).To(BeEmpty())
 
 		cur := get(p)
-		cur.Spec.Adoption.CreateIfMissing = true
+		cur.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdoptOrCreate
 		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		mustReconcile(p)
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		Expect(fake.ProviderCount()).To(Equal(1))
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("nothing was found to adopt")))
+	})
+
+	It("adopts when AdoptOrCreate finds the provider, without creating a second one", func() {
+		pk := seedLegacy("either-way")
+		p := newProvider("either-way", managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate, nil, false))
+		mustReconcile(p)
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		Expect(get(p).Status.ProviderPK).To(Equal(pk))
+		Expect(fake.ProviderCount()).To(Equal(1))
+	})
+
+	It("creates under AdoptOrCreate when an explicit match finds nothing", func() {
+		p := newProvider("typo", managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate,
+			&authentikiov1alpha1.ProviderMatch{Name: "typo-provider"}, false))
 		mustReconcile(p)
 		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		Expect(fake.ProviderCount()).To(Equal(1))
@@ -277,13 +344,6 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		p := newProvider("default-key", nil)
 		mustReconcile(p)
 		Expect(fake.Provider(get(p).Status.ProviderPK)[jsonSigningKey]).To(Equal(fakeauthentik.SigningKeyPK))
-	})
-
-	It("does not create on a missing explicit match even with createIfMissing false, and creates with it true", func() {
-		p := newProvider("typo", adopting(&authentikiov1alpha1.ProviderMatch{Name: "typo-provider"}, false))
-		mustReconcile(p)
-		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
-		Expect(fake.ProviderCount()).To(BeZero())
 	})
 
 	It("refuses to adopt a provider another resource already tracks", func() {
@@ -338,23 +398,33 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
 	})
 
-	It("lets an explicit match beat the Created-vanished recreate when createIfMissing is false", func() {
-		p := newProvider("was-created", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
-			adopting(nil, false)(s)
-			s.Adoption.CreateIfMissing = true
-		})
+	It("recreates a provider this resource created when it vanishes, whatever match and policy say", func() {
+		p := newProvider("was-created", managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate, nil, false))
 		mustReconcile(p)
 		pk := get(p).Status.ProviderPK
 		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		fake.DeleteProvider(pk)
 
 		cur := get(p)
-		cur.Spec.Adoption.CreateIfMissing = false
-		cur.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: otherName}
+		cur.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
+		cur.Spec.Match = &authentikiov1alpha1.ProviderMatch{Name: otherName}
 		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 		mustReconcile(p)
-		Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
-		Expect(fake.ProviderCount()).To(BeZero())
+		Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		Expect(get(p).Status.ProviderPK).NotTo(Equal(pk))
+		Expect(fake.ProviderCount()).To(Equal(1))
+	})
+
+	It("does not recreate over a provider that took the vanished one's name; that is a Conflict", func() {
+		p := newProvider("name-taken", nil)
+		mustReconcile(p)
+		fake.DeleteProvider(get(p).Status.ProviderPK)
+		seedLegacy("name-taken")
+
+		mustReconcile(p)
+		Expect(ready(p).Reason).To(Equal(reasonConflict))
+		Expect(fake.ProviderCount()).To(Equal(1))
 	})
 
 	It("yields to the lower-UID resource when two track one provider", func() {
@@ -474,7 +544,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 
 			By("turning dryRun off adopts for real")
 			cur := get(p)
-			cur.Spec.Adoption.DryRun = false
+			cur.Spec.DryRun = false
 			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
 			mustReconcile(p)
 			Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
@@ -484,10 +554,9 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	})
 
 	Context("dry run with nothing to adopt", func() {
-		It("creates nothing and reports a would-create when createIfMissing is set", func() {
+		It("creates nothing and reports a would-create under AdoptOrCreate", func() {
 			p := newProvider("dry-miss", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
-				adopting(nil, true)(s)
-				s.Adoption.CreateIfMissing = true
+				managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate, nil, true)(s)
 				s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "dry-miss-creds"}
 			})
 			mustReconcile(p)
@@ -499,11 +568,123 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
-		It("reports AdoptionTargetNotFound when createIfMissing is false", func() {
+		It("reports AdoptionTargetNotFound under Adopt", func() {
 			p := newProvider("dry-miss2", adopting(nil, true))
 			mustReconcile(p)
 			Expect(fake.Requests(true)).To(BeEmpty())
 			Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+		})
+	})
+
+	Context("read only", func() {
+		readOnly := func(match *authentikiov1alpha1.ProviderMatch) specMutator {
+			return managing(authentikiov1alpha1.ManagementPolicyReadOnly, match, false)
+		}
+		drifted := func(p *authentikiov1alpha1.AuthentikOAuthProvider) *metav1.Condition {
+			return meta.FindStatusCondition(get(p).Status.Conditions, ConditionDrifted)
+		}
+
+		It("finds the provider, claims it and renders the Secret, but never writes to Authentik", func() {
+			pk := seedLegacy("ro-provider")
+			fake.SeedApplication("ro-app", pk)
+			p := newProvider("ro", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: roCreds}
+				readOnly(&authentikiov1alpha1.ProviderMatch{Name: "ro-provider"})(s)
+			})
+			DeferCleanup(func() {
+				_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: roCreds, Namespace: namespace}}))
+			})
+
+			mustReconcile(p)
+			Expect(fake.Requests(true)).To(BeEmpty(), "read only must never write to Authentik")
+			cur := get(p)
+			Expect(cur.Status.ProviderPK).To(Equal(pk))
+			Expect(cur.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			Expect(cur.Status.ClientID).To(Equal(legacyID))
+			Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready(p).Reason).To(Equal(reasonReadOnly))
+			var s corev1.Secret
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: roCreds}, &s)).To(Succeed())
+			Expect(s.Data["client-id"]).To(Equal([]byte(legacyID)))
+			Expect(s.Data["client-secret"]).To(Equal([]byte(legacySecret)))
+		})
+
+		It("reports drift in the Drifted condition, naming the fields and hiding secrets", func() {
+			seedLegacy("drift-provider")
+			p := newProvider("drift", readOnly(&authentikiov1alpha1.ProviderMatch{Name: "drift-provider"}))
+			mustReconcile(p)
+
+			cond := drifted(p)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Message).To(ContainSubstring("sub_mode: "))
+			Expect(cond.Message).To(ContainSubstring("user_email"))
+			Expect(cond.Message).To(ContainSubstring("redirect_uris"))
+			Expect(cond.Message).NotTo(ContainSubstring(legacySecret))
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("reports no drift once the live provider matches the spec", func() {
+			pk := seedLegacy("match-provider")
+			p := newProvider("match", readOnly(&authentikiov1alpha1.ProviderMatch{Name: "match-provider"}))
+			mustReconcile(p)
+			Expect(drifted(p).Status).To(Equal(metav1.ConditionTrue))
+
+			By("the live provider is brought in line out of band")
+			fake.SetProviderField(pk, "sub_mode", "hashed_user_id")
+			fake.SetProviderField(pk, "grant_types", []any{"authorization_code", "refresh_token"})
+			fake.SetProviderField(pk, "property_mappings", []any{fakeauthentik.ScopeOpenIDPK,
+				fakeauthentik.ScopeProfilePK, fakeauthentik.ScopeEmailPK})
+			fake.SetProviderField(pk, "redirect_uris", []any{map[string]any{
+				"matching_mode": "strict", "url": "https://match.example.com/cb", "redirect_uri_type": "authorization"}})
+			mustReconcile(p)
+			Expect(drifted(p).Status).To(Equal(metav1.ConditionFalse))
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("reports a miss as AdoptionTargetNotFound and never creates", func() {
+			p := newProvider("ro-miss", readOnly(nil))
+			mustReconcile(p)
+			Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+			Expect(fake.ProviderCount()).To(BeZero())
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("never recreates the provider when it vanishes", func() {
+			pk := seedLegacy("ro-vanish")
+			p := newProvider("ro-vanish", readOnly(nil))
+			mustReconcile(p)
+			fake.DeleteProvider(pk)
+
+			mustReconcile(p)
+			Expect(ready(p).Reason).To(Equal(reasonAdoptionTargetNotFound))
+			Expect(fake.ProviderCount()).To(BeZero())
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+
+		It("never deletes the provider when the resource is deleted", func() {
+			pk := seedLegacy("ro-keep")
+			p := newProvider("ro-keep", readOnly(nil))
+			mustReconcile(p)
+			Expect(k8sClient.Delete(ctx, get(p))).To(Succeed())
+			mustReconcile(p)
+			Expect(gone(p)).To(BeTrue())
+			Expect(fake.Provider(pk)).NotTo(BeNil())
+		})
+
+		It("removes the Drifted condition when the policy is no longer ReadOnly", func() {
+			seedLegacy("leave-ro")
+			p := newProvider("leave-ro", readOnly(nil))
+			mustReconcile(p)
+			Expect(drifted(p)).NotTo(BeNil())
+
+			cur := get(p)
+			cur.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
+			Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+			mustReconcile(p)
+			Expect(drifted(p)).To(BeNil())
+			Expect(fake.Requests(true)).NotTo(BeEmpty(), "Adopt writes the spec once ReadOnly is lifted")
 		})
 	})
 
@@ -554,11 +735,8 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 	})
 
 	Context("pendingCreate recovery", func() {
-		It("classifies a recovered own create as Created even with adoption enabled", func() {
-			p := newProvider("lost", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
-				adopting(nil, false)(s)
-				s.Adoption.CreateIfMissing = true
-			})
+		It("classifies a recovered own create as Created even under AdoptOrCreate", func() {
+			p := newProvider("lost", managing(authentikiov1alpha1.ManagementPolicyAdoptOrCreate, nil, false))
 			fake.LoseNextCreate()
 			_, err := reconcileOnce(p)
 			Expect(err).To(HaveOccurred())

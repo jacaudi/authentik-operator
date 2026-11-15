@@ -27,18 +27,32 @@ import (
 	"slices"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/connection"
 )
 
-// Condition reasons shared by the kinds that support adoption.
+// Condition types and reasons shared by the kinds that support adoption.
 const (
-	// reasonAdoptionDryRun marks Ready=False while spec.adoption.dryRun
-	// reports what adoption would change.
+	// ConditionDrifted reports, under managementPolicy ReadOnly, whether the
+	// object in Authentik differs from the spec. It is absent under every
+	// other policy, which reconciles the difference instead.
+	ConditionDrifted = "Drifted"
+
+	// reasonAdoptionDryRun marks Ready=False while spec.dryRun reports what
+	// adoption would change.
 	reasonAdoptionDryRun = "AdoptionDryRun"
-	// reasonAdoptionTargetNotFound marks an explicit spec.adoption.match
-	// that names no existing object.
+	// reasonAdoptionTargetNotFound marks an adoption (or ReadOnly) target
+	// that names no existing object, or an adopted object that vanished.
 	reasonAdoptionTargetNotFound = "AdoptionTargetNotFound"
+	// reasonReadOnly marks Ready=True for a ReadOnly resource that found and
+	// observes its object.
+	reasonReadOnly = "ReadOnly"
+	// reasonDriftDetected and reasonInSync are the Drifted reasons.
+	reasonDriftDetected = "DriftDetected"
+	reasonInSync        = "InSync"
 )
 
 // conditionError is a problem that retrying cannot fix: a reference that
@@ -110,6 +124,36 @@ func connectionGone(err error) bool {
 		return true
 	}
 	return false
+}
+
+// readOnly reports whether the policy is ReadOnly: the resource finds its
+// object and observes it, and never writes to Authentik.
+func readOnly(mp authentikiov1alpha1.ManagementPolicy) bool {
+	return mp.Resolve() == authentikiov1alpha1.ManagementPolicyReadOnly
+}
+
+// adoptVerb is what a policy that may adopt does with the object it finds,
+// for messages.
+func adoptVerb(mp authentikiov1alpha1.ManagementPolicy) string {
+	if readOnly(mp) {
+		return "observe"
+	}
+	return "adopt"
+}
+
+// recordDrift sets the Drifted condition from the patch that reconciling
+// would apply: True with the differing fields (as "field: live -> spec"), or
+// False when there is none.
+func recordDrift(conds *[]metav1.Condition, generation int64, patch, live any, changed []string) {
+	cond := metav1.Condition{
+		Type: ConditionDrifted, Status: metav1.ConditionFalse, Reason: reasonInSync,
+		Message: "the object in Authentik matches the spec", ObservedGeneration: generation,
+	}
+	if len(changed) > 0 {
+		cond.Status, cond.Reason = metav1.ConditionTrue, reasonDriftDetected
+		cond.Message = "the object in Authentik differs from the spec: " + describeChanges(patch, live)
+	}
+	meta.SetStatusCondition(conds, cond)
 }
 
 // managedField is one field a patch builder compares. apply copies the
