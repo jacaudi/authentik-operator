@@ -155,7 +155,8 @@ does not let a team choose the Secret's keys, labels or annotations, so a team
 cannot, for example, opt a rendered Secret into `authentik.io/connection` or
 into another controller's label selector. Template labels and annotations
 reject the reserved prefix `authentik.io/`. Variables are inserted into YAML,
-so values containing control characters are refused (`spec.clientId` is
+so values containing control characters (C0, DEL and C1, which includes NEL)
+or the YAML line breaks U+2028 and U+2029 are refused (`spec.clientId` is
 restricted to printable ASCII at admission), and an unquoted `.Name` is
 caught when the template is validated. Neither a newline nor YAML syntax in a
 value can add keys.
