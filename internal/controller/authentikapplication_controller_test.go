@@ -312,8 +312,9 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(fake.Application("app-404")).To(BeNil())
 	})
 
-	It("recovers a lost create of an application without a provider", func() {
-		a := newApp("app-lost-plain", "")
+	It("recovers a lost create when the application links to the provider this resource created", func() {
+		readyProvider("prov-lost")
+		a := newApp("app-lost-plain", "prov-lost")
 		create(a)
 		fake.LoseNextApplicationCreate()
 
@@ -325,8 +326,24 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
 		Expect(get(a).Status.PendingCreate).To(BeEmpty())
+		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		Expect(get(a).Status.ApplicationUID).To(Equal(fake.Application("app-lost-plain")["pk"]))
 		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("Recovered")))
+	})
+
+	It("cannot prove a lost create of an application without a provider, so reports a Conflict", func() {
+		a := newApp("app-lost-bare", "")
+		create(a)
+		fake.LoseNextApplicationCreate()
+
+		_, err := reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Reason).To(Equal(reasonConflict))
+		Expect(get(a).Status.Provenance).To(BeEmpty())
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("outcome is unproven")))
 	})
 
 	It("clears the pending marker when a create is definitively rejected", func() {

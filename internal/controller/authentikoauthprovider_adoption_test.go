@@ -44,6 +44,7 @@ const (
 
 	msgDryRunPolicy = "dryRun requires managementPolicy"
 	roCreds         = "ro-creds"
+	loserCreds      = "loser-creds"
 
 	jsonURL              = "url"
 	jsonRedirectURIs     = "redirect_uris"
@@ -542,6 +543,106 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(get(low).Status.ProviderPK).To(Equal(pk))
 	})
 
+	// claimStatus makes p hold pk with the given provenance, as a reconcile
+	// would have recorded.
+	claimStatus := func(p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32, prov authentikiov1alpha1.Provenance) {
+		cur := get(p)
+		cur.Status.Provenance, cur.Status.ProviderPK, cur.Status.ClientID = prov, pk, legacyID
+		Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+	}
+
+	Context("two resources tracking one provider", func() {
+		It("lets a Created resource keep it and makes the Adopted one yield, whatever their UIDs", func() {
+			pk := seedLegacy("tie")
+			a := newProvider("tie-a", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			b := newProvider("tie-b", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			owner, adopter := a, b
+			if get(a).UID < get(b).UID { // the Created one must have the HIGHER uid
+				owner, adopter = b, a
+			}
+			claimStatus(owner, pk, authentikiov1alpha1.ProvenanceCreated)
+			claimStatus(adopter, pk, authentikiov1alpha1.ProvenanceAdopted)
+
+			mustReconcile(adopter)
+			Expect(ready(adopter).Reason).To(Equal(reasonConflict))
+			Expect(get(adopter).Status.ProviderPK).To(BeZero())
+			Expect(get(adopter).Status.Provenance).To(BeEmpty())
+
+			mustReconcile(owner)
+			Expect(ready(owner).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(owner).Status.ProviderPK).To(Equal(pk))
+			Expect(get(owner).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+		})
+
+		It("counts a terminating owner: a new adopter is refused while the owner's finalizer is pending", func() {
+			owner := newProvider("dying-owner", nil)
+			mustReconcile(owner)
+			pk := get(owner).Status.ProviderPK
+			Expect(k8sClient.Delete(ctx, get(owner))).To(Succeed()) // the finalizer keeps it terminating
+
+			adopter := newProvider("late-adopter", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			mustReconcile(adopter)
+			Expect(ready(adopter).Reason).To(Equal(reasonConflict))
+			Expect(ready(adopter).Message).To(ContainSubstring("dying-owner"))
+			Expect(get(adopter).Status.ProviderPK).To(BeZero())
+		})
+
+		It("makes an adopter yield to a terminating Created owner, so the owner's delete cannot strand it", func() {
+			pk := seedLegacy("stranded")
+			adopter := newProvider("stranded", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			mustReconcile(adopter)
+			Expect(get(adopter).Status.ProviderPK).To(Equal(pk))
+
+			owner := newProvider("stranded-owner", nil)
+			mustReconcile(owner) // adds the finalizer; the owner then takes over the adopter's pk
+			claimStatus(owner, pk, authentikiov1alpha1.ProvenanceCreated)
+			Expect(k8sClient.Delete(ctx, get(owner))).To(Succeed())
+
+			mustReconcile(adopter)
+			Expect(ready(adopter).Reason).To(Equal(reasonConflict))
+			Expect(get(adopter).Status.ProviderPK).To(BeZero())
+		})
+
+		It("settles a race the cache missed: the claim re-check reads the API, not the informer cache", func() {
+			pk := seedLegacy("raced-cache")
+			owner := newProvider("raced-owner", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			claimStatus(owner, pk, authentikiov1alpha1.ProvenanceCreated)
+
+			loser := newProvider("raced-loser", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			reconciler.Client = staleListClient{k8sClient} // the cache has not seen the owner's claim yet
+			mustReconcile(loser)
+
+			Expect(ready(loser).Reason).To(Equal(reasonConflict))
+			Expect(get(loser).Status.ProviderPK).To(BeZero())
+			Expect(fake.Requests(true)).To(BeEmpty(), "the loser must yield before it writes to Authentik")
+		})
+
+		It("deletes the credentials Secret a loser rendered when it yields", func() {
+			pk := seedLegacy("secret-loser")
+			fake.SeedApplication("secret-loser-app", pk)
+			loser := newProvider("secret-loser", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: loserCreds}
+				adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false)(s)
+			})
+			DeferCleanup(func() {
+				_ = client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: loserCreds, Namespace: namespace}}))
+			})
+			mustReconcile(loser)
+			secretKey := client.ObjectKey{Namespace: namespace, Name: loserCreds}
+			Expect(k8sClient.Get(ctx, secretKey, &corev1.Secret{})).To(Succeed())
+
+			owner := newProvider("secret-owner", adopting(&authentikiov1alpha1.ProviderMatch{PK: pk}, false))
+			claimStatus(owner, pk, authentikiov1alpha1.ProvenanceCreated)
+
+			mustReconcile(loser)
+			Expect(ready(loser).Reason).To(Equal(reasonConflict))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, secretKey, &corev1.Secret{}))).To(BeTrue(),
+				"the loser must not keep the live client_secret")
+			Expect(get(loser).Status.SecretName).To(BeEmpty())
+		})
+	})
+
 	It("never deletes a provider whose provenance is undecided", func() {
 		pk := seedLegacy("unknown")
 		p := newProvider("unknown", nil)
@@ -812,6 +913,21 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			pk := get(p).Status.ProviderPK
 			deleteAndFinalize(p)
 			Expect(fake.Provider(pk)).NotTo(BeNil())
+		})
+
+		It("honours an explicit Delete on undecided provenance, with a Warning event", func() {
+			pk := seedLegacy("undecided-delete")
+			p := newProvider("undecided-delete", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			})
+			mustReconcile(p) // Conflict: adds the finalizer, decides nothing
+			claimStatus(p, pk, "")
+			drainEvents(recorder)
+
+			deleteAndFinalize(p)
+			Expect(fake.Provider(pk)).To(BeNil())
+			Expect(drainEvents(recorder)).To(ContainElement(SatisfyAll(
+				ContainSubstring("Warning"), ContainSubstring("provenance is undecided"))))
 		})
 
 		It("honours an explicit Delete on an adopted provider", func() {

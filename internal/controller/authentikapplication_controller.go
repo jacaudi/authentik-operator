@@ -158,7 +158,7 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 		a.Spec.AuthentikRef, a.Spec.ManagementPolicy); err != nil {
 		return nil, err
 	}
-	providerPK, err := r.providerPK(ctx, a)
+	providerPK, providerCreated, err := r.providerPK(ctx, a)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	}
 	c := resolved.Client
 	want := desiredApplication(a, providerPK)
-	got, err := r.observeApplication(ctx, c, a, want, persist)
+	got, err := r.observeApplication(ctx, c, a, desiredApp{want, providerCreated}, persist)
 	if err != nil {
 		return nil, err
 	}
@@ -204,14 +204,25 @@ func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *
 			"application %q in Authentik has pk %s, not %s recorded by this resource; refusing to modify it. "+
 				"If this resource should manage a new application, clear status.applicationUid",
 			a.Status.Slug, got.Pk, uid)
-	case err == nil && a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
-		return got, r.yieldToLower(ctx, a)
 	case err == nil:
+		if err := r.yieldIfOutranked(ctx, r.Client, a); err != nil {
+			return nil, err
+		}
 		return got, nil
 	case !authentik.IsNotFound(err):
 		return nil, err
 	}
 	return nil, nil
+}
+
+// desiredApp is the request an application should match plus what is known
+// about its provider: whether this resource's providerRef names a provider
+// that this resource created, which is half the proof that an application
+// found after a lost create is ours.
+type desiredApp struct {
+	*api.ApplicationRequest
+
+	providerCreated bool
 }
 
 // observeApplication finds the application this resource manages: by
@@ -220,8 +231,7 @@ func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *
 // adopted. nil means it has to be created; an existing application that is
 // none of these is a Conflict.
 func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context, c *authentik.Client,
-	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest,
-	persist func() error) (*api.Application, error) {
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, persist func() error) (*api.Application, error) {
 	slug := want.Slug
 	if a.Status.ApplicationUID != "" {
 		got, err := r.observeTracked(ctx, c, a)
@@ -231,19 +241,15 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	}
 
 	existing, err := c.GetApplication(ctx, slug)
-	switch {
-	case err == nil && a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID:
+	if err == nil && a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID {
 		return existing, nil // the earlier 404 was transient
-	case err == nil && a.Status.PendingCreate == slug:
-		// Checked before adoption so a recovered own create is never
-		// classified as Adopted.
-		logf.FromContext(ctx).Info("Recovered Application from a create whose outcome was lost", "slug", existing.Slug)
-		r.event(a, corev1.EventTypeNormal, "Recovered", "Create",
-			"Recovered application %q created by an earlier reconcile", existing.Slug)
-		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
+	}
+	if err == nil && a.Status.PendingCreate == slug && r.recoverOwnCreate(ctx, a, want, existing) {
 		return existing, nil
+	}
+	switch {
 	case err == nil && a.Spec.ManagementPolicy.MayAdopt():
-		return r.adoptApplication(ctx, a, want, existing, persist)
+		return r.adoptApplication(ctx, a, want.ApplicationRequest, existing, persist)
 	case err == nil:
 		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
 			"created by this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it "+
@@ -253,6 +259,33 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	default:
 		return nil, err
 	}
+}
+
+// recoverOwnCreate decides whether existing, found by slug while
+// status.pendingCreate says a create was sent, is this resource's own
+// application, and if so records it as Created. An application has no client
+// ID to prove that, so the proof is its provider link: it points at the
+// provider of this resource's providerRef, and this resource created that
+// provider. Anything else could be another operator's object that took the
+// slug (a stale marker), and calling it Created would let a delete remove it:
+// the marker is dropped with a Warning event and the object takes the normal
+// path (adopt if the policy allows, else Conflict). Checked before adoption so
+// a recovered own create is never classified as Adopted.
+func (r *AuthentikApplicationReconciler) recoverOwnCreate(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, existing *api.Application) bool {
+	wantPK := int32OrZero(want.Provider.Get())
+	if want.providerCreated && wantPK != 0 && int32OrZero(existing.Provider.Get()) == wantPK {
+		logf.FromContext(ctx).Info("Recovered Application from a create whose outcome was lost", "slug", existing.Slug)
+		r.event(a, corev1.EventTypeNormal, "Recovered", "Create",
+			"Recovered application %q created by an earlier reconcile", existing.Slug)
+		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
+		return true
+	}
+	r.event(a, corev1.EventTypeWarning, "CreateUnproven", "Create",
+		"A create of application %q was sent but its outcome is unproven: the existing application does not link "+
+			"to a provider this resource created, so it is not treated as created by this resource", existing.Slug)
+	a.Status.PendingCreate = ""
+	return false
 }
 
 // missingApplication decides what a miss means: nil to create (Create, an
@@ -287,44 +320,51 @@ func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alph
 	return nil
 }
 
-// yieldToLower clears this resource's claim and reports a Conflict when
-// another resource tracks the same application and has the lower UID, so two
-// resources that passed the pre-adoption check together are settled by UID.
-func (r *AuthentikApplicationReconciler) yieldToLower(ctx context.Context,
+// appClaim is a's own hold on its application.
+func appClaim(a *authentikiov1alpha1.AuthentikApplication) claim {
+	return claim{namespace: a.Namespace, name: a.Name, uid: a.UID, provenance: a.Status.Provenance,
+		ref: a.Spec.AuthentikRef}
+}
+
+// claimants lists the other application resources, terminating ones included,
+// that track uid on the same connection as a. rd is the cached client for the
+// routine check and the API reader where a stale answer is not good enough.
+func (r *AuthentikApplicationReconciler) claimants(ctx context.Context, rd client.Reader,
+	a *authentikiov1alpha1.AuthentikApplication, uid string) ([]claim, error) {
+	var list authentikiov1alpha1.AuthentikApplicationList
+	if err := rd.List(ctx, &list); err != nil {
+		return nil, fmt.Errorf("list AuthentikApplications: %w", err)
+	}
+	var out []claim
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.UID != a.UID && o.Status.ApplicationUID == uid &&
+			sameConnection(o.Namespace, o.Spec.AuthentikRef, a.Namespace, a.Spec.AuthentikRef) {
+			out = append(out, appClaim(o))
+		}
+	}
+	return out, nil
+}
+
+// yieldIfOutranked releases this resource's claim and reports a Conflict when
+// another resource holding the same application outranks it (see
+// claim.outranks), so two resources that passed the pre-adoption check
+// together are settled, and a Created resource keeps the application over an
+// adopter. rd is the reader the holders are listed with.
+func (r *AuthentikApplicationReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader,
 	a *authentikiov1alpha1.AuthentikApplication) error {
-	other, otherUID, err := r.trackingBy(ctx, a, a.Status.ApplicationUID)
-	if err != nil || other == "" || otherUID >= a.UID {
+	others, err := r.claimants(ctx, rd, a, a.Status.ApplicationUID)
+	if err != nil {
 		return err
+	}
+	winner, lost := outrankedBy(appClaim(a), others)
+	if !lost {
+		return nil
 	}
 	slug := a.Status.Slug
 	a.Status.Provenance, a.Status.ApplicationUID, a.Status.Slug = "", "", ""
 	return condErrf(reasonConflict, "application %q is also claimed by %s, which takes precedence; "+
-		"this resource released it", slug, other)
-}
-
-// otherTracking names another application resource (namespace/name) that
-// already tracks uid on the same connection, or "".
-func (r *AuthentikApplicationReconciler) otherTracking(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication, uid string) (string, error) {
-	name, _, err := r.trackingBy(ctx, a, uid)
-	return name, err
-}
-
-// trackingBy is otherTracking that also returns the other resource's UID.
-func (r *AuthentikApplicationReconciler) trackingBy(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication, uid string) (string, types.UID, error) {
-	var list authentikiov1alpha1.AuthentikApplicationList
-	if err := r.List(ctx, &list); err != nil {
-		return "", "", fmt.Errorf("list AuthentikApplications: %w", err)
-	}
-	for i := range list.Items {
-		o := &list.Items[i]
-		if o.UID != a.UID && o.Status.ApplicationUID == uid && o.DeletionTimestamp.IsZero() &&
-			sameConnection(o.Namespace, o.Spec.AuthentikRef, a.Namespace, a.Spec.AuthentikRef) {
-			return o.Namespace + "/" + o.Name, o.UID, nil
-		}
-	}
-	return "", "", nil
+		"this resource released it", slug, winner)
 }
 
 // adoptApplication takes over target: in dry-run mode it only reports what
@@ -332,11 +372,14 @@ func (r *AuthentikApplicationReconciler) trackingBy(ctx context.Context,
 func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest, target *api.Application,
 	persist func() error) (*api.Application, error) {
-	if other, err := r.otherTracking(ctx, a, target.Pk); err != nil {
+	// Any other holder, terminating ones included, refuses the adoption. This
+	// read may be served by a lagging cache; the re-check after the claim is
+	// persisted below is the authoritative one.
+	if others, err := r.claimants(ctx, r.Client, a, target.Pk); err != nil {
 		return nil, err
-	} else if other != "" {
+	} else if len(others) > 0 {
 		return nil, condErrf(reasonConflict, "application %q is already managed by %s; "+
-			"two resources cannot manage one application", target.Slug, other)
+			"two resources cannot manage one application", target.Slug, others[0])
 	}
 	if a.Spec.DryRun {
 		view := *want
@@ -362,8 +405,10 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	if err := persist(); err != nil {
 		return nil, err
 	}
-	// Re-check after the claim is visible; no Authentik write has happened.
-	if err := r.yieldToLower(ctx, a); err != nil {
+	// Re-check after the claim is persisted, reading the API rather than the
+	// informer cache, which need not hold another resource's just-written
+	// claim; no Authentik write has happened yet.
+	if err := r.yieldIfOutranked(ctx, r.APIReader, a); err != nil {
 		return nil, err
 	}
 	if readOnly(a.Spec.ManagementPolicy) {
@@ -419,25 +464,26 @@ func (r *AuthentikApplicationReconciler) updateApplication(ctx context.Context, 
 	return updated, nil
 }
 
-// providerPK resolves spec.providerRef to the provider's Authentik pk. While
-// the provider is missing, not Ready, or on a different connection, the
-// returned conditionError says so; the provider's watch re-triggers this
-// reconcile.
+// providerPK resolves spec.providerRef to the provider's Authentik pk, and
+// reports whether the provider resource created that provider (provenance
+// Created). While the provider is missing, not Ready, or on a different
+// connection, the returned conditionError says so; the provider's watch
+// re-triggers this reconcile.
 func (r *AuthentikApplicationReconciler) providerPK(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication) (int32, error) {
+	a *authentikiov1alpha1.AuthentikApplication) (pk int32, created bool, err error) {
 	ref := a.Spec.ProviderRef
 	if ref == nil {
-		return 0, nil
+		return 0, false, nil
 	}
 	var p authentikiov1alpha1.AuthentikOAuthProvider
 	if err := r.Get(ctx, types.NamespacedName{Namespace: a.Namespace, Name: ref.Name}, &p); err != nil {
 		if apierrors.IsNotFound(err) {
-			return 0, condErrf(reasonProviderNotFound, "%s %s/%s not found", ref.Kind, a.Namespace, ref.Name)
+			return 0, false, condErrf(reasonProviderNotFound, "%s %s/%s not found", ref.Kind, a.Namespace, ref.Name)
 		}
-		return 0, err
+		return 0, false, err
 	}
 	if !sameAuthentikRef(p.Spec.AuthentikRef, a.Spec.AuthentikRef) {
-		return 0, condErrf(reasonProviderConnectionMismatch,
+		return 0, false, condErrf(reasonProviderConnectionMismatch,
 			"provider %s uses a different authentikRef than this application; both must point at the same Authentik",
 			ref.Name)
 	}
@@ -450,9 +496,9 @@ func (r *AuthentikApplicationReconciler) providerPK(ctx context.Context,
 		if cond != nil && cond.Status != metav1.ConditionTrue {
 			msg += fmt.Sprintf(" (provider reason: %s)", cond.Reason)
 		}
-		return 0, condErr(reasonProviderNotReady, errors.New(msg))
+		return 0, false, condErr(reasonProviderNotReady, errors.New(msg))
 	}
-	return p.Status.ProviderPK, nil
+	return p.Status.ProviderPK, p.Status.Provenance == authentikiov1alpha1.ProvenanceCreated, nil
 }
 
 // finalize deletes the application this resource created, then releases the
@@ -475,6 +521,13 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 				"Application %q left in Authentik (deletionPolicy Retain)", a.Status.Slug)
 		}
 	} else if a.Status.ApplicationUID != "" {
+		if a.Status.Provenance == "" {
+			// Undecided provenance resolves to Retain unless the spec says
+			// Delete, so reaching here means an explicit Delete.
+			r.event(a, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+				"Deleting application %q on an explicit deletionPolicy Delete although this resource's provenance "+
+					"is undecided: it may not have created it", a.Status.Slug)
+		}
 		resolved, err := resolveForDeletion(ctx, r.Connections, a.Namespace, a.Spec.AuthentikRef)
 		switch {
 		case err == nil:

@@ -299,9 +299,10 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk, "+
 				"status.provenance and status.clientId",
 			pk, got.GetClientId(), p.Status.ClientID)
-	case err == nil && p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
-		return got, r.yieldToLower(ctx, p)
 	case err == nil:
+		if err := r.yieldIfOutranked(ctx, r.Client, p); err != nil {
+			return nil, err
+		}
 		return got, nil
 	case authentik.IsNotFound(err):
 		switch {
@@ -412,11 +413,14 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest, target *api.OAuth2Provider,
 	persist func() error) (*api.OAuth2Provider, error) {
-	if other, err := r.otherTracking(ctx, p, target.Pk); err != nil {
+	// Any other holder, terminating ones included, refuses the adoption. This
+	// read may be served by a lagging cache; the re-check after the claim is
+	// persisted below is the authoritative one.
+	if others, err := r.claimants(ctx, r.Client, p, target.Pk); err != nil {
 		return nil, err
-	} else if other != "" {
+	} else if len(others) > 0 {
 		return nil, condErrf(reasonConflict, "OAuth2 provider pk %d is already managed by %s; "+
-			"two resources cannot manage one provider", target.Pk, other)
+			"two resources cannot manage one provider", target.Pk, others[0])
 	}
 	if p.Spec.DryRun {
 		view := *want
@@ -442,10 +446,11 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	if err := persist(); err != nil {
 		return nil, err
 	}
-	// Re-check after the claim is visible: a resource that passed the
-	// pre-check at the same time is settled by UID. No Authentik write has
-	// happened yet.
-	if err := r.yieldToLower(ctx, p); err != nil {
+	// Re-check after the claim is persisted, reading the API rather than the
+	// informer cache, which need not hold another resource's just-written
+	// claim: a resource that passed the pre-check at the same time is settled
+	// by the tie-break. No Authentik write has happened yet.
+	if err := r.yieldIfOutranked(ctx, r.APIReader, p); err != nil {
 		return nil, err
 	}
 	if readOnly(p.Spec.ManagementPolicy) {
@@ -458,45 +463,59 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	return target, nil
 }
 
-// yieldToLower clears this resource's claim and reports a Conflict when
-// another resource tracks the same provider and has the lower UID. It
-// settles the race in which two resources pass the pre-adoption check
-// together: the lower UID keeps the provider, the other backs off.
-func (r *AuthentikOAuthProviderReconciler) yieldToLower(ctx context.Context,
+// selfClaim is p's own hold on its provider.
+func selfClaim(p *authentikiov1alpha1.AuthentikOAuthProvider) claim {
+	return claim{namespace: p.Namespace, name: p.Name, uid: p.UID, provenance: p.Status.Provenance,
+		ref: p.Spec.AuthentikRef}
+}
+
+// claimants lists the other provider resources, terminating ones included,
+// that track pk on the same connection as p. rd is the cached client for the
+// routine check and the API reader where a stale answer is not good enough.
+func (r *AuthentikOAuthProviderReconciler) claimants(ctx context.Context, rd client.Reader,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) ([]claim, error) {
+	var list authentikiov1alpha1.AuthentikOAuthProviderList
+	if err := rd.List(ctx, &list); err != nil {
+		return nil, fmt.Errorf("list AuthentikOAuthProviders: %w", err)
+	}
+	var out []claim
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.UID != p.UID && o.Status.ProviderPK == pk &&
+			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
+			out = append(out, selfClaim(o))
+		}
+	}
+	return out, nil
+}
+
+// yieldIfOutranked releases this resource's claim and reports a Conflict when
+// another resource holding the same provider outranks it (see claim.outranks).
+// It settles the race in which two resources pass the pre-adoption check
+// together, and a Created resource that outranks an adopter keeps the
+// provider. The loser also deletes the credentials Secret it rendered, which
+// holds the live client secret. rd is the reader the holders are listed with.
+func (r *AuthentikOAuthProviderReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) error {
-	other, otherUID, err := r.trackingBy(ctx, p, p.Status.ProviderPK)
-	if err != nil || other == "" || otherUID >= p.UID {
+	others, err := r.claimants(ctx, rd, p, p.Status.ProviderPK)
+	if err != nil {
 		return err
 	}
+	winner, lost := outrankedBy(selfClaim(p), others)
+	if !lost {
+		return nil
+	}
+	if prev := p.Status.SecretName; prev != "" {
+		if err := r.deleteOwnedSecret(ctx, p, prev); err != nil {
+			return err
+		}
+		p.Status.SecretName = ""
+	}
+	meta.RemoveStatusCondition(&p.Status.Conditions, ConditionCredentialsReady)
 	pk := p.Status.ProviderPK
 	p.Status.Provenance, p.Status.ProviderPK, p.Status.ClientID = "", 0, ""
 	return condErrf(reasonConflict, "OAuth2 provider pk %d is also claimed by %s, which takes precedence; "+
-		"this resource released it", pk, other)
-}
-
-// otherTracking names another provider resource (namespace/name) that
-// already tracks pk on the same connection, or "".
-func (r *AuthentikOAuthProviderReconciler) otherTracking(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, error) {
-	name, _, err := r.trackingBy(ctx, p, pk)
-	return name, err
-}
-
-// trackingBy is otherTracking that also returns the other resource's UID.
-func (r *AuthentikOAuthProviderReconciler) trackingBy(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, types.UID, error) {
-	var list authentikiov1alpha1.AuthentikOAuthProviderList
-	if err := r.List(ctx, &list); err != nil {
-		return "", "", fmt.Errorf("list AuthentikOAuthProviders: %w", err)
-	}
-	for i := range list.Items {
-		o := &list.Items[i]
-		if o.UID != p.UID && o.Status.ProviderPK == pk && o.DeletionTimestamp.IsZero() &&
-			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
-			return o.Namespace + "/" + o.Name, o.UID, nil
-		}
-	}
-	return "", "", nil
+		"this resource released it", pk, winner)
 }
 
 // createProvider creates the provider, recording status.pendingCreate first
@@ -572,6 +591,13 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 				"OAuth2 provider pk %d left in Authentik (deletionPolicy Retain)", pk)
 		}
 	} else if pk != 0 {
+		if p.Status.Provenance == "" {
+			// Undecided provenance resolves to Retain unless the spec says
+			// Delete, so reaching here means an explicit Delete.
+			r.event(p, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+				"Deleting OAuth2 provider pk %d on an explicit deletionPolicy Delete although this resource's "+
+					"provenance is undecided: it may not have created it", pk)
+		}
 		resolved, err := resolveForDeletion(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 		switch {
 		case err == nil:

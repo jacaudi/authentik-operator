@@ -564,8 +564,36 @@ var _ = Describe("AuthentikApplication adoption", func() {
 	})
 
 	Context("pendingCreate recovery", func() {
-		It("classifies a recovered own create as Created even under AdoptOrCreate", func() {
-			a := newApp("lost-app", "", policyAdoptOrCreate, false)
+		// adoptedProvider makes a provider resource that adopted a live provider,
+		// returning its pk.
+		adoptedProvider := func(name string) int32 {
+			pk := fake.SeedProviderWith(map[string]any{jsonName: name})
+			p := &authentikiov1alpha1.AuthentikOAuthProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikOAuthProviderSpec{
+					AuthorizationFlow: fakeauthentik.FlowAuthorizationSlug,
+					InvalidationFlow:  fakeauthentik.FlowInvalidationSlug,
+					RedirectURIs:      []authentikiov1alpha1.RedirectURI{{URL: "https://" + name + ".example.com/cb"}},
+					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt},
+				},
+			}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			cleanup(p)
+			_, err := providers.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
+			Expect(p.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			return pk
+		}
+		markPending := func(a *authentikiov1alpha1.AuthentikApplication) {
+			cur := get(a)
+			cur.Status.PendingCreate = a.Name
+			Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		}
+
+		It("classifies a recovered own create as Created when it links to a provider this resource created", func() {
+			readyProvider("lost-prov")
+			a := newApp("lost-app", "lost-prov", policyAdoptOrCreate, false)
 			fake.LoseNextApplicationCreate()
 			_, err := reconcileApp(a)
 			Expect(err).To(HaveOccurred())
@@ -575,6 +603,149 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			Expect(fake.ApplicationCount()).To(Equal(1))
 			Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 			Expect(get(a).Status.PendingCreate).To(BeEmpty())
+		})
+
+		It("does not trust a stale marker: a foreign application is a Conflict with a Warning event", func() {
+			readyProvider("stale-prov")
+			a := newApp("stale-app", "stale-prov", policyCreate, false)
+			markPending(a)
+			seedLegacy("stale-app", nil) // another operator made it; it links to no provider of ours
+			writes := len(fake.Requests(true))
+
+			mustReconcile(a)
+			Expect(ready(a).Reason).To(Equal(reasonConflict))
+			Expect(get(a).Status.Provenance).To(BeEmpty(), "never Created on an unproven marker")
+			Expect(get(a).Status.PendingCreate).To(BeEmpty(), "the unproven marker is dropped")
+			Expect(drainEvents(recorder)).To(ContainElement(SatisfyAll(
+				ContainSubstring("Warning"), ContainSubstring("outcome is unproven"))))
+			Expect(fake.Requests(true)).To(HaveLen(writes), "nothing was written to the application")
+
+			By("deleting the resource does not delete the foreign application")
+			Expect(k8sClient.Delete(ctx, get(a))).To(Succeed())
+			mustReconcile(a)
+			Expect(fake.Application("stale-app")).NotTo(BeNil())
+		})
+
+		It("falls through to adoption, not Created, when the policy allows it", func() {
+			readyProvider("fall-prov")
+			a := newApp("fall-app", "fall-prov", policyAdopt, false)
+			markPending(a)
+			seedLegacy("fall-app", nil)
+
+			mustReconcile(a)
+			Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+			Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("outcome is unproven")))
+		})
+
+		It("does not recover an application that links to a provider this resource did not create", func() {
+			pk := adoptedProvider("adopted-prov")
+			a := newApp("adopted-link-app", "adopted-prov", policyCreate, false)
+			markPending(a)
+			fake.SeedApplication("adopted-link-app", pk)
+
+			mustReconcile(a)
+			Expect(ready(a).Reason).To(Equal(reasonConflict))
+			Expect(get(a).Status.Provenance).To(BeEmpty())
+		})
+
+		It("treats a marker as unproven when the application has no providerRef", func() {
+			a := newApp("no-ref-app", "", policyCreate, false)
+			markPending(a)
+			seedLegacy("no-ref-app", nil)
+
+			mustReconcile(a)
+			Expect(ready(a).Reason).To(Equal(reasonConflict))
+			Expect(get(a).Status.Provenance).To(BeEmpty())
+		})
+	})
+
+	Context("two resources tracking one application", func() {
+		claimApp := func(a *authentikiov1alpha1.AuthentikApplication, slug, uid string,
+			prov authentikiov1alpha1.Provenance) {
+			cur := get(a)
+			cur.Status.Provenance, cur.Status.ApplicationUID, cur.Status.Slug = prov, uid, slug
+			Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+		}
+		mk := func(name, slug string) *authentikiov1alpha1.AuthentikApplication {
+			a := &authentikiov1alpha1.AuthentikApplication{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: name, Slug: slug,
+					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
+			}
+			Expect(k8sClient.Create(ctx, a)).To(Succeed())
+			cleanup(a)
+			return a
+		}
+
+		It("lets a Created resource keep it and makes the Adopted one yield, whatever their UIDs", func() {
+			seedLegacy("tie-app", nil)
+			uid, ok := fake.Application("tie-app")["pk"].(string)
+			Expect(ok).To(BeTrue())
+			a, b := mk("tie-a", "tie-app"), mk("tie-b", "tie-app")
+			owner, adopter := a, b
+			if get(a).UID < get(b).UID { // the Created one must have the HIGHER uid
+				owner, adopter = b, a
+			}
+			claimApp(owner, "tie-app", uid, authentikiov1alpha1.ProvenanceCreated)
+			claimApp(adopter, "tie-app", uid, authentikiov1alpha1.ProvenanceAdopted)
+
+			mustReconcile(adopter)
+			Expect(ready(adopter).Reason).To(Equal(reasonConflict))
+			Expect(get(adopter).Status.ApplicationUID).To(BeEmpty())
+
+			mustReconcile(owner)
+			Expect(ready(owner).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(owner).Status.ApplicationUID).To(Equal(uid))
+		})
+
+		It("counts a terminating owner: a new adopter is refused while the owner's finalizer is pending", func() {
+			owner := newApp("dying-app-owner", "", policyCreate, false)
+			mustReconcile(owner)
+			Expect(get(owner).Status.ApplicationUID).NotTo(BeEmpty())
+			Expect(k8sClient.Delete(ctx, get(owner))).To(Succeed())
+
+			adopter := mk("late-app-adopter", "dying-app-owner")
+			mustReconcile(adopter)
+			Expect(ready(adopter).Reason).To(Equal(reasonConflict))
+			Expect(ready(adopter).Message).To(ContainSubstring("dying-app-owner"))
+			Expect(get(adopter).Status.ApplicationUID).To(BeEmpty())
+		})
+
+		It("settles a race the cache missed: the claim re-check reads the API, not the informer cache", func() {
+			seedLegacy("raced-cache-app", nil)
+			uid, ok := fake.Application("raced-cache-app")["pk"].(string)
+			Expect(ok).To(BeTrue())
+			owner := mk("raced-app-owner", "raced-cache-app")
+			claimApp(owner, "raced-cache-app", uid, authentikiov1alpha1.ProvenanceCreated)
+
+			loser := mk("raced-app-loser", "raced-cache-app")
+			apps.Client = staleListClient{k8sClient}
+			mustReconcile(loser)
+			Expect(ready(loser).Reason).To(Equal(reasonConflict))
+			Expect(get(loser).Status.ApplicationUID).To(BeEmpty())
+			Expect(fake.Requests(true)).To(BeEmpty())
+		})
+	})
+
+	Context("explicit Delete on undecided provenance", func() {
+		It("deletes the application and emits a Warning event", func() {
+			seedLegacy("undecided-del", nil)
+			a := newApp("undecided-del", "", policyCreate, false)
+			a.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			Expect(k8sClient.Update(ctx, a)).To(Succeed())
+			mustReconcile(a) // Conflict: adds the finalizer
+			cur := get(a)
+			uid, ok := fake.Application("undecided-del")["pk"].(string)
+			Expect(ok).To(BeTrue())
+			cur.Status.ApplicationUID, cur.Status.Slug = uid, "undecided-del"
+			Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+			drainEvents(recorder)
+
+			Expect(k8sClient.Delete(ctx, get(a))).To(Succeed())
+			mustReconcile(a)
+			Expect(fake.Application("undecided-del")).To(BeNil())
+			Expect(drainEvents(recorder)).To(ContainElement(SatisfyAll(
+				ContainSubstring("Warning"), ContainSubstring("provenance is undecided"))))
 		})
 	})
 })
