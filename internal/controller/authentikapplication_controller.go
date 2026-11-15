@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -64,8 +65,16 @@ type AuthentikApplicationReconciler struct {
 	Connections *connection.Resolver
 	// Recorder emits Kubernetes events; may be nil in tests.
 	Recorder events.EventRecorder
+	// APIReader reads Namespaces uncached (the operator has get, not
+	// list/watch, on Namespaces); use the manager's API reader.
+	APIReader client.Reader
+	// AdoptionNamespaceSelector picks the namespaces whose resources may
+	// adopt or observe existing applications on the default connection. nil
+	// denies every namespace. See adoptionGate.
+	AdoptionNamespaceSelector labels.Selector
 }
 
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications/finalizers,verbs=update
@@ -145,6 +154,10 @@ func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentiki
 // returns it as Authentik now has it.
 func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, persist func() error) (*api.Application, error) {
+	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, a.Namespace,
+		a.Spec.AuthentikRef, a.Spec.ManagementPolicy); err != nil {
+		return nil, err
+	}
 	providerPK, err := r.providerPK(ctx, a)
 	if err != nil {
 		return nil, err

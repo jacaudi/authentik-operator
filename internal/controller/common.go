@@ -27,8 +27,12 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/connection"
@@ -47,6 +51,9 @@ const (
 	// reasonAdoptionTargetNotFound marks an adoption (or ReadOnly) target
 	// that names no existing object, or an adopted object that vanished.
 	reasonAdoptionTargetNotFound = "AdoptionTargetNotFound"
+	// reasonAdoptionNotAllowed marks a policy that may adopt or observe on the
+	// default connection, from a namespace the administrator has not allowed.
+	reasonAdoptionNotAllowed = "AdoptionNotAllowed"
 	// reasonReadOnly marks Ready=True for a ReadOnly resource that found and
 	// observes its object.
 	reasonReadOnly = "ReadOnly"
@@ -124,6 +131,56 @@ func connectionGone(err error) bool {
 		return true
 	}
 	return false
+}
+
+// ParseAdoptionNamespaceSelector parses the value of
+// --default-connection-adoption-namespace-selector. An empty value selects no
+// namespace: adoption on the default connection is denied unless an
+// administrator allows namespaces explicitly.
+//
+//nolint:ireturn // labels.Selector is the Kubernetes selector type the reconcilers match namespaces with.
+func ParseAdoptionNamespaceSelector(s string) (labels.Selector, error) {
+	if strings.TrimSpace(s) == "" {
+		return labels.Nothing(), nil
+	}
+	sel, err := labels.Parse(s)
+	if err != nil {
+		return nil, fmt.Errorf("parse adoption namespace selector %q: %w", s, err)
+	}
+	return sel, nil
+}
+
+// adoptionGate decides which namespaces may adopt on the default connection.
+type adoptionGate struct {
+	reader   client.Reader // uncached: the operator has get, not list or watch, on Namespaces
+	selector labels.Selector
+}
+
+// check refuses a policy that may adopt or observe an existing
+// object (and so also dryRun) on the operator's default connection unless the
+// resource's namespace matches the administrator's selector. The default
+// connection's token is the operator's own and spans every team, so which
+// namespaces may take over objects it can see is an administrator's call. An
+// explicit spec.authentikRef is always allowed: it names a same-namespace
+// AuthentikDeployment whose own token bounds what the resource can reach. A
+// nil selector denies every namespace.
+func (g adoptionGate) check(ctx context.Context, namespace string, ref *authentikiov1alpha1.AuthentikRef,
+	mp authentikiov1alpha1.ManagementPolicy) error {
+	if ref != nil || !mp.MayAdopt() {
+		return nil
+	}
+	if g.selector != nil {
+		var ns corev1.Namespace
+		if err := g.reader.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+			return fmt.Errorf("get Namespace %s: %w", namespace, err)
+		}
+		if g.selector.Matches(labels.Set(ns.Labels)) {
+			return nil
+		}
+	}
+	return condErrf(reasonAdoptionNotAllowed, "managementPolicy %s is not allowed for namespace %q on the "+
+		"operator's default connection; ask an administrator to allow the namespace with "+
+		"--default-connection-adoption-namespace-selector, or set spec.authentikRef", mp.Resolve(), namespace)
 }
 
 // readOnly reports whether the policy is ReadOnly: the resource finds its

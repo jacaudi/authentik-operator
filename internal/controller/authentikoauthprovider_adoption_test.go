@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -67,6 +68,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder, APIReader: k8sClient,
+			AdoptionNamespaceSelector: labels.Everything(),
 			Connections: &connection.Resolver{
 				Reader:  k8sClient,
 				Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},

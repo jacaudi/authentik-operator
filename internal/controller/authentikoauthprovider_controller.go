@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -80,6 +81,10 @@ type AuthentikOAuthProviderReconciler struct {
 	// APIReader reads Secrets uncached (the operator has no list/watch on
 	// Secrets); use the manager's API reader.
 	APIReader client.Reader
+	// AdoptionNamespaceSelector picks the namespaces whose resources may
+	// adopt or observe existing providers on the default connection. nil
+	// denies every namespace. See adoptionGate.
+	AdoptionNamespaceSelector labels.Selector
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders,verbs=get;list;watch;create;update;patch;delete
@@ -145,6 +150,10 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 // before the create request is sent.
 func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (ctrl.Result, error) {
+	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, p.Namespace,
+		p.Spec.AuthentikRef, p.Spec.ManagementPolicy); err != nil {
+		return r.failed(p, err)
+	}
 	resolved, err := resolve(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 	if err != nil {
 		return r.failed(p, err)
