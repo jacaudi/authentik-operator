@@ -37,8 +37,9 @@ import (
 	"strings"
 	"text/template"
 	"text/template/parse"
+	"unicode"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -128,13 +129,15 @@ func Render(tmpl string, v Vars) (map[string][]byte, error) {
 	return toBytes(kv), nil
 }
 
-// checkVars rejects values containing control characters (newlines in
-// particular): interpolated unescaped into YAML, they could add keys the
-// template author did not write. Values come from the provider spec and from
-// Authentik. The message names the variable, never its value.
+// checkVars rejects values containing control characters or YAML line
+// breaks: interpolated unescaped into YAML, they could add keys the template
+// author did not write. YAML breaks lines on NEL (U+0085, a C1 control) and on
+// LINE and PARAGRAPH SEPARATOR (U+2028, U+2029) as well as on CR and LF.
+// Values come from the provider spec and from Authentik. The message names the
+// variable, never its value.
 func checkVars(v Vars) error {
 	for k, val := range v.data() {
-		if strings.ContainsFunc(val, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		if strings.ContainsFunc(val, func(r rune) bool { return unicode.IsControl(r) || r == ' ' || r == ' ' }) {
 			return &TemplateError{Err: fmt.Errorf("variable .%s contains control characters", k)}
 		}
 	}

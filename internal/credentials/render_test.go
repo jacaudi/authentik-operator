@@ -207,6 +207,12 @@ func TestControlCharactersRejected(t *testing.T) {
 		"newline in client ID": func(v *Vars) { v.ClientID = "x\nINJECTED: y" },
 		"newline in name":      func(v *Vars) { v.Name = "x\nINJECTED: y" },
 		"DEL in secret":        func(v *Vars) { v.ClientSecret = clientSecret + "\x7f" },
+		// YAML also breaks lines on NEL, LINE SEPARATOR and PARAGRAPH
+		// SEPARATOR, so each of these would otherwise add a key.
+		"NEL in client ID":                 func(v *Vars) { v.ClientID = "x\u0085INJECTED: y" },
+		"line separator in client ID":      func(v *Vars) { v.ClientID = "x INJECTED: y" },
+		"paragraph separator in client ID": func(v *Vars) { v.ClientID = "x INJECTED: y" },
+		"C1 control in name":               func(v *Vars) { v.Name = "x\u0080y" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
