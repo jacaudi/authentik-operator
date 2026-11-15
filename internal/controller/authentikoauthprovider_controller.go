@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -300,7 +301,7 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 				"status.provenance and status.clientId",
 			pk, got.GetClientId(), p.Status.ClientID)
 	case err == nil:
-		if err := r.yieldIfOutranked(ctx, r.Client, p); err != nil {
+		if err := r.yieldIfOutranked(ctx, r.Client, true, p); err != nil {
 			return nil, err
 		}
 		return got, nil
@@ -416,7 +417,7 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	// Any other holder, terminating ones included, refuses the adoption. This
 	// read may be served by a lagging cache; the re-check after the claim is
 	// persisted below is the authoritative one.
-	if others, err := r.claimants(ctx, r.Client, p, target.Pk); err != nil {
+	if others, err := r.claimants(ctx, r.Client, true, p, target.Pk); err != nil {
 		return nil, err
 	} else if len(others) > 0 {
 		return nil, condErrf(reasonConflict, "OAuth2 provider pk %d is already managed by %s; "+
@@ -426,15 +427,9 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 		view := *want
 		adoptionView(p, &view, target)
 		patch, changed := oauth2ProviderPatch(&view, target)
-		msg := fmt.Sprintf("dry run: would adopt OAuth2 provider %q (pk %d); ", target.Name, target.Pk)
-		if len(changed) == 0 {
-			msg += "would change no fields"
-		} else {
-			msg += "would change " + describeChanges(patch, target)
-		}
-		msg += "; nothing was written. Set spec.dryRun to false to adopt"
-		if cond := meta.FindStatusCondition(p.Status.Conditions, ConditionReady); cond == nil ||
-			cond.Reason != reasonAdoptionDryRun || cond.Message != msg {
+		msg, announce := dryRunReport(p.Status.Conditions,
+			fmt.Sprintf("OAuth2 provider %q (pk %d)", target.Name, target.Pk), patch, target, changed)
+		if announce {
 			r.event(p, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 		}
 		return nil, condErr(reasonAdoptionDryRun, errors.New(msg))
@@ -450,7 +445,7 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	// informer cache, which need not hold another resource's just-written
 	// claim: a resource that passed the pre-check at the same time is settled
 	// by the tie-break. No Authentik write has happened yet.
-	if err := r.yieldIfOutranked(ctx, r.APIReader, p); err != nil {
+	if err := r.yieldIfOutranked(ctx, r.APIReader, false, p); err != nil {
 		return nil, err
 	}
 	if readOnly(p.Spec.ManagementPolicy) {
@@ -470,23 +465,27 @@ func selfClaim(p *authentikiov1alpha1.AuthentikOAuthProvider) claim {
 }
 
 // claimants lists the other provider resources, terminating ones included,
-// that track pk on the same connection as p. rd is the cached client for the
-// routine check and the API reader where a stale answer is not good enough.
-func (r *AuthentikOAuthProviderReconciler) claimants(ctx context.Context, rd client.Reader,
+// that track pk on the same Authentik as p. rd is the cached client for the
+// routine check, which lists through the field index (cached true), and the
+// API reader where a stale answer is not good enough, which cannot filter
+// on a custom field and lists everything.
+func (r *AuthentikOAuthProviderReconciler) claimants(ctx context.Context, rd client.Reader, cached bool,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) ([]claim, error) {
+	var opts []client.ListOption
+	if cached {
+		opts = append(opts, client.MatchingFields{indexProviderPK: strconv.Itoa(int(pk))})
+	}
 	var list authentikiov1alpha1.AuthentikOAuthProviderList
-	if err := rd.List(ctx, &list); err != nil {
+	if err := rd.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("list AuthentikOAuthProviders: %w", err)
 	}
-	var out []claim
+	var candidates []claim
 	for i := range list.Items {
-		o := &list.Items[i]
-		if o.UID != p.UID && o.Status.ProviderPK == pk &&
-			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
-			out = append(out, selfClaim(o))
+		if o := &list.Items[i]; o.UID != p.UID && o.Status.ProviderPK == pk {
+			candidates = append(candidates, selfClaim(o))
 		}
 	}
-	return out, nil
+	return holders(ctx, r.Connections, selfClaim(p), candidates)
 }
 
 // yieldIfOutranked releases this resource's claim and reports a Conflict when
@@ -495,9 +494,9 @@ func (r *AuthentikOAuthProviderReconciler) claimants(ctx context.Context, rd cli
 // together, and a Created resource that outranks an adopter keeps the
 // provider. The loser also deletes the credentials Secret it rendered, which
 // holds the live client secret. rd is the reader the holders are listed with.
-func (r *AuthentikOAuthProviderReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader,
+func (r *AuthentikOAuthProviderReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader, cached bool,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) error {
-	others, err := r.claimants(ctx, rd, p, p.Status.ProviderPK)
+	others, err := r.claimants(ctx, rd, cached, p, p.Status.ProviderPK)
 	if err != nil {
 		return err
 	}
@@ -690,9 +689,7 @@ func (r *AuthentikOAuthProviderReconciler) setReady(p *authentikiov1alpha1.Authe
 //nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
 func (r *AuthentikOAuthProviderReconciler) event(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	eventType, reason, action, note string, args ...any) {
-	if r.Recorder != nil {
-		r.Recorder.Eventf(p, nil, eventType, reason, action, note, args...)
-	}
+	emit(r.Recorder, p, eventType, reason, action, note, args...)
 }
 
 func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
@@ -711,6 +708,9 @@ func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := indexProviderPKs(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikOAuthProvider{}).
 		// An application being attached (or renamed) changes the

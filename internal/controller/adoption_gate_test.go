@@ -89,9 +89,9 @@ var _ = Describe("Adoption gate on the default connection", func() {
 			Reader:  k8sClient,
 			Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
 		}
-		providers = &AuthentikOAuthProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		providers = &AuthentikOAuthProviderReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, APIReader: k8sClient}
-		apps = &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps = &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, APIReader: k8sClient}
 	})
 	AfterEach(func() { fake.Close() })

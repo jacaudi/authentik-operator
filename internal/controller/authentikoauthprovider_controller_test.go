@@ -68,7 +68,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
-			Client:    k8sClient,
+			Client:    indexedClient{k8sClient},
 			Scheme:    k8sClient.Scheme(),
 			Recorder:  recorder,
 			APIReader: k8sClient,
@@ -398,7 +398,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		sec := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name + "-token", Namespace: namespace, Labels: map[string]string{
 				authentikiov1alpha1.LabelConnection: authentikiov1alpha1.LabelConnectionValue}},
-			StringData: map[string]string{"token": "tok"},
+			StringData: map[string]string{tokenSecretKey: "tok"},
 		}
 		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
 		DeferCleanup(func() { _ = client.IgnoreNotFound(k8sClient.Delete(ctx, sec)) })

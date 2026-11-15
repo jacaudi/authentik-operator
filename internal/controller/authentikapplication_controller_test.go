@@ -55,9 +55,9 @@ var _ = Describe("AuthentikApplication Controller", func() {
 			Reader:  k8sClient,
 			Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
 		}
-		apps = &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps = &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, Recorder: recorder}
-		providers = &AuthentikOAuthProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		providers = &AuthentikOAuthProviderReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, APIReader: k8sClient}
 	})
 	AfterEach(func() { fake.Close() })
@@ -299,7 +299,17 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		uid := get(a).Status.ApplicationUID
 
+		// One spurious 404 is not asked about twice (the slug is immutable), so
+		// the reconcile tries to recreate the application, which Authentik
+		// refuses because the slug exists. That is safe -- no second
+		// application, the uid is kept -- and the next reconcile is clean.
 		fake.FailNext(http.MethodGet, http.StatusNotFound)
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Status).To(Equal(metav1.ConditionFalse))
+		Expect(get(a).Status.ApplicationUID).To(Equal(uid))
+		Expect(fake.ApplicationCount()).To(Equal(1))
+
 		_, err = reconcileApp(a)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))

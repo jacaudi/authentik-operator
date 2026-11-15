@@ -54,10 +54,10 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			Reader:  k8sClient,
 			Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
 		}
-		apps = &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps = &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, Recorder: recorder, APIReader: k8sClient,
 			AdoptionNamespaceSelector: labels.Everything()}
-		providers = &AuthentikOAuthProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		providers = &AuthentikOAuthProviderReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, APIReader: k8sClient, AdoptionNamespaceSelector: labels.Everything()}
 	})
 	AfterEach(func() { fake.Close() })
@@ -289,6 +289,23 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		Expect(fake.ApplicationCount()).To(Equal(1))
 		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("nothing was found to adopt")))
+	})
+
+	It("looks a vanished tracked application up once, not twice, before recreating it", func() {
+		a := newApp("lookup-once", "", policyCreate, false)
+		mustReconcile(a)
+		fake.DeleteApplication("lookup-once")
+		before := len(fake.Requests(false))
+
+		mustReconcile(a)
+		gets := 0
+		for _, req := range fake.Requests(false)[before:] {
+			if req.Method == http.MethodGet && req.Path == "/api/v3/core/applications/lookup-once/" {
+				gets++
+			}
+		}
+		Expect(gets).To(Equal(1), "the slug is immutable: the second GET repeats the first")
+		Expect(fake.Application("lookup-once")).NotTo(BeNil(), "the application is recreated")
 	})
 
 	It("never recreates an adopted application that vanished", func() {

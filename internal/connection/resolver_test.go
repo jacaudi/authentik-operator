@@ -42,6 +42,7 @@ const (
 	ns           = "apps"
 	tokenKey     = "token"
 	defaultAKURL = "https://ak"
+	akExample    = "https://ak.example.com"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -83,13 +84,48 @@ func unlabeledSecret(name string, data map[string]string) *corev1.Secret {
 
 func conn(secretName string) *authentikiov1alpha1.ConnectionSpec {
 	return &authentikiov1alpha1.ConnectionSpec{
-		URL:            "https://ak.example.com",
+		URL:            akExample,
 		TokenSecretRef: authentikiov1alpha1.SecretKeyRef{Name: secretName},
 	}
 }
 
 func ref(name string) *authentikiov1alpha1.AuthentikRef {
 	return &authentikiov1alpha1.AuthentikRef{Name: name}
+}
+
+func TestBaseURL(t *testing.T) {
+	t.Parallel()
+	scheme := newScheme(t)
+	spelled := conn("never-created") // its Secret does not exist: BaseURL must not read it
+	spelled.URL = "HTTPS://Ak.Example.com:443/api/v3/"
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		deployment("spelled", spelled), deployment("no-conn", nil)).Build()
+	r := &Resolver{Reader: reader, Default: &authentik.Config{URL: "http://ak.svc:80/", Token: "t"}}
+
+	cases := []struct {
+		name       string
+		resolver   *Resolver
+		ref        *authentikiov1alpha1.AuthentikRef
+		want       string
+		wantReason string
+	}{
+		{"default connection, normalized", r, nil, "http://ak.svc", ""},
+		{"deployment, normalized, without reading its Secret", r, ref("spelled"), akExample, ""},
+		{"missing deployment", r, ref("absent"), "", ReasonDeploymentNotFound},
+		{"deployment without a connection", r, ref("no-conn"), "", ReasonConnectionNotConfigured},
+		{"no default configured", &Resolver{Reader: reader}, nil, "", ReasonNoConnection},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := c.resolver.BaseURL(t.Context(), ns, c.ref)
+			if Reason(err) != c.wantReason {
+				t.Fatalf("reason = %q (err %v), want %q", Reason(err), err, c.wantReason)
+			}
+			if got != c.want {
+				t.Errorf("BaseURL = %q, want %q", got, c.want)
+			}
+		})
+	}
 }
 
 func TestForRef(t *testing.T) {

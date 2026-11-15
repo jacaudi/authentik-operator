@@ -26,12 +26,15 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
@@ -133,6 +136,38 @@ func connectionGone(err error) bool {
 	return false
 }
 
+// maxEventNoteBytes is the longest note events.k8s.io/v1 accepts; the API
+// server rejects a longer one, and the recorder only logs the failure, so an
+// oversized event would be dropped exactly when it has the most to report.
+const maxEventNoteBytes = 1024
+
+// truncateNote cuts s to at most limit bytes, ending in "..." when it had to
+// cut, and never inside a multi-byte character.
+func truncateNote(s string, limit int) string {
+	const ellipsis = "..."
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
+}
+
+// emit records an event on obj with the note capped at maxEventNoteBytes. The
+// full text stays wherever else it is kept (a condition message); the event is
+// the notification. Both reconcilers record through it, and tolerate a nil
+// recorder (tests).
+//
+//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf.
+func emit(rec events.EventRecorder, obj runtime.Object, eventType, reason, action, note string, args ...any) {
+	if rec == nil {
+		return
+	}
+	rec.Eventf(obj, nil, eventType, reason, action, "%s", truncateNote(fmt.Sprintf(note, args...), maxEventNoteBytes))
+}
+
 // ParseAdoptionNamespaceSelector parses the value of
 // --default-connection-adoption-namespace-selector. An empty value selects no
 // namespace: adoption on the default connection is denied unless an
@@ -198,6 +233,24 @@ func adoptVerb(mp authentikiov1alpha1.ManagementPolicy) string {
 	return "adopt"
 }
 
+// dryRunReport builds the AdoptionDryRun message for adopting subject (for
+// example `application "grafana"`): the fields the takeover would change as
+// "field: live -> spec", or that it would change none. announce is true when
+// the Ready condition does not already carry exactly this message, so the
+// event is emitted once per change rather than on every retry.
+func dryRunReport(conds []metav1.Condition, subject string, patch, live any,
+	changed []string) (msg string, announce bool) {
+	msg = fmt.Sprintf("dry run: would adopt %s; ", subject)
+	if len(changed) == 0 {
+		msg += "would change no fields"
+	} else {
+		msg += "would change " + describeChanges(patch, live)
+	}
+	msg += "; nothing was written. Set spec.dryRun to false to adopt"
+	cond := meta.FindStatusCondition(conds, ConditionReady)
+	return msg, cond == nil || cond.Reason != reasonAdoptionDryRun || cond.Message != msg
+}
+
 // recordDrift sets the Drifted condition from the patch that reconciling
 // would apply: True with the differing fields (as "field: live -> spec"), or
 // False when there is none.
@@ -245,17 +298,6 @@ func sameAuthentikRef(a, b *authentikiov1alpha1.AuthentikRef) bool {
 		return a == nil && b == nil
 	}
 	return a.Name == b.Name
-}
-
-// sameConnection reports whether two objects, each in its own namespace,
-// use the same Authentik: both the operator default, or the same
-// AuthentikDeployment.
-func sameConnection(nsA string, a *authentikiov1alpha1.AuthentikRef, nsB string,
-	b *authentikiov1alpha1.AuthentikRef) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return nsA == nsB && a.Name == b.Name
 }
 
 const (

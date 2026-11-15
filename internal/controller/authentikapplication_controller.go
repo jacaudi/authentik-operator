@@ -190,29 +190,29 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 }
 
 // observeTracked looks up the application recorded in status. It returns it
-// when it is still this resource's own, and nil to carry on looking when it
-// is gone. status.applicationUid is kept until a replacement exists: a 404
-// can be transient (proxy during a rollout), and the uid is what lets the
-// finalizer clean up.
+// when it is still this resource's own, and gone true when Authentik answered
+// 404 for status.slug. status.applicationUid is kept until a replacement
+// exists: a 404 can be transient (proxy during a rollout), and the uid is what
+// lets the finalizer clean up.
 func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *authentik.Client,
-	a *authentikiov1alpha1.AuthentikApplication) (*api.Application, error) {
+	a *authentikiov1alpha1.AuthentikApplication) (got *api.Application, gone bool, err error) {
 	uid := a.Status.ApplicationUID
-	got, err := c.GetApplication(ctx, a.Status.Slug)
+	got, err = c.GetApplication(ctx, a.Status.Slug)
 	switch {
 	case err == nil && got.Pk != uid:
-		return nil, condErrf(reasonConflict,
+		return nil, false, condErrf(reasonConflict,
 			"application %q in Authentik has pk %s, not %s recorded by this resource; refusing to modify it. "+
 				"If this resource should manage a new application, clear status.applicationUid",
 			a.Status.Slug, got.Pk, uid)
 	case err == nil:
-		if err := r.yieldIfOutranked(ctx, r.Client, a); err != nil {
-			return nil, err
+		if err := r.yieldIfOutranked(ctx, r.Client, true, a); err != nil {
+			return nil, false, err
 		}
-		return got, nil
+		return got, false, nil
 	case !authentik.IsNotFound(err):
-		return nil, err
+		return nil, false, err
 	}
-	return nil, nil
+	return nil, true, nil
 }
 
 // desiredApp is the request an application should match plus what is known
@@ -234,30 +234,45 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, persist func() error) (*api.Application, error) {
 	slug := want.Slug
 	if a.Status.ApplicationUID != "" {
-		got, err := r.observeTracked(ctx, c, a)
-		if err != nil || got != nil {
-			return got, err
+		got, gone, trackedErr := r.observeTracked(ctx, c, a)
+		if trackedErr != nil || got != nil {
+			return got, trackedErr
+		}
+		if gone && a.Status.Slug == slug {
+			// Authentik just said 404 for this very slug (it is immutable): asking
+			// again would only repeat the question.
+			return nil, r.missingApplication(a, slug)
 		}
 	}
 
 	existing, err := c.GetApplication(ctx, slug)
-	if err == nil && a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID {
-		return existing, nil // the earlier 404 was transient
-	}
-	if err == nil && a.Status.PendingCreate == slug && r.recoverOwnCreate(ctx, a, want, existing) {
-		return existing, nil
-	}
 	switch {
-	case err == nil && a.Spec.ManagementPolicy.MayAdopt():
-		return r.adoptApplication(ctx, a, want.ApplicationRequest, existing, persist)
 	case err == nil:
-		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
-			"created by this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it "+
-			"over or observe it", slug)
+		return r.observeExisting(ctx, a, want, existing, persist)
 	case authentik.IsNotFound(err):
 		return nil, r.missingApplication(a, slug)
 	default:
 		return nil, err
+	}
+}
+
+// observeExisting decides what an application found by slug is to this
+// resource that does not track it: its own after a transient 404, its own
+// after a lost create (recoverOwnCreate), an adoption target, or a Conflict.
+func (r *AuthentikApplicationReconciler) observeExisting(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, existing *api.Application,
+	persist func() error) (*api.Application, error) {
+	switch {
+	case a.Status.ApplicationUID != "" && existing.Pk == a.Status.ApplicationUID:
+		return existing, nil // the earlier 404 was transient
+	case a.Status.PendingCreate == want.Slug && r.recoverOwnCreate(ctx, a, want, existing):
+		return existing, nil
+	case a.Spec.ManagementPolicy.MayAdopt():
+		return r.adoptApplication(ctx, a, want.ApplicationRequest, existing, persist)
+	default:
+		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
+			"created by this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it "+
+			"over or observe it", want.Slug)
 	}
 }
 
@@ -327,23 +342,27 @@ func appClaim(a *authentikiov1alpha1.AuthentikApplication) claim {
 }
 
 // claimants lists the other application resources, terminating ones included,
-// that track uid on the same connection as a. rd is the cached client for the
-// routine check and the API reader where a stale answer is not good enough.
-func (r *AuthentikApplicationReconciler) claimants(ctx context.Context, rd client.Reader,
+// that track uid on the same Authentik as a. rd is the cached client for the
+// routine check, which lists through the field index (cached true), and the
+// API reader where a stale answer is not good enough, which cannot filter on
+// a custom field and lists everything.
+func (r *AuthentikApplicationReconciler) claimants(ctx context.Context, rd client.Reader, cached bool,
 	a *authentikiov1alpha1.AuthentikApplication, uid string) ([]claim, error) {
+	var opts []client.ListOption
+	if cached {
+		opts = append(opts, client.MatchingFields{indexApplicationUID: uid})
+	}
 	var list authentikiov1alpha1.AuthentikApplicationList
-	if err := rd.List(ctx, &list); err != nil {
+	if err := rd.List(ctx, &list, opts...); err != nil {
 		return nil, fmt.Errorf("list AuthentikApplications: %w", err)
 	}
-	var out []claim
+	var candidates []claim
 	for i := range list.Items {
-		o := &list.Items[i]
-		if o.UID != a.UID && o.Status.ApplicationUID == uid &&
-			sameConnection(o.Namespace, o.Spec.AuthentikRef, a.Namespace, a.Spec.AuthentikRef) {
-			out = append(out, appClaim(o))
+		if o := &list.Items[i]; o.UID != a.UID && o.Status.ApplicationUID == uid {
+			candidates = append(candidates, appClaim(o))
 		}
 	}
-	return out, nil
+	return holders(ctx, r.Connections, appClaim(a), candidates)
 }
 
 // yieldIfOutranked releases this resource's claim and reports a Conflict when
@@ -351,9 +370,9 @@ func (r *AuthentikApplicationReconciler) claimants(ctx context.Context, rd clien
 // claim.outranks), so two resources that passed the pre-adoption check
 // together are settled, and a Created resource keeps the application over an
 // adopter. rd is the reader the holders are listed with.
-func (r *AuthentikApplicationReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader,
+func (r *AuthentikApplicationReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader, cached bool,
 	a *authentikiov1alpha1.AuthentikApplication) error {
-	others, err := r.claimants(ctx, rd, a, a.Status.ApplicationUID)
+	others, err := r.claimants(ctx, rd, cached, a, a.Status.ApplicationUID)
 	if err != nil {
 		return err
 	}
@@ -375,7 +394,7 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	// Any other holder, terminating ones included, refuses the adoption. This
 	// read may be served by a lagging cache; the re-check after the claim is
 	// persisted below is the authoritative one.
-	if others, err := r.claimants(ctx, r.Client, a, target.Pk); err != nil {
+	if others, err := r.claimants(ctx, r.Client, true, a, target.Pk); err != nil {
 		return nil, err
 	} else if len(others) > 0 {
 		return nil, condErrf(reasonConflict, "application %q is already managed by %s; "+
@@ -385,15 +404,9 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 		view := *want
 		adoptionViewApplication(a, &view, target)
 		patch, changed := applicationPatch(&view, target)
-		msg := fmt.Sprintf("dry run: would adopt application %q; ", target.Slug)
-		if len(changed) == 0 {
-			msg += "would change no fields"
-		} else {
-			msg += "would change " + describeChanges(patch, target)
-		}
-		msg += "; nothing was written. Set spec.dryRun to false to adopt"
-		if cond := meta.FindStatusCondition(a.Status.Conditions, ConditionReady); cond == nil ||
-			cond.Reason != reasonAdoptionDryRun || cond.Message != msg {
+		msg, announce := dryRunReport(a.Status.Conditions, fmt.Sprintf("application %q", target.Slug),
+			patch, target, changed)
+		if announce {
 			r.event(a, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 		}
 		return nil, condErr(reasonAdoptionDryRun, errors.New(msg))
@@ -408,7 +421,7 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 	// Re-check after the claim is persisted, reading the API rather than the
 	// informer cache, which need not hold another resource's just-written
 	// claim; no Authentik write has happened yet.
-	if err := r.yieldIfOutranked(ctx, r.APIReader, a); err != nil {
+	if err := r.yieldIfOutranked(ctx, r.APIReader, false, a); err != nil {
 		return nil, err
 	}
 	if readOnly(a.Spec.ManagementPolicy) {
@@ -634,9 +647,7 @@ func (r *AuthentikApplicationReconciler) setReady(a *authentikiov1alpha1.Authent
 //nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
 func (r *AuthentikApplicationReconciler) event(a *authentikiov1alpha1.AuthentikApplication,
 	eventType, reason, action, note string, args ...any) {
-	if r.Recorder != nil {
-		r.Recorder.Eventf(a, nil, eventType, reason, action, note, args...)
-	}
+	emit(r.Recorder, a, eventType, reason, action, note, args...)
 }
 
 func (r *AuthentikApplicationReconciler) patchStatus(ctx context.Context,
@@ -657,6 +668,9 @@ func (r *AuthentikApplicationReconciler) patchStatus(ctx context.Context,
 func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &authentikiov1alpha1.AuthentikApplication{},
 		indexProviderRef, providerRefIndex); err != nil {
+		return err
+	}
+	if err := indexApplicationUIDs(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).

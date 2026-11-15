@@ -94,16 +94,27 @@ func TestNormalizeURL(t *testing.T) {
 		base + "/api/v3/":   base,
 		subpath:             subpath,
 		subpath + "/api/v3": subpath,
+		// The same instance spelled differently: host case, a default port.
+		"HTTPS://AK.Example.COM":             base,
+		"https://ak.example.com:443":         base,
+		"https://ak.example.com:443/api/v3/": base,
+		"http://ak.svc:80":                   "http://ak.svc",
+		"http://AK.svc:80/authentik/":        "http://ak.svc/authentik",
+		// A port that is not the scheme's default is part of the identity.
+		"http://ak.svc:443":  "http://ak.svc:443",
+		"https://ak.svc:80":  "https://ak.svc:80",
+		"http://[::1]:80":    "http://[::1]",
+		"http://[::1]:9000/": "http://[::1]:9000",
 	}
 	for in, want := range cases {
-		got, err := normalizeURL(in)
+		got, err := NormalizeURL(in)
 		if err != nil || got != want {
-			t.Errorf("normalizeURL(%q) = %q, %v; want %q", in, got, err, want)
+			t.Errorf("NormalizeURL(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
 	for _, bad := range []string{"", "ak.example.com", "ftp://ak", "https://", "https://u:p@ak", "https://ak?x=1"} {
-		if _, err := normalizeURL(bad); err == nil {
-			t.Errorf("normalizeURL(%q) succeeded, want error", bad)
+		if _, err := NormalizeURL(bad); err == nil {
+			t.Errorf("NormalizeURL(%q) succeeded, want error", bad)
 		}
 	}
 }
