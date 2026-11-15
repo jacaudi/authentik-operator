@@ -53,8 +53,8 @@ type AuthentikApplicationSpec struct {
 	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
 	// An existing application is matched by slug. Adoption patches the fields
 	// the spec sets and leaves the others (group, metaLaunchUrl,
-	// metaDescription, metaPublisher, metaIcon, and the provider link when
-	// providerRef is unset) as they are. When providerRef is set, the
+	// metaDescription, metaPublisher, metaIcon, policyEngineMode, openInNewTab,
+	// metaHide, and the provider link when providerRef is unset) as they are. When providerRef is set, the
 	// application's provider link is set to that provider (normally the
 	// adopted provider, so a no-op). Because the application waits for its
 	// providerRef to be Ready, that provider must itself be adopted (dryRun
@@ -96,8 +96,8 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	Group string `json:"group,omitempty"`
 
-	// policyEngineMode: any (one passing policy grants access) or all.
-	// +kubebuilder:default=any
+	// policyEngineMode: any (one passing policy grants access) or all. Unset:
+	// any on create, the live value on an adopted application.
 	// +optional
 	PolicyEngineMode PolicyEngineMode `json:"policyEngineMode,omitempty"`
 
@@ -122,13 +122,13 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	MetaIcon string `json:"metaIcon,omitempty"`
 
-	// openInNewTab opens the launch URL in a new tab.
-	// +kubebuilder:default=true
+	// openInNewTab opens the launch URL in a new tab. Unset: true on create, the
+	// live value on an adopted application.
 	// +optional
 	OpenInNewTab *bool `json:"openInNewTab,omitempty"`
 
-	// metaHide hides the application from the user's library page.
-	// +kubebuilder:default=false
+	// metaHide hides the application from the user's library page. Unset: false
+	// on create, the live value on an adopted application.
 	// +optional
 	MetaHide *bool `json:"metaHide,omitempty"`
 }

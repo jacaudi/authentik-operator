@@ -204,7 +204,7 @@ func (r *AuthentikOAuthProviderReconciler) syncProvider(ctx context.Context, c *
 	observing := readOnly(p.Spec.ManagementPolicy)
 	adopted := got != nil && (observing || p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted)
 	if !adopted {
-		if err := resolveDefaultSigningKey(ctx, c, p, want); err != nil {
+		if err := applyCreateDefaults(ctx, c, p, want); err != nil {
 			return nil, err
 		}
 	}

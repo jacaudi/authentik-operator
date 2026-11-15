@@ -122,13 +122,20 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		return meta.FindStatusCondition(get(a).Status.Conditions, ConditionReady)
 	}
 
-	It("applies defaults at admission", func() {
+	It("leaves the adoption-sensitive fields unset at admission and applies the defaults when it creates", func() {
 		a := newApp("app-defaults", "")
 		create(a)
 		s := get(a).Spec
-		Expect(s.PolicyEngineMode).To(BeEquivalentTo("any"))
-		Expect(*s.OpenInNewTab).To(BeTrue())
-		Expect(*s.MetaHide).To(BeFalse())
+		Expect(s.PolicyEngineMode).To(BeEmpty())
+		Expect(s.OpenInNewTab).To(BeNil())
+		Expect(s.MetaHide).To(BeNil())
+
+		_, err := apps.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(a)})
+		Expect(err).NotTo(HaveOccurred())
+		got := fake.Application("app-defaults")
+		Expect(got["policy_engine_mode"]).To(Equal("any"))
+		Expect(got["open_in_new_tab"]).To(BeTrue())
+		Expect(got["meta_hide"]).To(BeFalse())
 	})
 
 	It("waits for a missing provider, then a not-yet-Ready one, then creates the application", func() {

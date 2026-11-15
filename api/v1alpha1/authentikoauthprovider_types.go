@@ -61,13 +61,15 @@ type RedirectURI struct {
 	// +required
 	URL string `json:"url"`
 
-	// matchingMode is strict (exact match) or regex.
-	// +kubebuilder:default=strict
+	// matchingMode is strict (exact match) or regex. Unset: strict on create;
+	// an adopted provider keeps the mode of the live redirect URI with the same
+	// url, else strict.
 	// +optional
 	MatchingMode RedirectURIMatchingMode `json:"matchingMode,omitempty"`
 
-	// type is authorization (default) or logout (post-logout redirect).
-	// +kubebuilder:default=authorization
+	// type is authorization or logout (post-logout redirect). Unset:
+	// authorization on create; an adopted provider keeps the type of the live
+	// redirect URI with the same url, else authorization.
 	// +optional
 	Type RedirectURIType `json:"type,omitempty"`
 }
@@ -116,17 +118,20 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	AuthenticationFlow string `json:"authenticationFlow,omitempty"`
 
-	// redirectUris lists the allowed redirect URIs.
+	// redirectUris lists the allowed redirect URIs. Required when the provider
+	// is created (the resource reports InvalidSpec otherwise); unset on an
+	// adopted provider, its live redirect URIs are kept.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
 	// +listType=atomic
-	// +required
-	RedirectURIs []RedirectURI `json:"redirectUris"`
+	// +optional
+	RedirectURIs []RedirectURI `json:"redirectUris,omitempty"`
 
 	// scopes lists OAuth scope mappings by scope_name (e.g. openid, profile,
 	// email). When several mappings share a scope name, the managed
-	// (built-in) one is used.
-	// +kubebuilder:default={openid,profile,email}
+	// (built-in) one is used. Unset: openid, profile and email on create; an
+	// adopted provider keeps its live mappings and gains any propertyMappings
+	// named below. Set, the spec owns the whole list.
 	// +kubebuilder:validation:MaxItems=64
 	// +listType=set
 	// +optional
@@ -138,15 +143,16 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	PropertyMappings []string `json:"propertyMappings,omitempty"`
 
-	// clientType is confidential (has a client secret) or public.
-	// +kubebuilder:default=confidential
+	// clientType is confidential (has a client secret) or public. Unset:
+	// confidential on create, the live value on an adopted provider.
 	// +optional
 	ClientType OAuthClientType `json:"clientType,omitempty"`
 
 	// grantTypes lists the grant types the provider accepts. Always sent
 	// explicitly: Authentik 2026.8+ rejects logins for providers created
-	// with an empty list ("Invalid grant_type for provider").
-	// +kubebuilder:default={authorization_code,refresh_token}
+	// with an empty list ("Invalid grant_type for provider"). Unset:
+	// authorization_code and refresh_token on create, the live value on an
+	// adopted provider.
 	// +kubebuilder:validation:MinItems=1
 	// +listType=set
 	// +optional
@@ -163,43 +169,46 @@ type AuthentikOAuthProviderSpec struct {
 	// +optional
 	ClientID string `json:"clientId,omitempty"`
 
-	// accessCodeValidity, e.g. "minutes=1".
-	// +kubebuilder:default="minutes=1"
+	// accessCodeValidity, e.g. "minutes=1". Unset: minutes=1 on create, the live
+	// value on an adopted provider.
 	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	AccessCodeValidity string `json:"accessCodeValidity,omitempty"`
 
-	// accessTokenValidity, e.g. "minutes=5".
-	// +kubebuilder:default="minutes=5"
+	// accessTokenValidity, e.g. "minutes=5". Unset: minutes=5 on create, the live
+	// value on an adopted provider.
 	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	AccessTokenValidity string `json:"accessTokenValidity,omitempty"`
 
-	// refreshTokenValidity, e.g. "days=30".
-	// +kubebuilder:default="days=30"
+	// refreshTokenValidity, e.g. "days=30". Unset: days=30 on create, the live
+	// value on an adopted provider.
 	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	RefreshTokenValidity string `json:"refreshTokenValidity,omitempty"`
 
 	// refreshTokenThreshold: a refresh token valid for less than this is
-	// renewed on refresh; "seconds=0" renews on every refresh.
-	// +kubebuilder:default="seconds=0"
+	// renewed on refresh; "seconds=0" renews on every refresh. Unset: seconds=0
+	// on create, the live value on an adopted provider.
 	// +kubebuilder:validation:Pattern=`^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$`
 	// +optional
 	RefreshTokenThreshold string `json:"refreshTokenThreshold,omitempty"`
 
-	// subMode selects the value of the sub claim.
-	// +kubebuilder:default=hashed_user_id
+	// subMode selects the value of the sub claim. Unset: hashed_user_id on
+	// create, the live value on an adopted provider. Changing it on a provider
+	// with live clients changes every user's sub.
 	// +optional
 	SubMode OAuthSubMode `json:"subMode,omitempty"`
 
 	// includeClaimsInIdToken includes user claims from scopes in the id_token.
-	// +kubebuilder:default=true
+	// Unset: true on create, the live value on an adopted provider.
 	// +optional
 	IncludeClaimsInIDToken *bool `json:"includeClaimsInIdToken,omitempty"`
 
-	// issuerMode selects how the iss claim is built.
-	// +kubebuilder:default=per_provider
+	// issuerMode selects how the iss claim is built. Unset: per_provider on
+	// create, the live value on an adopted provider. In per_provider mode the
+	// iss claim contains the application slug, so changing the application's
+	// slug changes iss.
 	// +optional
 	IssuerMode OAuthIssuerMode `json:"issuerMode,omitempty"`
 
@@ -230,8 +239,8 @@ type AuthentikOAuthProviderSpec struct {
 	Secret *CredentialsSecretSpec `json:"secret,omitempty"`
 
 	// logoutMethod is backchannel (server-to-server) or frontchannel
-	// (browser iframes; requires logoutUri).
-	// +kubebuilder:default=backchannel
+	// (browser iframes; requires logoutUri). Unset: backchannel on create, the
+	// live value on an adopted provider.
 	// +optional
 	LogoutMethod OAuthLogoutMethod `json:"logoutMethod,omitempty"`
 

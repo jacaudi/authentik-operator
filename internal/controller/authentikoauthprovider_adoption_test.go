@@ -44,6 +44,10 @@ const (
 
 	msgDryRunPolicy = "dryRun requires managementPolicy"
 	roCreds         = "ro-creds"
+
+	jsonURL              = "url"
+	jsonRedirectURIs     = "redirect_uris"
+	jsonPropertyMappings = "property_mappings"
 )
 
 var _ = Describe("AuthentikOAuthProvider adoption", func() {
@@ -84,10 +88,14 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			jsonName: name, "client_id": legacyID, "client_secret": legacySecret,
 			"logout_uri": legacyLogout, "authentication_flow": fakeauthentik.FlowAuthenticationPK,
 			"encryption_key": fakeauthentik.EncryptionKeyPK,
-			// Differ from the defaulted spec (hashed_user_id, the three
-			// scope mappings) so adoption visibly rewrites them; the
-			// signing key is an unrelated cert that must survive.
-			"sub_mode": "user_email", "property_mappings": []any{fakeauthentik.MappingCustomPK},
+			// Differ from every default the controller applies on create, so
+			// writing a default over them would be visible; the signing key
+			// is an unrelated cert that must survive.
+			"sub_mode": "user_email", jsonPropertyMappings: []any{fakeauthentik.MappingCustomPK},
+			"grant_types": []any{"client_credentials"}, "client_type": "public", "issuer_mode": "global",
+			"logout_method": "frontchannel", "access_code_validity": "minutes=2",
+			"access_token_validity": "hours=1", "refresh_token_validity": "days=7",
+			"refresh_token_threshold": "seconds=30", "include_claims_in_id_token": false,
 			jsonSigningKey: fakeauthentik.EncryptionKeyPK,
 		})
 	}
@@ -203,7 +211,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 		Expect(got["client_secret"]).To(Equal(legacySecret))
 		Expect(got[jsonSigningKey]).To(Equal(fakeauthentik.EncryptionKeyPK), "an unset signingKey keeps the existing one")
 		// The spec's redirect URI and flows are applied.
-		Expect(got["redirect_uris"]).To(ConsistOf(HaveKeyWithValue("url", "https://grafana.example.com/cb")))
+		Expect(got[jsonRedirectURIs]).To(ConsistOf(HaveKeyWithValue(jsonURL, "https://grafana.example.com/cb")))
 
 		writes := fake.Requests(true)
 		Expect(writes).To(HaveLen(1))
@@ -212,10 +220,90 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			"authentication_flow", "encryption_key", jsonSigningKey} {
 			Expect(writes[0].Body).NotTo(HaveKey(untouched))
 		}
-		// Defaulted fields differ from the existing values, so they ARE written.
-		Expect(writes[0].Body).To(HaveKeyWithValue("sub_mode", "hashed_user_id"))
-		Expect(writes[0].Body).To(HaveKey("property_mappings"))
-		Expect(got["sub_mode"]).To(Equal("hashed_user_id"))
+		// Fields the spec leaves unset keep the live value: they are never defaults.
+		for _, kept := range []string{"sub_mode", jsonPropertyMappings, "grant_types", "client_type", "issuer_mode",
+			"logout_method", "access_code_validity", "access_token_validity", "refresh_token_validity",
+			"refresh_token_threshold", "include_claims_in_id_token"} {
+			Expect(writes[0].Body).NotTo(HaveKey(kept))
+		}
+		Expect(got["sub_mode"]).To(Equal("user_email"))
+		Expect(got[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.MappingCustomPK))
+	})
+
+	It("writes a field on an adopted provider when the spec sets it, and only that one", func() {
+		pk := seedLegacy("explicit-sub")
+		p := newProvider("explicit-sub", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.SubMode = defaultSubMode
+			s.AccessTokenValidity = "minutes=10"
+			s.IncludeClaimsInIDToken = new(true)
+		})
+		mustReconcile(p)
+		got := fake.Provider(pk)
+		Expect(got["sub_mode"]).To(Equal(defaultSubMode))
+		Expect(got["access_token_validity"]).To(Equal("minutes=10"))
+		Expect(got["include_claims_in_id_token"]).To(BeTrue())
+		Expect(got["issuer_mode"]).To(Equal("global"), "an unset issuerMode keeps the live value")
+		Expect(got["refresh_token_validity"]).To(Equal("days=7"))
+	})
+
+	It("keeps the live redirect URIs when the spec sets none, and their matching mode and type when it does", func() {
+		live := []any{
+			map[string]any{jsonURL: "https://keep.example.com/.*", "matching_mode": "regex",
+				"redirect_uri_type": "logout"},
+		}
+		pk := fake.SeedProviderWith(map[string]any{jsonName: "keep-redirects", jsonRedirectURIs: live})
+		p := newProvider("keep-redirects", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.RedirectURIs = nil
+		})
+		mustReconcile(p)
+		Expect(fake.Provider(pk)[jsonRedirectURIs]).To(ConsistOf(SatisfyAll(
+			HaveKeyWithValue(jsonURL, "https://keep.example.com/.*"), HaveKeyWithValue("matching_mode", "regex"))))
+
+		By("a spec that lists the same URL without a mode keeps the live mode and type; a new URL gets the defaults")
+		pk2 := fake.SeedProviderWith(map[string]any{jsonName: "mode-by-url", jsonRedirectURIs: live})
+		p2 := newProvider("mode-by-url", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.RedirectURIs = []authentikiov1alpha1.RedirectURI{{URL: "https://keep.example.com/.*"},
+				{URL: "https://new.example.com/cb"}}
+		})
+		mustReconcile(p2)
+		Expect(fake.Provider(pk2)[jsonRedirectURIs]).To(ConsistOf(
+			SatisfyAll(HaveKeyWithValue(jsonURL, "https://keep.example.com/.*"), HaveKeyWithValue("matching_mode", "regex"),
+				HaveKeyWithValue("redirect_uri_type", "logout")),
+			SatisfyAll(HaveKeyWithValue(jsonURL, "https://new.example.com/cb"), HaveKeyWithValue("matching_mode", "strict"),
+				HaveKeyWithValue("redirect_uri_type", "authorization"))))
+	})
+
+	It("keeps the live property mappings when scopes is unset, adds the named ones, and owns the list when set", func() {
+		pk := seedLegacy("mappings-keep")
+		p := newProvider("mappings-keep", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.PropertyMappings = []string{fakeauthentik.MappingCustomName}
+		})
+		mustReconcile(p)
+		Expect(fake.Provider(pk)[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.MappingCustomPK),
+			"the live list already holds the named mapping: nothing to add, nothing removed")
+
+		pk2 := fake.SeedProviderWith(map[string]any{jsonName: "mappings-add",
+			jsonPropertyMappings: []any{fakeauthentik.ScopeOpenIDPK}})
+		p2 := newProvider("mappings-add", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.PropertyMappings = []string{fakeauthentik.MappingCustomName}
+		})
+		mustReconcile(p2)
+		Expect(fake.Provider(pk2)[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.ScopeOpenIDPK,
+			fakeauthentik.MappingCustomPK), "unset scopes keeps the live list and unions the named mappings")
+
+		pk3 := seedLegacy("mappings-own")
+		p3 := newProvider("mappings-own", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+			adopting(nil, false)(s)
+			s.Scopes = []string{"openid"}
+		})
+		mustReconcile(p3)
+		Expect(fake.Provider(pk3)[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.ScopeOpenIDPK),
+			"explicit scopes means the spec owns the whole list")
 	})
 
 	It("renames an adopted provider only when spec.name is set", func() {
@@ -519,6 +607,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			fake.SeedApplication("dry-app", pk)
 			p := newProvider("dry", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
 				s.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "dry-creds"}
+				s.SubMode = defaultSubMode
 				adopting(&authentikiov1alpha1.ProviderMatch{Name: "dry-provider"}, true)(s)
 			})
 
@@ -533,10 +622,11 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			cond := ready(p)
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal(reasonAdoptionDryRun))
-			Expect(cond.Message).To(ContainSubstring("redirect_uris"))
+			Expect(cond.Message).To(ContainSubstring(jsonRedirectURIs))
 			Expect(cond.Message).To(ContainSubstring("sub_mode: "))
 			Expect(cond.Message).To(ContainSubstring("user_email"))
-			Expect(cond.Message).To(ContainSubstring("hashed_user_id"))
+			Expect(cond.Message).To(ContainSubstring(defaultSubMode))
+			Expect(cond.Message).NotTo(ContainSubstring("grant_types"), "unset fields are not part of the takeover")
 			Expect(cond.Message).NotTo(ContainSubstring("client_secret"))
 			Expect(cond.Message).NotTo(ContainSubstring(jsonSigningKey))
 			Expect(cond.Message).NotTo(ContainSubstring(legacySecret))
@@ -551,7 +641,7 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			mustReconcile(p)
 			Expect(get(p).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 			Expect(ready(p).Status).To(Equal(metav1.ConditionTrue))
-			Expect(fake.Provider(pk)["redirect_uris"]).To(ConsistOf(HaveKeyWithValue("url", "https://dry.example.com/cb")))
+			Expect(fake.Provider(pk)[jsonRedirectURIs]).To(ConsistOf(HaveKeyWithValue(jsonURL, "https://dry.example.com/cb")))
 		})
 	})
 
@@ -614,7 +704,10 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 
 		It("reports drift in the Drifted condition, naming the fields and hiding secrets", func() {
 			seedLegacy("drift-provider")
-			p := newProvider("drift", readOnly(&authentikiov1alpha1.ProviderMatch{Name: "drift-provider"}))
+			p := newProvider("drift", func(s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+				readOnly(&authentikiov1alpha1.ProviderMatch{Name: "drift-provider"})(s)
+				s.SubMode = defaultSubMode
+			})
 			mustReconcile(p)
 
 			cond := drifted(p)
@@ -622,7 +715,8 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			Expect(cond.Message).To(ContainSubstring("sub_mode: "))
 			Expect(cond.Message).To(ContainSubstring("user_email"))
-			Expect(cond.Message).To(ContainSubstring("redirect_uris"))
+			Expect(cond.Message).To(ContainSubstring(jsonRedirectURIs))
+			Expect(cond.Message).NotTo(ContainSubstring("grant_types"), "a field the spec leaves unset is not drift")
 			Expect(cond.Message).NotTo(ContainSubstring(legacySecret))
 			Expect(fake.Requests(true)).To(BeEmpty())
 		})
@@ -634,12 +728,8 @@ var _ = Describe("AuthentikOAuthProvider adoption", func() {
 			Expect(drifted(p).Status).To(Equal(metav1.ConditionTrue))
 
 			By("the live provider is brought in line out of band")
-			fake.SetProviderField(pk, "sub_mode", "hashed_user_id")
-			fake.SetProviderField(pk, "grant_types", []any{"authorization_code", "refresh_token"})
-			fake.SetProviderField(pk, "property_mappings", []any{fakeauthentik.ScopeOpenIDPK,
-				fakeauthentik.ScopeProfilePK, fakeauthentik.ScopeEmailPK})
-			fake.SetProviderField(pk, "redirect_uris", []any{map[string]any{
-				"matching_mode": "strict", "url": "https://match.example.com/cb", "redirect_uri_type": "authorization"}})
+			fake.SetProviderField(pk, jsonRedirectURIs, []any{map[string]any{
+				"matching_mode": "strict", jsonURL: "https://match.example.com/cb", "redirect_uri_type": "authorization"}})
 			mustReconcile(p)
 			Expect(drifted(p).Status).To(Equal(metav1.ConditionFalse))
 			Expect(fake.Requests(true)).To(BeEmpty())

@@ -129,9 +129,9 @@ spec:
                 description: metaDescription is shown on the library page.
                 type: string
               metaHide:
-                default: false
-                description: metaHide hides the application from the user's library
-                  page.
+                description: |-
+                  metaHide hides the application from the user's library page. Unset: false
+                  on create, the live value on an adopted application.
                 type: boolean
               metaIcon:
                 description: metaIcon is an icon URL (http(s)) or an Authentik-relative
@@ -159,13 +159,14 @@ spec:
                 pattern: ^[^\x00-\x1F\x7F]+$
                 type: string
               openInNewTab:
-                default: true
-                description: openInNewTab opens the launch URL in a new tab.
+                description: |-
+                  openInNewTab opens the launch URL in a new tab. Unset: true on create, the
+                  live value on an adopted application.
                 type: boolean
               policyEngineMode:
-                default: any
-                description: 'policyEngineMode: any (one passing policy grants access)
-                  or all.'
+                description: |-
+                  policyEngineMode: any (one passing policy grants access) or all. Unset:
+                  any on create, the live value on an adopted application.
                 enum:
                 - all
                 - any

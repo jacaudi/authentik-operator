@@ -142,6 +142,9 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		fake.SetApplicationField(slug, "meta_description", "legacy description")
 		fake.SetApplicationField(slug, "meta_publisher", "legacy publisher")
 		fake.SetApplicationField(slug, "meta_icon", "https://legacy.example.com/icon.png")
+		fake.SetApplicationField(slug, "policy_engine_mode", "all")
+		fake.SetApplicationField(slug, "open_in_new_tab", true)
+		fake.SetApplicationField(slug, "meta_hide", true)
 	}
 
 	It("stays a Conflict under the Create policy and says how to adopt", func() {
@@ -186,13 +189,31 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		Expect(writes).To(HaveLen(1))
 		Expect(writes[0].Method).To(Equal(http.MethodPatch))
 		for _, untouched := range []string{"group", "meta_launch_url", "meta_description", "meta_publisher",
-			"meta_icon", "slug", "provider"} {
+			"meta_icon", "slug", "provider", "policy_engine_mode", "open_in_new_tab", "meta_hide"} {
 			Expect(writes[0].Body).NotTo(HaveKey(untouched))
 		}
+		By("unset policyEngineMode, openInNewTab and metaHide keep the live values, never the create defaults")
+		Expect(got["policy_engine_mode"]).To(Equal("all"))
+		Expect(got["open_in_new_tab"]).To(BeTrue())
+		Expect(got["meta_hide"]).To(BeTrue())
 
 		By("a second reconcile writes nothing")
 		mustReconcile(a)
 		Expect(fake.Requests(true)).To(HaveLen(1))
+	})
+
+	It("writes policyEngineMode, openInNewTab and metaHide on an adopted application when the spec sets them", func() {
+		seedLegacy("explicit-app", nil)
+		a := newApp("explicit-app", "", policyAdopt, false)
+		a.Spec.PolicyEngineMode = "any"
+		a.Spec.OpenInNewTab = new(false)
+		a.Spec.MetaHide = new(false)
+		Expect(k8sClient.Update(ctx, a)).To(Succeed())
+		mustReconcile(a)
+		got := fake.Application("explicit-app")
+		Expect(got["policy_engine_mode"]).To(Equal("any"))
+		Expect(got["open_in_new_tab"]).To(BeFalse())
+		Expect(got["meta_hide"]).To(BeFalse())
 	})
 
 	It("sets the provider link to providerRef when it differs, and leaves it alone when unset", func() {
@@ -403,7 +424,6 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			Expect(drifted(a).Message).To(ContainSubstring(`name: "drift-app" -> "App drift-app"`))
 
 			fake.SetApplicationField("drift-app", jsonName, "App drift-app")
-			fake.SetApplicationField("drift-app", "open_in_new_tab", true)
 			mustReconcile(a)
 			Expect(drifted(a).Status).To(Equal(metav1.ConditionFalse))
 			Expect(fake.Requests(true)).To(BeEmpty())

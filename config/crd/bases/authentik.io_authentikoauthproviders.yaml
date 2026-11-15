@@ -61,13 +61,15 @@ spec:
             description: spec defines the desired state of AuthentikOAuthProvider
             properties:
               accessCodeValidity:
-                default: minutes=1
-                description: accessCodeValidity, e.g. "minutes=1".
+                description: |-
+                  accessCodeValidity, e.g. "minutes=1". Unset: minutes=1 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               accessTokenValidity:
-                default: minutes=5
-                description: accessTokenValidity, e.g. "minutes=5".
+                description: |-
+                  accessTokenValidity, e.g. "minutes=5". Unset: minutes=5 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               authenticationFlow:
@@ -109,8 +111,9 @@ spec:
                 pattern: ^[\x21-\x7E]+$
                 type: string
               clientType:
-                default: confidential
-                description: clientType is confidential (has a client secret) or public.
+                description: |-
+                  clientType is confidential (has a client secret) or public. Unset:
+                  confidential on create, the live value on an adopted provider.
                 enum:
                 - confidential
                 - public
@@ -145,13 +148,12 @@ spec:
                   tokens (JWE). Optional.
                 type: string
               grantTypes:
-                default:
-                - authorization_code
-                - refresh_token
                 description: |-
                   grantTypes lists the grant types the provider accepts. Always sent
                   explicitly: Authentik 2026.8+ rejects logins for providers created
-                  with an empty list ("Invalid grant_type for provider").
+                  with an empty list ("Invalid grant_type for provider"). Unset:
+                  authorization_code and refresh_token on create, the live value on an
+                  adopted provider.
                 items:
                   description: OAuthGrantType is an OAuth2 grant type Authentik can
                     allow for a provider.
@@ -169,9 +171,9 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               includeClaimsInIdToken:
-                default: true
-                description: includeClaimsInIdToken includes user claims from scopes
-                  in the id_token.
+                description: |-
+                  includeClaimsInIdToken includes user claims from scopes in the id_token.
+                  Unset: true on create, the live value on an adopted provider.
                 type: boolean
               invalidationFlow:
                 description: invalidationFlow is the slug of the flow used when ending
@@ -179,17 +181,20 @@ spec:
                 minLength: 1
                 type: string
               issuerMode:
-                default: per_provider
-                description: issuerMode selects how the iss claim is built.
+                description: |-
+                  issuerMode selects how the iss claim is built. Unset: per_provider on
+                  create, the live value on an adopted provider. In per_provider mode the
+                  iss claim contains the application slug, so changing the application's
+                  slug changes iss.
                 enum:
                 - global
                 - per_provider
                 type: string
               logoutMethod:
-                default: backchannel
                 description: |-
                   logoutMethod is backchannel (server-to-server) or frontchannel
-                  (browser iframes; requires logoutUri).
+                  (browser iframes; requires logoutUri). Unset: backchannel on create, the
+                  live value on an adopted provider.
                 enum:
                 - backchannel
                 - frontchannel
@@ -258,21 +263,27 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               redirectUris:
-                description: redirectUris lists the allowed redirect URIs.
+                description: |-
+                  redirectUris lists the allowed redirect URIs. Required when the provider
+                  is created (the resource reports InvalidSpec otherwise); unset on an
+                  adopted provider, its live redirect URIs are kept.
                 items:
                   description: RedirectURI is an allowed redirect URI.
                   properties:
                     matchingMode:
-                      default: strict
-                      description: matchingMode is strict (exact match) or regex.
+                      description: |-
+                        matchingMode is strict (exact match) or regex. Unset: strict on create;
+                        an adopted provider keeps the mode of the live redirect URI with the same
+                        url, else strict.
                       enum:
                       - strict
                       - regex
                       type: string
                     type:
-                      default: authorization
-                      description: type is authorization (default) or logout (post-logout
-                        redirect).
+                      description: |-
+                        type is authorization or logout (post-logout redirect). Unset:
+                        authorization on create; an adopted provider keeps the type of the live
+                        redirect URI with the same url, else authorization.
                       enum:
                       - authorization
                       - logout
@@ -292,26 +303,25 @@ spec:
                 type: array
                 x-kubernetes-list-type: atomic
               refreshTokenThreshold:
-                default: seconds=0
                 description: |-
                   refreshTokenThreshold: a refresh token valid for less than this is
-                  renewed on refresh; "seconds=0" renews on every refresh.
+                  renewed on refresh; "seconds=0" renews on every refresh. Unset: seconds=0
+                  on create, the live value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               refreshTokenValidity:
-                default: days=30
-                description: refreshTokenValidity, e.g. "days=30".
+                description: |-
+                  refreshTokenValidity, e.g. "days=30". Unset: days=30 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               scopes:
-                default:
-                - openid
-                - profile
-                - email
                 description: |-
                   scopes lists OAuth scope mappings by scope_name (e.g. openid, profile,
                   email). When several mappings share a scope name, the managed
-                  (built-in) one is used.
+                  (built-in) one is used. Unset: openid, profile and email on create; an
+                  adopted provider keeps its live mappings and gains any propertyMappings
+                  named below. Set, the spec owns the whole list.
                 items:
                   type: string
                 maxItems: 64
@@ -354,8 +364,10 @@ spec:
                 minLength: 1
                 type: string
               subMode:
-                default: hashed_user_id
-                description: subMode selects the value of the sub claim.
+                description: |-
+                  subMode selects the value of the sub claim. Unset: hashed_user_id on
+                  create, the live value on an adopted provider. Changing it on a provider
+                  with live clients changes every user's sub.
                 enum:
                 - hashed_user_id
                 - user_id
@@ -367,7 +379,6 @@ spec:
             required:
             - authorizationFlow
             - invalidationFlow
-            - redirectUris
             type: object
             x-kubernetes-validations:
             - message: authentikRef is immutable
