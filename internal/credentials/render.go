@@ -39,7 +39,7 @@ import (
 	"text/template/parse"
 	"unicode"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
