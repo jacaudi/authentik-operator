@@ -26,7 +26,7 @@ import (
 	"text/template"
 	"text/template/parse"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "go.yaml.in/yaml/v4"
 
 	"github.com/jacaudi/authentik-operator/internal/credentials"
 )
