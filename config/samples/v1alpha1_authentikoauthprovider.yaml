@@ -1,6 +1,7 @@
-# An OAuth2/OIDC provider. Only the flows and redirect URIs are required;
-# everything else shows its default. Uses the operator's default connection
-# unless authentikRef names an AuthentikDeployment in this namespace.
+# An OAuth2/OIDC provider. Only the flows are required, plus redirectUris when
+# the provider is created; everything else takes its default then. Uses the
+# operator's default connection unless authentikRef names an
+# AuthentikDeployment in this namespace.
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikOAuthProvider
 metadata:
@@ -23,7 +24,8 @@ spec:
     name: grafana-oidc-credentials
     templateRef:
       name: grafana-generic-oauth
-  # Defaults, shown for reference:
+  # Defaults the controller applies when it creates the provider (an adopted
+  # provider keeps its live values for any field left unset):
   # scopes: [openid, profile, email]
   # grantTypes: [authorization_code, refresh_token]
   # clientType: confidential

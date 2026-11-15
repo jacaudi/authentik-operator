@@ -14,12 +14,14 @@ spec:
     name: authentikoauthprovider-sample
   metaLaunchUrl: https://grafana.example.com
   group: Monitoring
-  # Defaults: policyEngineMode: any, openInNewTab: true, metaHide: false
+  # Defaults when the application is created (an adopted application keeps its
+  # live values for any field left unset): policyEngineMode: any,
+  # openInNewTab: true, metaHide: false
   #
   # Take over an application that already exists with this slug instead of
   # failing with a Conflict. Only the fields set here are patched; group,
-  # meta* and the provider link (when providerRef is unset) are left alone,
-  # but the defaults above ARE written. Adopt, AdoptOrCreate and ReadOnly on
+  # meta*, policyEngineMode, openInNewTab, metaHide and the provider link (when
+  # providerRef is unset) are left alone. Adopt, AdoptOrCreate and ReadOnly on
   # the operator's default connection need an administrator to allow this
   # namespace (--default-connection-adoption-namespace-selector). Start with
   # dryRun: true.
