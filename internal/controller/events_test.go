@@ -37,8 +37,8 @@ func TestTruncateNote(t *testing.T) {
 		{"short text is unchanged", "hello", 16, "hello"},
 		{"exactly the limit is unchanged", "0123456789", 10, "0123456789"},
 		{"long ASCII is cut with an ellipsis inside the limit", "0123456789abcdef", 10, "0123456..."},
-		{"a multibyte rune is never split", "aaaaaaaaé", 10, "aaaaaaaaé"},
-		{"a cut inside a multibyte rune backs up to the rune start", "aaaaaaééé", 10, "aaaaaa..."},
+		{"a multibyte rune is never split", "aaaaaaaa\u00e9", 10, "aaaaaaaa\u00e9"},
+		{"a cut inside a multibyte rune backs up to the rune start", "aaaaaa\u00e9\u00e9\u00e9", 10, "aaaaaa..."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -79,7 +79,7 @@ func TestEmitCapsTheNoteAtTheAPILimitInBytes(t *testing.T) {
 	p := &authentikiov1alpha1.AuthentikOAuthProvider{}
 	// 600 three-byte runes: 1800 bytes but only 600 characters, so a
 	// character-based cap would let it through.
-	long := strings.Repeat("€", 600)
+	long := strings.Repeat("\u20ac", 600)
 
 	emit(rec, p, corev1.EventTypeNormal, "Test", "Test", "dry run: %s", long)
 
