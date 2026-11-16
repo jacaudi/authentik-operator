@@ -67,8 +67,8 @@ test: manifests generate fmt vet setup-envtest ## Run tests with the race detect
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # kubectl kuberc is disabled by default for test isolation; enable with:
 # - KUBECTL_KUBERC=true
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
+# The suite installs Authentik (official chart) and the operator (dist/chart); parameters:
+# - AUTHENTIK_CHART_VERSION (Authentik version under test), E2E_IMAGE, CONTAINER_TOOL, E2E_SKIP_BUILD
 KIND_CLUSTER ?= authentik-operator-test-e2e
 
 .PHONY: setup-test-e2e
@@ -87,7 +87,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e -timeout 50m ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e

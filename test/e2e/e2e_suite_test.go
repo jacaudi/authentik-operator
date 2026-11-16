@@ -19,99 +19,97 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
-	"os"
-	"os/exec"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/jacaudi/authentik-operator/test/utils"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/jacaudi/authentik-operator/test/aktest"
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/authentik-operator:v0.0.1"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+	// ak is the test's own view of Authentik, independent of the operator.
+	ak *aktest.API
+	// akForward is the port-forward behind ak.
+	akForward *portForward
 )
 
-// TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
+// TestE2E runs the end-to-end suite against a real Authentik in a dedicated
+// kind cluster. See docs/roadmap/TASK-08-e2e-against-real-authentik.md.
 //
-// To enable kubectl kuberc (use custom kubectl configurations), set: KUBECTL_KUBERC=true
-// By default, kuberc is disabled to ensure consistent test behavior across different environments.
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true.
+// Environment: KIND_CLUSTER (cluster name; kubectl's current context must be
+// kind-<name>), AUTHENTIK_CHART_VERSION (the Authentik chart/app version
+// under test), E2E_IMAGE, CONTAINER_TOOL (docker|podman), E2E_SKIP_BUILD.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	GinkgoWriter.Print("Starting authentik-operator e2e test suite\n")
-	RunSpecs(t, "e2e suite")
+	GinkgoWriter.Printf("Starting authentik-operator e2e suite against Authentik %s\n", chartVersion)
+	RunSpecs(t, "e2e suite", Label("authentik-"+chartVersion))
 }
 
 var _ = BeforeSuite(func(ctx SpecContext) {
-	By("building the manager image")
-	cmd := exec.CommandContext(ctx, "make", "docker-build", "IMG="+managerImage)
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	// kuberc would make runs differ between developer machines.
+	GinkgoT().Setenv("KUBECTL_KUBERC", "false")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(ctx, managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	By("checking the kubectl context")
+	Expect(guardContext(ctx)).To(Succeed())
+	var err error
+	k8s, err = newClient()
+	Expect(err).NotTo(HaveOccurred())
 
-	configureKubectlKubeRC()
-	setupCertManager(ctx)
+	By("building and loading the operator image")
+	Expect(buildAndLoadImage(ctx)).To(Succeed(), "build/load of "+managerImage)
+
+	installAuthentik(ctx)
+	akForward, ak = startAuthentikAccess(ctx)
+
+	By("installing the operator with the in-repo Helm chart")
+	Expect(ensureNamespace(ctx, operatorNS, map[string]string{
+		"pod-security.kubernetes.io/enforce": "restricted",
+	})).To(Succeed())
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "authentik-api", Namespace: operatorNS},
+		StringData: map[string]string{"token": bootstrapToken},
+	}
+	if err := k8s.Create(ctx, tokenSecret); err != nil {
+		Expect(isAlreadyExists(err)).To(BeTrue(), err) // left by an earlier run
+	}
+	Expect(installOperator(ctx, authentikURL)).To(Succeed(), "helm install of the operator chart")
+
+	Expect(ensureNamespace(ctx, appsNS, nil)).To(Succeed())
+	resetTestResources(ctx)
+	// Metrics scraping: a ServiceAccount allowed to read /metrics.
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "e2e-metrics", Namespace: operatorNS}}
+	if err := k8s.Create(ctx, sa); err != nil {
+		Expect(isAlreadyExists(err)).To(BeTrue(), err)
+	}
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "e2e-metrics-reader"},
+		RoleRef: rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole",
+			Name: operatorRelease + "-metrics-reader"},
+		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "e2e-metrics", Namespace: operatorNS}},
+	}
+	// roleRef is immutable: replace a binding left by an earlier run.
+	Expect(client.IgnoreNotFound(k8s.Delete(ctx, crb.DeepCopy()))).To(Succeed())
+	Expect(k8s.Create(ctx, crb)).To(Succeed())
 })
 
-var _ = AfterSuite(func(ctx SpecContext) {
-	teardownCertManager(ctx)
+var _ = AfterSuite(func() {
+	akForward.Stop()
 })
 
-// Disable kubectl kuberc by default for test isolation.
-// This prevents local kubectl configurations from affecting test behavior.
-// To enable kuberc, set: KUBECTL_KUBERC=true.
-func configureKubectlKubeRC() {
-	if os.Getenv("KUBECTL_KUBERC") != "true" {
-		By("disabling kubectl kuberc for test isolation")
-		err := os.Setenv("KUBECTL_KUBERC", "false")
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to disable kubectl kuberc")
-		GinkgoWriter.Print("kubectl kuberc disabled for consistent test behavior (override with KUBECTL_KUBERC=true)\n")
-	} else {
-		GinkgoWriter.Print("kubectl kuberc enabled (KUBECTL_KUBERC=true)\n")
-	}
-}
-
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager(ctx context.Context) {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		GinkgoWriter.Print("Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
+// dumpOnFailure prints what is needed to debug a failed spec from CI logs.
+var _ = AfterEach(func(ctx SpecContext) {
+	if !CurrentSpecReport().Failed() {
 		return
 	}
-
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled(ctx) {
-		GinkgoWriter.Print("CertManager is already installed. Skipping installation.\n")
-		return
+	GinkgoWriter.Printf("--- operator logs ---\n%s\n", controllerLogs(ctx))
+	for _, kind := range []string{"authentikoauthproviders", "authentikapplications"} {
+		out, _ := kubectl(ctx, "get", kind, "-A", "-o", "yaml")
+		GinkgoWriter.Printf("--- %s ---\n%s\n", kind, out)
 	}
-
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
-
-	By("installing CertManager")
-	Expect(utils.InstallCertManager(ctx)).To(Succeed(), "Failed to install CertManager")
-}
-
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager(ctx context.Context) {
-	if !shouldCleanupCertManager {
-		GinkgoWriter.Print("Skipping CertManager cleanup (not installed by this suite)\n")
-		return
-	}
-
-	By("uninstalling CertManager")
-	utils.UninstallCertManager(ctx)
-}
+})

@@ -1,0 +1,9 @@
+{
+  "issuer": "http://127.0.0.1:18080/application/o/e2e-oidc/",
+  "authorize": "http://127.0.0.1:18080/application/o/authorize/",
+  "token": "http://127.0.0.1:18080/application/o/token/",
+  "user_info": "http://127.0.0.1:18080/application/o/userinfo/",
+  "provider_info": "http://127.0.0.1:18080/application/o/e2e-oidc/.well-known/openid-configuration",
+  "logout": "http://127.0.0.1:18080/application/o/e2e-oidc/end-session/",
+  "jwks": "http://127.0.0.1:18080/application/o/e2e-oidc/jwks/"
+}

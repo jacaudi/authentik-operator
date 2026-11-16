@@ -152,7 +152,8 @@ type AuthentikOAuthProviderSpec struct {
 	// explicitly: Authentik 2026.5+ rejects logins for providers created
 	// with an empty list ("Invalid grant_type for provider"). Unset:
 	// authorization_code and refresh_token on create, the live value on an
-	// adopted provider.
+	// adopted provider. Servers before 2026.5 have no such property and
+	// ignore this field.
 	// +kubebuilder:validation:MinItems=1
 	// +listType=set
 	// +optional

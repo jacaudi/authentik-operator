@@ -442,7 +442,11 @@ func oauth2ProviderPatch(want *api.OAuth2ProviderRequest,
 		{"propertyMappings", sameSet(want.PropertyMappings, got.PropertyMappings),
 			func() { patch.PropertyMappings = want.PropertyMappings }},
 		diff("clientType", want.GetClientType(), got.GetClientType(), patch.SetClientType),
-		{"grantTypes", sameSet(want.GrantTypes, got.GrantTypes), func() { patch.GrantTypes = want.GrantTypes }},
+		// nil means the server does not report grant types at all (Authentik
+		// 2026.2 predates them), so there is nothing to compare or to patch;
+		// an empty list is a real, reported value.
+		{"grantTypes", got.GrantTypes == nil || sameSet(want.GrantTypes, got.GrantTypes),
+			func() { patch.GrantTypes = want.GrantTypes }},
 		diff("clientId", want.GetClientId(), got.GetClientId(), patch.SetClientId),
 		diff("accessCodeValidity", want.GetAccessCodeValidity(), got.GetAccessCodeValidity(), patch.SetAccessCodeValidity),
 		diff("accessTokenValidity", want.GetAccessTokenValidity(), got.GetAccessTokenValidity(),
