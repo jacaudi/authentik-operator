@@ -258,6 +258,34 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --authentik-external-url=https://sso.example.com
 
+  - it: omits the adoption selector flag by default, so adoption on the default connection stays denied
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --metrics-bind-address=:8443
+            - --health-probe-bind-address=:8081
+            - --leader-elect
+            - --zap-log-level=info
+            - --zap-devel=false
+            - --zap-encoder=json
+
+  - it: passes adoption.defaultConnectionNamespaceSelector as the selector flag
+    set:
+      adoption.defaultConnectionNamespaceSelector: kubernetes.io/metadata.name=migration
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --default-connection-adoption-namespace-selector=kubernetes.io/metadata.name=migration
+
+  - it: renders a set-based adoption selector as a single argument
+    set:
+      adoption.defaultConnectionNamespaceSelector: kubernetes.io/metadata.name in (team-a, team-b)
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --default-connection-adoption-namespace-selector=kubernetes.io/metadata.name in (team-a, team-b)
+
   - it: mounts the token Secret as a file and passes --authentik-token-file
     set:
       authentik.url: https://authentik.example.com
