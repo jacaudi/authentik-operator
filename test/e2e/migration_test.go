@@ -321,7 +321,9 @@ stringData:
 		Expect(beforeApp).NotTo(BeNil())
 	})
 
-	// JeffResc #279: it creates providers with no grant types.
+	// JeffResc #279: v0.2.6 and older (0.1.8 here) create providers with no grant
+	// types, which Authentik 2026.5+ rejects every login for. The suite's legs
+	// are 2026.2 and 2026.8, hence the 2026.8 threshold.
 	It("logs in with the old Secret on 2026.2 and fails to on 2026.8+ (JeffResc #279)", func(ctx SpecContext) {
 		_, err := login(ctx, templateCreds(oldData), jrRedirect)
 		if atLeast(2026, 8) {
