@@ -68,7 +68,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
-			Client:    k8sClient,
+			Client:    indexedClient{k8sClient},
 			Scheme:    k8sClient.Scheme(),
 			Recorder:  recorder,
 			APIReader: k8sClient,
@@ -119,17 +119,71 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		return meta.FindStatusCondition(get(p).Status.Conditions, ConditionReady)
 	}
 
-	It("applies spec defaults at admission", func() {
+	It("leaves the adoption-sensitive fields unset at admission", func() {
 		p := newProvider("defaults")
 		create(p)
 		s := get(p).Spec
-		Expect(s.GrantTypes).To(ConsistOf(authentikiov1alpha1.OAuthGrantType("authorization_code"),
-			authentikiov1alpha1.OAuthGrantType("refresh_token")))
-		Expect(s.Scopes).To(ConsistOf("openid", "profile", "email"))
-		Expect(s.ClientType).To(BeEquivalentTo("confidential"))
-		Expect(s.SigningKey).To(Equal(fakeauthentik.SigningKeyName))
-		Expect(s.RedirectURIs[0].MatchingMode).To(BeEquivalentTo("strict"))
-		Expect(*s.IncludeClaimsInIDToken).To(BeTrue())
+		Expect(s.GrantTypes).To(BeEmpty())
+		Expect(s.Scopes).To(BeNil())
+		Expect(s.ClientType).To(BeEmpty())
+		Expect(s.SubMode).To(BeEmpty())
+		Expect(s.IssuerMode).To(BeEmpty())
+		Expect(s.LogoutMethod).To(BeEmpty())
+		Expect(s.AccessCodeValidity).To(BeEmpty())
+		Expect(s.AccessTokenValidity).To(BeEmpty())
+		Expect(s.RefreshTokenValidity).To(BeEmpty())
+		Expect(s.RefreshTokenThreshold).To(BeEmpty())
+		Expect(s.IncludeClaimsInIDToken).To(BeNil())
+		Expect(s.SigningKey).To(BeEmpty(), "signingKey has no schema default; the controller picks one on create")
+		Expect(s.RedirectURIs[0].MatchingMode).To(BeEmpty())
+		Expect(s.RedirectURIs[0].Type).To(BeEmpty())
+	})
+
+	It("applies the documented defaults to every unset field when it creates the provider", func() {
+		p := newProvider("create-defaults")
+		create(p)
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+
+		got := fake.Provider(get(p).Status.ProviderPK)
+		Expect(got["client_type"]).To(Equal("confidential"))
+		Expect(got["grant_types"]).To(ConsistOf("authorization_code", "refresh_token"))
+		Expect(got[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.ScopeOpenIDPK, fakeauthentik.ScopeProfilePK,
+			fakeauthentik.ScopeEmailPK))
+		Expect(got["access_code_validity"]).To(Equal("minutes=1"))
+		Expect(got["access_token_validity"]).To(Equal("minutes=5"))
+		Expect(got["refresh_token_validity"]).To(Equal("days=30"))
+		Expect(got["refresh_token_threshold"]).To(Equal("seconds=0"))
+		Expect(got["sub_mode"]).To(Equal(defaultSubMode))
+		Expect(got["include_claims_in_id_token"]).To(BeTrue())
+		Expect(got["issuer_mode"]).To(Equal("per_provider"))
+		Expect(got["logout_method"]).To(Equal("backchannel"))
+		Expect(got[jsonRedirectURIs]).To(ConsistOf(SatisfyAll(
+			HaveKeyWithValue("matching_mode", "strict"), HaveKeyWithValue("redirect_uri_type", "authorization"))))
+	})
+
+	It("resets a field to its default on a created provider when drift changes it", func() {
+		p := newProvider("default-drift")
+		create(p)
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		pk := get(p).Status.ProviderPK
+		fake.SetProviderField(pk, "sub_mode", "user_email")
+
+		_, err = reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fake.Provider(pk)["sub_mode"]).To(Equal(defaultSubMode))
+	})
+
+	It("refuses to create a provider without redirectUris, naming the field", func() {
+		p := newProvider("no-redirects")
+		p.Spec.RedirectURIs = nil
+		create(p)
+		_, err := reconcileOnce(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(p).Reason).To(Equal(reasonInvalidSpec))
+		Expect(ready(p).Message).To(ContainSubstring("spec.redirectUris is required"))
+		Expect(fake.ProviderCount()).To(BeZero())
 	})
 
 	It("creates the provider with explicit grant types and records ownership", func() {
@@ -151,12 +205,12 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		Expect(got[jsonName]).To(Equal("create"))
 		// JeffResc #279: grant_types must never be sent empty.
 		Expect(got["grant_types"]).To(ConsistOf("authorization_code", "refresh_token"))
-		Expect(got["property_mappings"]).To(ConsistOf(fakeauthentik.ScopeOpenIDPK, fakeauthentik.ScopeProfilePK,
+		Expect(got[jsonPropertyMappings]).To(ConsistOf(fakeauthentik.ScopeOpenIDPK, fakeauthentik.ScopeProfilePK,
 			fakeauthentik.ScopeEmailPK))
 		Expect(got["signing_key"]).To(Equal(fakeauthentik.SigningKeyPK))
 		Expect(got["authorization_flow"]).To(Equal(fakeauthentik.FlowAuthorizationPK))
-		Expect(got["redirect_uris"]).To(ConsistOf(SatisfyAll(
-			HaveKeyWithValue("url", "https://app.example.com/callback"),
+		Expect(got[jsonRedirectURIs]).To(ConsistOf(SatisfyAll(
+			HaveKeyWithValue(jsonURL, "https://app.example.com/callback"),
 			HaveKeyWithValue("matching_mode", "strict"))))
 		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("Created")))
 		Expect(cur.Status.ClientID).NotTo(ContainSubstring("secret"))
@@ -218,8 +272,8 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		got := fake.Provider(pk)
 		Expect(got[jsonName]).To(Equal("renamed"))
-		Expect(got["redirect_uris"]).To(HaveLen(2))
-		Expect(got["property_mappings"]).To(ContainElement(fakeauthentik.MappingCustomPK))
+		Expect(got[jsonRedirectURIs]).To(HaveLen(2))
+		Expect(got[jsonPropertyMappings]).To(ContainElement(fakeauthentik.MappingCustomPK))
 		Expect(got["encryption_key"]).To(Equal(fakeauthentik.EncryptionKeyPK))
 		Expect(got["authentication_flow"]).To(Equal(fakeauthentik.FlowAuthenticationPK))
 		Expect(got["client_type"]).To(Equal("public"))
@@ -344,7 +398,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		sec := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name + "-token", Namespace: namespace, Labels: map[string]string{
 				authentikiov1alpha1.LabelConnection: authentikiov1alpha1.LabelConnectionValue}},
-			StringData: map[string]string{"token": "tok"},
+			StringData: map[string]string{tokenSecretKey: "tok"},
 		}
 		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
 		DeferCleanup(func() { _ = client.IgnoreNotFound(k8sClient.Delete(ctx, sec)) })
@@ -482,7 +536,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			"spec": map[string]any{
 				"authorizationFlow": fakeauthentik.FlowAuthorizationSlug,
 				"invalidationFlow":  fakeauthentik.FlowInvalidationSlug,
-				"redirectUris":      []any{map[string]any{"url": "https://m2m.example.com/cb"}},
+				"redirectUris":      []any{map[string]any{jsonURL: "https://m2m.example.com/cb"}},
 				"grantTypes":        []any{"client_credentials"},
 				"scopes":            []any{},
 			},
@@ -500,7 +554,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 		_, err := reconcileOnce(p)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(get(p).Spec.Scopes).To(BeEmpty())
-		Expect(fake.Provider(get(p).Status.ProviderPK)["property_mappings"]).To(BeEmpty())
+		Expect(fake.Provider(get(p).Status.ProviderPK)[jsonPropertyMappings]).To(BeEmpty())
 	})
 
 	It("resets refreshTokenThreshold and logoutMethod when removed from spec", func() {
@@ -605,7 +659,7 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 	It("emits InvalidSpec once, not on every retry", func() {
 		p := newProvider("invalid-once")
 		create(p)
-		body := map[string]any{"redirect_uris": []string{"Enter a valid URL."}}
+		body := map[string]any{jsonRedirectURIs: []string{"Enter a valid URL."}}
 		fake.FailNextWith(http.MethodPost, http.StatusBadRequest, body)
 		_, _ = reconcileOnce(p)
 		fake.FailNextWith(http.MethodPost, http.StatusBadRequest, body)
@@ -669,10 +723,17 @@ var _ = Describe("AuthentikOAuthProvider Controller", func() {
 			p.Spec.AccessTokenValidity = "5m"
 			Expect(k8sClient.Create(ctx, p)).NotTo(Succeed())
 		})
-		It("rejects an empty redirect URI list", func() {
-			p := newProvider("invalid-redirects")
-			p.Spec.RedirectURIs = nil
-			Expect(k8sClient.Create(ctx, p)).NotTo(Succeed())
+		It("rejects an explicitly empty redirect URI list, though omitting the field is valid", func() {
+			u := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "authentik.io/v1alpha1", "kind": "AuthentikOAuthProvider",
+				"metadata": map[string]any{jsonName: "invalid-redirects", "namespace": namespace},
+				"spec": map[string]any{
+					"authorizationFlow": fakeauthentik.FlowAuthorizationSlug,
+					"invalidationFlow":  fakeauthentik.FlowInvalidationSlug,
+					"redirectUris":      []any{},
+				},
+			}}
+			Expect(k8sClient.Create(ctx, u)).NotTo(Succeed())
 		})
 	})
 })

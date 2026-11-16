@@ -17,10 +17,16 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
+
 	api "goauthentik.io/api/v3"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 )
+
+// defaultPolicyEngineMode is the policyEngineMode a new application takes when
+// the spec leaves it unset; openInNewTab defaults to true and metaHide to false.
+const defaultPolicyEngineMode = "any"
 
 // applicationSlug is the application's slug in Authentik.
 func applicationSlug(a *authentikiov1alpha1.AuthentikApplication) string {
@@ -31,8 +37,9 @@ func applicationSlug(a *authentikiov1alpha1.AuthentikApplication) string {
 }
 
 // desiredApplication builds the full request the application should match.
-// providerPK is 0 for an application without a provider. Spec defaults are
-// applied by the API server, so every defaulted field is read as is.
+// providerPK is 0 for an application without a provider. A field the spec
+// leaves unset takes its create default (any, true, false); adoptionViewApplication
+// swaps those for the live values when the application is adopted.
 func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK int32) *api.ApplicationRequest {
 	s := a.Spec
 	req := api.NewApplicationRequest(s.Name, applicationSlug(a))
@@ -42,14 +49,51 @@ func desiredApplication(a *authentikiov1alpha1.AuthentikApplication, providerPK 
 		req.SetProviderNil()
 	}
 	req.SetGroup(s.Group)
-	req.SetPolicyEngineMode(api.PolicyEngineMode(s.PolicyEngineMode))
+	req.SetPolicyEngineMode(api.PolicyEngineMode(cmp.Or(s.PolicyEngineMode, defaultPolicyEngineMode)))
 	req.SetMetaLaunchUrl(s.MetaLaunchURL)
 	req.SetMetaDescription(s.MetaDescription)
 	req.SetMetaPublisher(s.MetaPublisher)
 	req.SetMetaIcon(s.MetaIcon)
-	req.SetOpenInNewTab(*s.OpenInNewTab)
-	req.SetMetaHide(*s.MetaHide)
+	req.SetOpenInNewTab(s.OpenInNewTab == nil || *s.OpenInNewTab)
+	req.SetMetaHide(s.MetaHide != nil && *s.MetaHide)
 	return req
+}
+
+// adoptionViewApplication narrows want, the full desired state, to what
+// adoption may write: the fields the spec sets. Optional fields the spec
+// leaves empty (group, the meta* strings) and the provider link when
+// providerRef is unset keep the adopted application's own value, and so do an
+// unset policyEngineMode, openInNewTab and metaHide.
+func adoptionViewApplication(a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest,
+	got *api.Application) {
+	s := a.Spec
+	if s.ProviderRef == nil {
+		want.Provider = got.Provider
+	}
+	if s.Group == "" {
+		want.SetGroup(got.GetGroup())
+	}
+	if s.MetaLaunchURL == "" {
+		want.SetMetaLaunchUrl(got.GetMetaLaunchUrl())
+	}
+	if s.MetaDescription == "" {
+		want.SetMetaDescription(got.GetMetaDescription())
+	}
+	if s.MetaPublisher == "" {
+		want.SetMetaPublisher(got.GetMetaPublisher())
+	}
+	if s.MetaIcon == "" {
+		want.SetMetaIcon(got.GetMetaIcon())
+	}
+	if s.PolicyEngineMode == "" {
+		want.SetPolicyEngineMode(got.GetPolicyEngineMode())
+	}
+	if s.OpenInNewTab == nil {
+		want.SetOpenInNewTab(got.GetOpenInNewTab())
+	}
+	if s.MetaHide == nil {
+		want.SetMetaHide(got.GetMetaHide())
+	}
 }
 
 // applicationPatch returns a patch with only the fields that differ, plus

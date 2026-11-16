@@ -95,7 +95,7 @@ type Client struct {
 
 // New validates cfg and builds a Client.
 func New(cfg Config) (*Client, error) {
-	base, err := normalizeURL(cfg.URL)
+	base, err := NormalizeURL(cfg.URL)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,12 @@ func (c *Client) Ping(ctx context.Context) (string, error) {
 	return me.User.Username, nil
 }
 
-func normalizeURL(raw string) (string, error) {
+// NormalizeURL validates an Authentik base URL and returns its canonical form:
+// lower-case host, no default port (:80 for http, :443 for https), no trailing
+// slash and no /api/v3 suffix, so two spellings of one instance compare equal.
+// It does not resolve names: a service DNS name and an ingress host that reach
+// the same instance are different here.
+func NormalizeURL(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("authentik: URL is required")
 	}
@@ -185,8 +190,17 @@ func normalizeURL(raw string) (string, error) {
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", errors.New("authentik: URL must not contain userinfo, query or fragment")
 	}
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") { // IPv6 literal
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	defaultPort := (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443")
+	if port != "" && !defaultPort {
+		host += ":" + port
+	}
 	p := strings.TrimSuffix(strings.TrimRight(u.Path, "/"), apiPath)
-	return u.Scheme + "://" + u.Host + strings.TrimRight(p, "/"), nil
+	return u.Scheme + "://" + host + strings.TrimRight(p, "/"), nil
 }
 
 func newLimiter(rps float64, burst int) *rate.Limiter {

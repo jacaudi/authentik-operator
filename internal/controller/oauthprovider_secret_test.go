@@ -59,7 +59,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder, APIReader: k8sClient,
+			Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(), Recorder: recorder, APIReader: k8sClient,
 			Connections: &connection.Resolver{
 				Reader:             k8sClient,
 				Default:            &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
@@ -313,7 +313,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 				_ = k8sClient.Delete(ctx, &cur)
 			}
 		})
-		apps := &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps := &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: reconciler.Connections}
 		appReq := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
 
@@ -500,7 +500,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 			spec := newTemplate("tmpl-ns", authentikiov1alpha1.AuthentikCredentialsTemplateSpec{
 				Template:          tmplAX,
 				Labels:            map[string]string{labelTeam: teamObs},
-				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: "elsewhere"}},
+				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: otherName}},
 			})
 			p := attached("sec-ns", "ns", spec)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))
@@ -518,7 +518,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 
 			By("withdrawing the template's labels, but keeping the data, when access is revoked")
 			updateTemplate("tmpl-ns", func(t *authentikiov1alpha1.AuthentikCredentialsTemplateSpec) {
-				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = "elsewhere"
+				t.NamespaceSelector.MatchLabels[corev1.LabelMetadataName] = otherName
 			})
 			reconcileP(p)
 			Expect(creds(p).Reason).To(Equal(reasonTemplateNotAllowed))

@@ -1,6 +1,7 @@
-# An OAuth2/OIDC provider. Only the flows and redirect URIs are required;
-# everything else shows its default. Uses the operator's default connection
-# unless authentikRef names an AuthentikDeployment in this namespace.
+# An OAuth2/OIDC provider. Only the flows are required, plus redirectUris when
+# the provider is created; everything else takes its default then. Uses the
+# operator's default connection unless authentikRef names an
+# AuthentikDeployment in this namespace.
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikOAuthProvider
 metadata:
@@ -23,10 +24,26 @@ spec:
     name: grafana-oidc-credentials
     templateRef:
       name: grafana-generic-oauth
-  # Defaults, shown for reference:
+  # Defaults the controller applies when it creates the provider (an adopted
+  # provider keeps its live values for any field left unset):
   # scopes: [openid, profile, email]
   # grantTypes: [authorization_code, refresh_token]
   # clientType: confidential
   # subMode: hashed_user_id
   # issuerMode: per_provider
-  # signingKey: authentik Self-signed Certificate
+  # signingKey: unset = "authentik Self-signed Certificate" on create, kept on adopt
+  #
+  # Take over a provider that already exists (for example one created by
+  # another operator) instead of failing with a Conflict. The default policy
+  # is Create. Adopt, AdoptOrCreate and ReadOnly on the operator's default
+  # connection need an administrator to allow this namespace
+  # (--default-connection-adoption-namespace-selector); with authentikRef
+  # they are always allowed. Start with dryRun: true; the Ready condition
+  # (reason AdoptionDryRun) lists the fields that would change. The existing
+  # client ID and secret are kept and rendered into the Secret. See
+  # docs/design/scope.md.
+  # managementPolicy: Adopt      # Create | Adopt | AdoptOrCreate | ReadOnly
+  # dryRun: true                 # only with Adopt or AdoptOrCreate
+  # match:
+  #   name: grafana-provider     # or: pk: 7
+  # deletionPolicy: Retain       # default for an adopted provider

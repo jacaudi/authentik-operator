@@ -50,6 +50,17 @@ type PolicyEngineMode string
 // AuthentikApplicationSpec defines the desired state of AuthentikApplication.
 // +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 type AuthentikApplicationSpec struct {
+	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
+	// An existing application is matched by slug. Adoption patches the fields
+	// the spec sets and leaves the others (group, metaLaunchUrl,
+	// metaDescription, metaPublisher, metaIcon, policyEngineMode, openInNewTab,
+	// metaHide, and the provider link when providerRef is unset) as they are. When providerRef is set, the
+	// application's provider link is set to that provider (normally the
+	// adopted provider, so a no-op). Because the application waits for its
+	// providerRef to be Ready, that provider must itself be adopted (dryRun
+	// off) before this application can complete adoption.
+	APIManagementSpec `json:",inline"`
+
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
 	// operator's default connection is used. Must match the referenced
@@ -85,8 +96,8 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	Group string `json:"group,omitempty"`
 
-	// policyEngineMode: any (one passing policy grants access) or all.
-	// +kubebuilder:default=any
+	// policyEngineMode: any (one passing policy grants access) or all. Unset:
+	// any on create, the live value on an adopted application.
 	// +optional
 	PolicyEngineMode PolicyEngineMode `json:"policyEngineMode,omitempty"`
 
@@ -111,13 +122,13 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	MetaIcon string `json:"metaIcon,omitempty"`
 
-	// openInNewTab opens the launch URL in a new tab.
-	// +kubebuilder:default=true
+	// openInNewTab opens the launch URL in a new tab. Unset: true on create, the
+	// live value on an adopted application.
 	// +optional
 	OpenInNewTab *bool `json:"openInNewTab,omitempty"`
 
-	// metaHide hides the application from the user's library page.
-	// +kubebuilder:default=false
+	// metaHide hides the application from the user's library page. Unset: false
+	// on create, the live value on an adopted application.
 	// +optional
 	MetaHide *bool `json:"metaHide,omitempty"`
 }
@@ -132,9 +143,14 @@ type AuthentikApplicationStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// applicationUid is the Authentik primary key (UUID) of the application
-	// this resource created.
+	// this resource manages, whether it created or adopted it.
 	// +optional
 	ApplicationUID string `json:"applicationUid,omitempty"`
+
+	// provenance is Created or Adopted once decided; empty means not yet
+	// decided (including while an adoption dry run is reporting).
+	// +optional
+	Provenance Provenance `json:"provenance,omitempty"`
 
 	// slug is the application's slug in Authentik.
 	// +optional
@@ -162,6 +178,7 @@ type AuthentikApplicationStatus struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.spec.slug) ? self.spec.slug : self.metadata.name) == (has(oldSelf.spec.slug) ? oldSelf.spec.slug : oldSelf.metadata.name)",message="slug is immutable (it is the application's identity in Authentik URLs)"
 // +kubebuilder:printcolumn:name="Slug",type=string,JSONPath=".status.slug"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Provenance",type=string,JSONPath=".status.provenance"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 

@@ -85,6 +85,247 @@ The spec field was chosen over an annotation on the target because the decision
 belongs to whoever owns the CR, and it stays visible in one place in Git rather
 than on a live object the operator is about to take over.
 
+## API-object adoption (TASK-05)
+
+`AuthentikOAuthProvider` and `AuthentikApplication` follow the same contract as
+`AuthentikDeployment` adoption above -- explicit, opt-in, release rather than
+delete -- applied to objects inside Authentik. (Group and User are stubs and
+get it when they get a controller.) Migrating from another operator is the use
+case: a provider recreated instead of adopted gets a new client ID and secret
+and every consuming app breaks.
+
+```yaml
+spec:
+  managementPolicy: Adopt   # Create (default) | Adopt | AdoptOrCreate | ReadOnly
+  dryRun: false             # report the diff, write nothing; Adopt/AdoptOrCreate only
+  match:                    # providers only; exactly one of name or pk
+    name: grafana-provider
+  deletionPolicy: Retain    # optional: Delete | Retain
+```
+
+`APIManagementSpec` (`managementPolicy`, `dryRun`, `deletionPolicy`) is a
+separate type from the deployment's `AdoptionSpec` because API objects need
+`dryRun`, an observe-only mode and a way to find the target, which
+Kubernetes-object adoption does not.
+
+### Management policy
+
+| policy | finds an existing object | existing object | miss | writes to Authentik | deletes on CR delete |
+|---|---|---|---|---|---|
+| `Create` (default) | no, never adopts | `Conflict` | creates | yes | `Created` by default |
+| `Adopt` | yes | takes it over | `AdoptionTargetNotFound`, nothing written | yes, the fields the spec sets | `Retain` by default |
+| `AdoptOrCreate` | yes | takes it over | creates (Normal event "nothing was found to adopt") | yes | by provenance |
+| `ReadOnly` | yes | observes it | `AdoptionTargetNotFound` | never | never |
+
+- A resource that **created** its object recreates it if it vanishes, whatever
+  the policy and `match` say. An object it **adopted** that vanishes is never
+  recreated silently: it reports `AdoptionTargetNotFound` and its pk stays in
+  status. `ReadOnly` never recreates anything.
+- `ReadOnly` finds the object, claims it (recorded as provenance `Adopted`,
+  so the duplicate check and tie-break cover it), renders the credentials
+  Secret, and reports in the `Drifted` condition whether the live object
+  differs from the spec (`True` with the fields as `field: live -> spec`, or
+  `False`). `Ready` is `True` (reason `ReadOnly`) once the object is found, so
+  dependents are not blocked by drift. It never writes to Authentik and never
+  deletes (`deletionPolicy: Delete` is rejected at admission).
+- CEL admission rules: `match` only with `Adopt`, `AdoptOrCreate` or
+  `ReadOnly`; `dryRun` only with `Adopt` or `AdoptOrCreate`; `ReadOnly`
+  rejects `deletionPolicy: Delete`; `match` has exactly one of `name` or `pk`.
+- The policy names follow ACK's adoption policies, but the write semantics
+  differ: `Adopt` here patches the fields the spec sets (and leaves the rest),
+  where ACK's `adopt` does not update the object to the spec.
+- `AdoptOrCreate` removes the protection against minting new client
+  credentials through a typo in a name, slug or pk. Treat it as a temporary
+  choice, for a disaster-recovery re-bootstrap (see below).
+
+### Adoption trust boundary
+
+Before adoption the operator never read or changed a provider it did not
+create, so create-only was the tenant boundary. Adoption lifts it: an adopting
+resource can read the provider's client secret (rendered into its Secret),
+rewrite its redirect URIs, change `sub`/`iss` semantics and delete it. So who
+may adopt is an administrator's decision, by connection:
+
+- **With an explicit `spec.authentikRef`** (a same-namespace
+  `AuthentikDeployment`) adoption, observation and `dryRun` are allowed: that
+  deployment's own token bounds what the resource can reach in Authentik.
+- **On the operator default connection** they are refused with condition reason
+  `AdoptionNotAllowed` unless the resource's namespace matches the label
+  selector in `--default-connection-adoption-namespace-selector`. The selector
+  is matched against the Namespace's labels, so
+  `kubernetes.io/metadata.name=team-a` (or `... in (team-a,team-b)`) works. An
+  empty selector, the default, denies every namespace. The check runs on every
+  reconcile, so removing a namespace stops an adopted resource from writing and
+  rendering Secrets; there is no Namespace watch, so a label change takes effect
+  within the 5-minute recheck. `Create` is never gated.
+- Known gap: the gate is by policy. A resource that adopted while its namespace
+  was allowed and is then switched to `Create` keeps managing the object it
+  adopted. Removing the namespace from the selector before switching policy
+  closes it.
+- A least-privilege `authentikRef` token can adopt and update an object but
+  needs Authentik's global `add_*` permission to create one; scope the token
+  with that in mind (see Authentik's permissions documentation).
+
+### Behavior
+
+- **Under `Create`**, an existing object with the target identity is a
+  `Conflict` (the message names `spec.managementPolicy`). Nothing is written.
+- **Identity.** An application is matched by slug. A provider is matched by
+  `match.name` or `match.pk`; with no `match` the candidate is the provider
+  named like the resource (`spec.name`, else `metadata.name`). `match.name` may
+  differ from the desired name: the JeffResc provider `<slug>-provider` is
+  adopted with `match: {name: <slug>-provider}`. Several providers with one
+  name is a `Conflict`; select by `match.pk`. A `match.pk` needs no search by
+  name.
+- **A miss never creates unless the policy is `AdoptOrCreate`.** A typo in a
+  name, slug or pk therefore cannot mint new client credentials. Under
+  `AdoptOrCreate` a miss creates with provenance `Created`, even when an
+  explicit `match` found nothing (the new provider takes the resource's desired
+  name).
+- **Provenance** is recorded in `status.provenance` (`Created` | `Adopted`)
+  next to the object's pk, because Authentik objects cannot carry
+  annotations. Empty means undecided: a fresh resource that finds an existing
+  object is never assumed to have created it. The decision is written to
+  status before any write to Authentik.
+- **Lost creates.** A create whose response was lost is recovered through
+  `status.pendingCreate` and classified `Created`. For a provider the proof is
+  the client ID the operator sent (`k8s-<uid>`, or the pinned `spec.clientId`).
+  An application has no client ID: it is recovered as `Created` only if it
+  links to this resource's `providerRef` provider **and** that provider's
+  provenance is `Created`. Otherwise the marker is dropped with a Warning
+  event ("create sent, outcome unproven") and the application takes the normal
+  path: adopted if the policy allows (through the gate and `dryRun`), else a
+  `Conflict`. An application without a `providerRef` cannot prove a lost
+  create.
+- **What adoption writes.** A PATCH of the fields the spec sets; everything
+  else on the object is left alone. A provider's `client_id` and
+  `client_secret` are never changed unless `spec.clientId` is set; the
+  credentials Secret is rendered from the values read from the API,
+  byte-for-byte. An adopted provider keeps its name unless `spec.name` is set,
+  and keeps `authenticationFlow`, `encryptionKey`, `logoutUri` and `signingKey`
+  if the spec leaves them empty (including no signing key at all). An adopted
+  application keeps `group`, `metaLaunchUrl`, `metaDescription`,
+  `metaPublisher` and `metaIcon` if the spec leaves them empty, and its
+  provider link if `providerRef` is unset; if `providerRef` is set the link
+  becomes that provider (a no-op when it is the adopted one). Required fields
+  (flows, application `name`) are written.
+- **Defaults apply on create only.** The CRD schema carries no defaults for
+  the adoption-sensitive fields, so "unset" is visible to the operator:
+  - provider: `scopes`, `clientType`, `grantTypes`, `accessCodeValidity`,
+    `accessTokenValidity`, `refreshTokenValidity`, `refreshTokenThreshold`,
+    `subMode`, `includeClaimsInIdToken`, `issuerMode`, `logoutMethod`, and each
+    redirect URI's `matchingMode` and `type`;
+  - application: `policyEngineMode`, `openInNewTab`, `metaHide`.
+
+  When the object is created, an unset field takes the documented default
+  (`openid profile email`; `confidential`; `authorization_code` and
+  `refresh_token`; `minutes=1`, `minutes=5`, `days=30`, `seconds=0`;
+  `hashed_user_id`; `true`; `per_provider`; `backchannel`; `strict` and
+  `authorization`; `any`, `true`, `false`), and a resource that created its
+  object is held to them on every reconcile. When the object is adopted (or
+  observed under `ReadOnly`), an unset field keeps the live value; only fields
+  the spec sets are written. `redirectUris` is optional in the schema but is
+  **required when creating** (`InvalidSpec` otherwise); an adopted provider
+  keeps its live redirect URIs when the spec lists none, and a listed URI
+  without `matchingMode` or `type` takes them from the live redirect URI with
+  the same `url`, else the defaults.
+- **Property mappings** are one Authentik field built from `scopes` plus
+  `propertyMappings`. With `scopes` unset the live list is kept and any
+  `propertyMappings` the spec names are added to it (additive, never removing
+  a live mapping); with `scopes` set the spec owns the whole list.
+- **Slug and `iss`.** In `issuerMode: per_provider` the `iss` claim contains
+  the application's slug, so changing an application's slug changes `iss` for
+  every client of its provider. The slug is immutable on the resource; adopting
+  an application under a different slug than another operator used is a
+  migration decision, not a rename.
+- **Dry run.** With `dryRun: true` the operator finds the object, computes the
+  PATCH and reports every field it would change as `field: old -> new`
+  (Authentik API field names, values truncated; the client secret is never
+  shown) in `Ready=False, reason AdoptionDryRun` and an event (event notes are
+  capped at 1024 bytes; the condition carries the full text). With nothing to
+  adopt it reports whether a new object would be created. It writes nothing to
+  Authentik and renders no Secret; `status.provenance` stays empty. Setting
+  `dryRun` back to false adopts. dryRun gates only the initial takeover: once
+  adopted, spec edits are applied live. `dryRun` is gated like adoption.
+- **Order of adoption.** An application waits for its `providerRef` to be
+  Ready, so the provider must be adopted (dryRun off) before the application
+  can complete adoption; an application in dryRun against a provider still in
+  dryRun shows `ProviderNotReady`.
+
+### Disaster-recovery re-bootstrap
+
+Leave `AdoptOrCreate` out of Git. The one legitimate use is a re-bootstrap
+after the Authentik database was lost, when nothing exists to adopt:
+
+1. Clear `status.providerPk`, `status.provenance` and `status.clientId` (for
+   an application: `status.applicationUid`, `status.slug`,
+   `status.provenance`) on the resource, since an adopted object that vanished
+   is otherwise never recreated.
+2. Set `managementPolicy: AdoptOrCreate` (or `Create`) temporarily.
+3. If consumers must keep their client ID, pin `spec.clientId` to the old
+   value. The client secret is always new; consumers need the re-rendered
+   credentials Secret.
+4. Once the object exists, set the policy back to `Adopt`.
+
+### Deletion policy
+
+`spec.deletionPolicy` is `Delete` or `Retain`. Unset, the effective policy is
+`Delete` for a `Created` object and `Retain` for an `Adopted` one; an undecided
+provenance never deletes **by default** (`Retain`, with a Warning event
+"provenance unknown; retaining"). An explicit `Delete` wins over provenance,
+so it can remove an object this resource did not create; when it does so for
+undecided provenance a Warning event says so first. `ReadOnly` never deletes.
+`Retain` removes the finalizer and leaves the Authentik object. The credentials
+Secret is a Kubernetes object owned by the provider resource and is
+garbage-collected with it under either policy (the credentials stay readable in
+Authentik); copy it out first if workloads still mount it.
+
+### Duplicate claims
+
+Two resources must never manage one object. Adopting is refused with a
+`Conflict` while any other resource, terminating ones included, tracks the
+object on the same Authentik. Two resources can still pass that check together
+(a cache that has not seen the other's claim); every tracked resource re-checks
+on every reconcile, and the claim re-check right after adoption reads the API,
+not the cache. They are ordered by a total order that every holder computes the
+same way: `Created` beats `Adopted`, then the lower `metadata.uid` wins. The
+loser clears its status, reports a `Conflict`, and deletes the credentials
+Secret it rendered (it holds the live client secret). A terminating holder
+still counts, so an adopter yields to a `Created` owner that is being deleted
+rather than being stranded when the owner's finalizer deletes the object.
+
+Resources are on the same Authentik when they share a connection reference
+(both the default connection, or the same `AuthentikDeployment`) or their
+normalized base URLs match (lower-case host, default port stripped, trailing
+slash and `/api/v3` trimmed). One resource on the default connection and
+another on an `AuthentikDeployment` for the same URL are therefore caught. The
+comparison is by URL only: a Kubernetes service DNS name and an ingress host
+that reach one instance look different, a false negative this cannot close
+without asking Authentik which instance it is (Authentik itself limits a
+provider to one application).
+
+### Upgrading a dev cluster (no provenance backfill)
+
+There is no backfill. Resources created before provenance existed have an
+object pk in status but an empty `status.provenance`, which resolves to
+`Retain`, so deleting them leaves their Authentik objects behind. No release
+has shipped with that state; on a development cluster either recreate the
+resource or mark it as the creator:
+
+```sh
+kubectl patch authentikoauthprovider <name> --subresource=status --type=merge \
+  -p '{"status":{"provenance":"Created"}}'
+```
+
+(same for `authentikapplication`). Only do this for objects the resource really
+created.
+
+### Not covered
+
+Provenance is sticky: switching `managementPolicy` later does not turn an
+`Adopted` object into a `Created` one. The gap in the trust boundary for a
+policy switch is described above.
+
 ## Decided: connection model (TASK-01)
 
 API objects (`AuthentikApplication`, `AuthentikOAuthProvider`, `AuthentikUser`,
@@ -121,6 +362,7 @@ used, configured by flags / environment (compatible with JeffResc):
 | `--authentik-token-file` | `AUTHENTIK_TOKEN` | token from a mounted Secret file, else the env var (set via `valueFrom.secretKeyRef`); never a flag value; read at startup |
 | `--authentik-ca-file` | | optional PEM bundle |
 | `--authentik-insecure-skip-verify` | | testing only |
+| `--default-connection-adoption-namespace-selector` | | label selector for the namespaces that may use `managementPolicy` Adopt, AdoptOrCreate or ReadOnly on the default connection; empty (the default) denies all; objects with `authentikRef` are not affected (see "Adoption trust boundary") |
 
 With neither a ref nor a default, an object is not reconciled and says so in
 its status (reason `NoConnection`).

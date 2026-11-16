@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,12 +56,13 @@ const (
 )
 
 const (
-	fieldName   = "name"
-	fieldSlug   = "slug"
-	fieldAuthz  = "authorization_flow"
-	fieldInval  = "invalidation_flow"
-	fieldDetail = "detail"
-	notFound    = "Not found."
+	fieldName      = "name"
+	fieldSlug      = "slug"
+	fieldAuthz     = "authorization_flow"
+	fieldInval     = "invalidation_flow"
+	fieldDetail    = "detail"
+	fieldRedirects = "redirect_uris"
+	notFound       = "Not found."
 )
 
 // Request is a recorded API call.
@@ -167,9 +169,34 @@ func (s *Server) SeedProvider(name string) int32 {
 	s.nextPK++
 	s.providers[pk] = s.completeProvider(pk, map[string]any{
 		fieldName: name, fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
-		"redirect_uris": []any{},
+		fieldRedirects: []any{},
 	})
 	return pk
+}
+
+// SeedProviderWith is SeedProvider with chosen fields (client_id,
+// client_secret, logout_uri, ...) layered over the defaults; fields not
+// given keep their defaults. The name must be among them.
+func (s *Server) SeedProviderWith(fields map[string]any) int32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pk := s.nextPK
+	s.nextPK++
+	in := map[string]any{
+		fieldName: "", fieldAuthz: FlowAuthorizationPK, fieldInval: FlowInvalidationPK,
+		fieldRedirects: []any{},
+	}
+	maps.Copy(in, fields)
+	s.providers[pk] = s.completeProvider(pk, in)
+	return pk
+}
+
+// DeleteCertificate removes a certificate-key pair by name (simulates an
+// install without the default signing key).
+func (s *Server) DeleteCertificate(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.certs = slices.DeleteFunc(s.certs, func(c map[string]any) bool { return c["name"] == name })
 }
 
 // Application returns a copy of a stored application, or nil.
