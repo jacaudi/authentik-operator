@@ -9,6 +9,13 @@ becomes three here.
 |---|---|
 | `AuthentikApplication` (v0.1.x) or `AuthentikOAuth2Application` (v0.2.x): application + provider + Secret in one object | `AuthentikOAuthProvider` + `AuthentikApplication` (same namespace) + a reference to a cluster-scoped `AuthentikCredentialsTemplate` |
 | `AuthentikSAMLApplication` (v0.2.x) | no equivalent (no SAML provider kind); leave it on JeffResc |
+| `AuthentikGroup` (v0.2.8+) | no equivalent (no group kind); leave it on JeffResc, or set its `deletionPolicy: Retain` and then delete it. The converter refuses it |
+
+**Supported JeffResc versions:** the converter understands the input fields of
+JeffResc 0.1.8 through v0.2.10 (the 0.1.x tags have no `v` prefix). It decodes
+strictly, so a field added in a later release is rejected until the converter
+learns it. Known gaps for the newest releases are listed in
+[TASK-09](roadmap/TASK-09-migration-from-jeffresc.md).
 
 `hack/convert-jeffresc` (`make convert-jeffresc` builds `bin/convert-jeffresc`)
 does the conversion. Everything it emits adopts the provider and application
@@ -45,7 +52,8 @@ bin/convert-jeffresc --out out/ jeffresc-backup.yaml          # files and/or dir
 Writes one object per file, `<kind-lowercase>-<name>.yaml`, deterministically
 (no timestamps; `out/` can be committed), and prints a report on stderr.
 It fails, writing nothing, when an object cannot be converted faithfully
-(SAML kind, unknown JeffResc field, template variable or construct this
+(SAML or `AuthentikGroup` kind, unknown JeffResc field, `groupBindings` without
+`--accept-unmanaged-group-bindings`, template variable or construct this
 operator does not support, a template that would render differently).
 
 | flag | default | meaning |
@@ -58,6 +66,25 @@ operator does not support, a template that would render differently).
 | `--secret-suffix S` | none | appended to every rendered Secret name, so new and old Secrets can exist side by side (recommended, see step 4) |
 | `--force` | off | write into a non-empty `--out` |
 | `--provider-suffix S` | none | appended to the `AuthentikOAuthProvider` resource names (default: same as the slug) |
+| `--accept-unmanaged-group-bindings` | off | convert objects that list `groupBindings` anyway; see below |
+
+### groupBindings fail open after migration
+
+JeffResc v0.2.8+ creates a group binding in Authentik for each entry of
+`spec.groupBindings` and deletes the others, so the list is an access
+allowlist. This operator manages no bindings. The ones JeffResc created stay in
+Authentik, but nothing enforces or re-creates them, and **Authentik lets every
+user open an application that has no bindings**. A disaster-recovery re-create,
+a delete and re-apply, deleting a bound group, or an edit in the UI would leave
+the application open to everyone.
+
+So the converter refuses a non-empty `groupBindings` per object, naming the
+groups, and writes nothing. Re-run with `--accept-unmanaged-group-bindings` to
+convert anyway; the converted `authentikapplication-*.yaml` then carries a header
+comment naming the groups (so the notice travels with the committed file) and
+the report repeats it. Manage the bindings in Authentik afterwards, for example
+with Authentik's blueprints. An empty or absent list triggers nothing (JeffResc
+ignores an empty one too).
 
 Emitted per JeffResc object:
 
@@ -82,7 +109,9 @@ Emitted per JeffResc object:
 
 JeffResc 0.1.8 and v0.2.5 have the same fields (note that the 0.1.x tags have
 no `v` prefix); v0.2.x renames the kind, adds validation and parses rendered
-Secret templates differently (see the template section). Fields JeffResc leaves
+Secret templates differently (see the template section). v0.2.7 adds
+`spec.provider.grantTypes` and v0.2.8 adds `spec.groupBindings` and the
+`AuthentikGroup` kind; the table covers everything up to v0.2.10. Fields JeffResc leaves
 unset take JeffResc's own CRD defaults (listed in the table). The converter
 **leaves those fields unset**: adoption writes only the fields the spec sets and
 keeps the live value of the others, and the live object already has JeffResc's
@@ -112,10 +141,11 @@ the fields it names. To keep holding a defaulted field, add it to the spec.
 | `spec.secret.name` (default `<name>-oauth`) | `AuthentikOAuthProvider.spec.secret.name` (+ `--secret-suffix`) | |
 | `spec.secret.template` | `AuthentikCredentialsTemplate.spec.template` | variables below |
 | `spec.secret.labels`, `spec.secret.annotations` | `AuthentikCredentialsTemplate.spec.labels`, `.annotations` | keys under `authentik.io/` are reserved here |
-| (none) | `grantTypes` | **written**: `[authorization_code, refresh_token]`, see below |
+| `spec.provider.grantTypes` (v0.2.7+; default and empty: `authorization_code, refresh_token`) | `grantTypes` | **always written**: the list copied without duplicates, else `[authorization_code, refresh_token]`; see below |
+| `spec.groupBindings` (v0.2.8+) | none | not managed here: refused unless `--accept-unmanaged-group-bindings`; see "groupBindings fail open" |
 | (none) | `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
 | `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
-| `AuthentikSAMLApplication` | none | error |
+| `AuthentikSAMLApplication`, `AuthentikGroup` | none | error |
 | Secret label `goauthentik.io/application` | none | JeffResc sets it; this operator does not |
 | Secret owner | the `AuthentikOAuthProvider` | JeffResc's Secret is owned by its CR; see step 4 |
 
@@ -126,14 +156,26 @@ object. Adoption never applies them, so a value someone changed in the UI
 survives. Set one of these in the spec if you want this operator to enforce it;
 the dry run in step 3 then shows the change.
 
-`grantTypes` is the exception because of a JeffResc bug (its issue #279):
-JeffResc never sends grant types, so on Authentik 2026.8 and later its
-providers have none and reject every login ("Invalid grant_type for provider").
-Adoption keeps the live value of an unset field, which would carry that bug
-over, so the converter writes `grantTypes: [authorization_code, refresh_token]`;
-the dry run shows `grant_types: [] -> [...]`. Servers before 2026.8 do not
-report the property and ignore it. Delete the field from the converted spec if
-you want to keep the live grant types as they are.
+`grantTypes` is the exception. Authentik 2026.5 and later rejects a login whose
+grant type is not in the provider's `grant_types`, and JeffResc v0.2.6 and
+older never sent the field (its issue #279), so a provider they created on
+2026.5+ has none and rejects every login ("Invalid grant_type for provider").
+JeffResc v0.2.7+ always sends it, from `spec.provider.grantTypes`, treating an
+empty list as `[authorization_code, refresh_token]`. Adoption keeps the live
+value of an unset field, which would carry the empty list over, so the converter
+always writes `grantTypes`: JeffResc's list when it has one (duplicates
+removed), else that pair. The report says which, per provider. Servers before
+2026.5 do not report the property and the operator ignores it. Delete the field
+from a converted spec to keep the live grant types as they are.
+
+**This can narrow a provider.** Providers that existed before the Authentik 2026.5
+upgrade were back-filled with all seven grant types (Authentik migration 0032).
+Writing the pair narrows them to `authorization_code` and `refresh_token`,
+dropping `implicit`, `hybrid`, `password`, `client_credentials` and the
+device-code grant, exactly as JeffResc v0.2.7+ does on its own. That is the
+least-privilege direction (RFC 9700 says implicit and password should not be
+used), but a client that depends on a dropped grant stops working: see the
+dry-run check in step 3.
 
 ### Template variables
 
@@ -266,8 +308,14 @@ are ones you intend. Watch especially:
 - `scopes` / property mappings: when the spec sets `scopes`, adoption replaces the
   provider's mappings with `scopes` + `propertyMappings`, so a mapping added in
   the UI would be dropped; unset `scopes` keeps the live mappings;
-- `grant_types`: `[] -> [authorization_code, refresh_token]` on Authentik 2026.8+
-  is the intended fix for JeffResc's missing grant types (see the field map);
+- `grant_types`: read the direction. `[] -> [authorization_code, refresh_token]`
+  (Authentik 2026.5+, a provider JeffResc v0.2.6 or older created) is a repair:
+  that provider rejects every login today. `[<all seven>] -> [authorization_code,
+  refresh_token]` (a provider that predates the 2026.5 upgrade) is a narrowing:
+  check first that no client of it uses `client_credentials`, the device-code
+  grant, `password`, `implicit` or `hybrid`. If one does, set `grantTypes` in the
+  spec to the list it needs (a list set in JeffResc v0.2.7+ is copied as it
+  is);
 - `accessCodeValidity`, `accessTokenValidity`, `refreshTokenValidity`: only
   listed when the JeffResc object set them. Fields the spec does not set are
   never in the diff: adoption keeps their live values.

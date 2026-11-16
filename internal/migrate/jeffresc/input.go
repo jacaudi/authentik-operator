@@ -35,9 +35,10 @@ import (
 const (
 	jeffrescGroup = "goauthentik.io"
 
-	kindV1   = "AuthentikApplication"
-	kindV2   = "AuthentikOAuth2Application"
-	kindSAML = "AuthentikSAMLApplication"
+	kindV1    = "AuthentikApplication"
+	kindV2    = "AuthentikOAuth2Application"
+	kindSAML  = "AuthentikSAMLApplication"
+	kindGroup = "AuthentikGroup"
 )
 
 // jeffProvider is the JeffResc provider block (identical in v0.1.x and
@@ -53,6 +54,7 @@ type jeffProvider struct {
 	RefreshTokenValidity   string    `json:"refreshTokenValidity,omitempty"`
 	SubMode                string    `json:"subMode,omitempty"`
 	IncludeClaimsInIDToken *bool     `json:"includeClaimsInIdToken,omitempty"`
+	GrantTypes             []string  `json:"grantTypes,omitempty"`
 	IssuerMode             string    `json:"issuerMode,omitempty"`
 	PropertyMappings       []string  `json:"propertyMappings,omitempty"`
 	SigningKey             *string   `json:"signingKey,omitempty"`
@@ -76,6 +78,7 @@ type jeffSpec struct {
 	MetaDescription  string       `json:"metaDescription,omitempty"`
 	MetaPublisher    string       `json:"metaPublisher,omitempty"`
 	OpenInNewTab     *bool        `json:"openInNewTab,omitempty"`
+	GroupBindings    []string     `json:"groupBindings,omitempty"`
 	Provider         jeffProvider `json:"provider"`
 	Secret           jeffSecret   `json:"secret,omitzero"`
 }
@@ -201,6 +204,10 @@ func parseEnvelope(from string, env envelope) (apps []source, skipped []string, 
 	case env.Kind == kindSAML:
 		return nil, nil, []error{fmt.Errorf("%s: %s: unsupported: SAML applications have no equivalent "+
 			"(this operator has no SAML provider kind); leave it on the JeffResc operator", from, s.ref())}
+	case env.Kind == kindGroup:
+		return nil, nil, []error{fmt.Errorf("%s: %s: not supported: this operator has no group kind; keep it "+
+			"on JeffResc, or set deletionPolicy Retain on it and then delete it (JeffResc deletes the group in "+
+			"Authentik with the CR by default, which also removes its application bindings)", from, s.ref())}
 	case env.Kind != kindV1 && env.Kind != kindV2:
 		return nil, nil, []error{fmt.Errorf("%s: %s: unsupported kind %q", from, s.ref(), env.Kind)}
 	case meta.Name == "":

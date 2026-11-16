@@ -1,0 +1,14 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikOAuth2Application
+metadata:
+  name: immich
+  namespace: media
+spec:
+  name: Immich
+  groupBindings: [media-users, media-admins]
+  provider:
+    authorizationFlow: default-provider-authorization-implicit-consent
+    invalidationFlow: default-provider-invalidation-flow
+    redirectUris:
+      - https://immich.example.com/auth/login
+    grantTypes: [authorization_code, refresh_token]

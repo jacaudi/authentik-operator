@@ -46,9 +46,25 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
   strictly into the typed structs and created in an envtest apiserver.
 - Fields JeffResc left unset stay unset in the output: adoption keeps the live
   value of any field the spec does not set (TASK-05), so JeffResc's defaults are
-  no longer written out. The converter copies what JeffResc set, plus
-  `grantTypes` (JeffResc never sends it, #279; adoption would keep the empty
-  live value on Authentik 2026.8+).
+  no longer written out. The converter copies what JeffResc set, and always
+  writes `grantTypes`: JeffResc's list (v0.2.7+, deduplicated) or its default
+  pair when absent or empty. JeffResc v0.2.6 and older never sent it (#279), so
+  adoption would keep an empty live value, which Authentik 2026.5+ rejects every
+  login for. Providers back-filled with all 7 grant types (Authentik migration
+  0032) are narrowed to the pair, as JeffResc v0.2.7+ does itself.
+- Input range: JeffResc 0.1.8 through v0.2.10, decoded strictly. A non-empty
+  `groupBindings` (v0.2.8+) is refused unless `--accept-unmanaged-group-bindings`
+  (Authentik lets everyone in when an application has no bindings); the
+  `AuthentikGroup` kind gets a tailored error.
+
+## Known gaps (open follow-ups, not designed here)
+- `AuthentikGroup` (JeffResc v0.2.8+): its `deletionPolicy` defaults to `Delete`,
+  so deleting those CRs while JeffResc runs deletes the groups and cascades away
+  the application bindings. The runbook has no gate for it yet (for example set
+  `Retain` first); the converter only refuses the kind.
+- JeffResc v0.2.9+ ownership: v0.2.9 binds ownership to status IDs, so the
+  runbook's rollback (re-apply a status-stripped backup) can fail with
+  `errNotOwned`. The migration e2e covers JeffResc 0.1.8 only.
 - Runbook and field map: `docs/migration-from-jeffresc.md`. Finding that shaped
   it: this operator refuses to overwrite a Secret it does not own, and
   JeffResc's Secret is owned by its CR, so the runbook renders the new Secrets

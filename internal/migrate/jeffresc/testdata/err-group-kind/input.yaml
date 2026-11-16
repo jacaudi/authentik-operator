@@ -1,0 +1,5 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikGroup
+metadata: {name: media-users, namespace: media}
+spec:
+  name: media-users

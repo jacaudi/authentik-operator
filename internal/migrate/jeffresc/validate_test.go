@@ -36,9 +36,10 @@ import (
 // successCases are the golden cases that produce files.
 func successCases() []goldenCase {
 	var out []goldenCase
-	for _, c := range goldenCases() {
-		if c.wantErr == "" {
-			out = append(out, c)
+	all := goldenCases()
+	for i := range all {
+		if all[i].wantErr == "" {
+			out = append(out, all[i])
 		}
 	}
 	return out

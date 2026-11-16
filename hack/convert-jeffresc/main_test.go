@@ -75,6 +75,33 @@ func TestRunDryRunFlagOff(t *testing.T) {
 	}
 }
 
+func TestRunGroupBindingsNeedTheFlag(t *testing.T) {
+	in := filepath.Join(fixtures, "group-bindings-accepted", "input.yaml")
+	refused := filepath.Join(t.TempDir(), "out")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{flagOut, refused, in}, &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "--accept-unmanaged-group-bindings") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if _, err := os.Stat(refused); err == nil {
+		t.Error("output directory was created despite the refusal")
+	}
+
+	out := t.TempDir()
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{flagOut, out, "--accept-unmanaged-group-bindings", in}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	got, err := os.ReadFile(filepath.Join(out, "authentikapplication-immich.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `# groupBindings ["media-users", "media-admins"]`) {
+		t.Errorf("header lacks the notice:\n%s", got)
+	}
+}
+
 func TestRunFailsWithoutWritingOnError(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
 	var stdout, stderr bytes.Buffer

@@ -56,6 +56,11 @@ func goldenCases() []goldenCase {
 		{name: "err-launch-url", opts: dry, wantErr: "keep the live launch URL"},
 		{name: "err-unknown-variable", opts: dry, wantErr: ".Namespace"},
 		{name: "err-saml", opts: dry, wantErr: "unsupported: SAML"},
+		{name: "err-group-kind", opts: dry, wantErr: "AuthentikGroup"},
+		{name: "grant-types-list", opts: dry},
+		{name: "grant-types-empty", opts: dry},
+		{name: "err-group-bindings", opts: dry, wantErr: acceptFlag},
+		{name: "group-bindings-accepted", opts: Options{DryRunAdoption: true, AcceptUnmanagedGroupBindings: true}},
 		{name: "err-unknown-field", opts: dry, wantErr: "unknown field"},
 		{name: "err-template-construct", opts: dry, wantErr: "range"},
 	}
