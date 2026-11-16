@@ -45,6 +45,13 @@ helm upgrade --install authentik-operator oci://ghcr.io/jacaudi/charts/authentik
   --set-string adoption.defaultConnectionNamespaceSelector="kubernetes.io/metadata.name=team-a"
 ```
 
+For several namespaces use a set-based selector. Helm's `--set` splits on
+commas, so escape each one (`\,`), or put the value in a values file:
+
+```bash
+  --set-string 'adoption.defaultConnectionNamespaceSelector=kubernetes.io/metadata.name in (team-a\, team-b)'
+```
+
 ### Pinning the image digest
 
 Release images are multi-arch (linux/amd64, linux/arm64) with no attestation
