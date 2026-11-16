@@ -1,0 +1,34 @@
+convert-jeffresc report
+=======================
+
+Every converted object adopts the provider or application JeffResc created
+(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc
+left unset (it applied its own default) is left unset here, so the live value stays.
+The one exception is grantTypes, which is always written: copied from JeffResc's
+spec.provider.grantTypes (v0.2.7+) when it lists any, else [authorization_code, refresh_token],
+JeffResc's own default (it treats an empty list as the pair). Authentik 2026.5+ rejects a login
+whose grant type is not listed, and JeffResc v0.2.6 and older never sent the field, so providers
+they created on 2026.5+ have none and reject every login (JeffResc issue 279). Providers that
+existed before the 2026.5 upgrade were back-filled with all 7 grant types (Authentik migration
+0032): the pair narrows those to 2, as JeffResc v0.2.7+ does itself, and drops implicit, hybrid,
+password, client_credentials and device_code. The dry run shows the change per provider.
+Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists
+`field: old -> new`) and edit the spec until the only listed changes are ones you intend.
+
+AuthentikOAuth2Application media/immich
+  files: authentikoauthprovider-immich.yaml, authentikapplication-immich.yaml
+  notes:
+    - provider.grantTypes defaulted to [authorization_code, refresh_token] (unset or empty in JeffResc, which treats both as this pair); if the live provider has more, the dry run shows them narrowed
+    - Secret immich-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
+    - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
+
+Adoption gate: these objects use the operator's default connection, where Adopt is refused
+(reason AdoptionNotAllowed) unless the operator admin allows their namespaces. Set the flag
+--default-connection-adoption-namespace-selector, or the Helm value
+adoption.defaultConnectionNamespaceSelector, to:
+  kubernetes.io/metadata.name in (media)
+
+Adopt mode: a missing match target is reported as AdoptionTargetNotFound and nothing is
+created. Once every app is migrated and SSO login is verified, leave adopt mode: remove
+managementPolicy, match and dryRun from every converted provider and application (final
+runbook step in docs/migration-from-jeffresc.md).

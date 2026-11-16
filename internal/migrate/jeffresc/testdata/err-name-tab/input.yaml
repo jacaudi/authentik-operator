@@ -1,0 +1,12 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikOAuth2Application
+metadata: {name: tabby, namespace: ns}
+spec:
+  name: "Tab\tName"
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://demo.example.com/cb"]
+  secret:
+    template: |
+      n: {{ printf "%q" .Name }}

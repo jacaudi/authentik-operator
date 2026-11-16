@@ -1,0 +1,1 @@
+input.yaml: AuthentikApplication ns/odd: spec: error unmarshaling JSON: while decoding JSON: json: unknown field "somethingNew"

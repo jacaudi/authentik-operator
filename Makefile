@@ -122,6 +122,10 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: convert-jeffresc
+convert-jeffresc: ## Build the JeffResc migration converter (see docs/migration-from-jeffresc.md).
+	go build -o bin/convert-jeffresc ./hack/convert-jeffresc
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

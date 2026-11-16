@@ -1,0 +1,1 @@
+input.yaml: AuthentikOAuth2Application ns/tabby: secret.template: template does not render in this operator: credentials template: variable .Name contains control characters

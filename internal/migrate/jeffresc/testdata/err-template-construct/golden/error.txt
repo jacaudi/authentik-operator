@@ -1,0 +1,1 @@
+input.yaml: AuthentikApplication ns/loopy: secret.template: template uses a construct this operator does not allow: credentials template: range is not allowed (at 1:9)

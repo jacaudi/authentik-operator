@@ -1,0 +1,10 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: odd, namespace: ns}
+spec:
+  name: Odd
+  somethingNew: true
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://odd.example.com/cb"]

@@ -1,0 +1,12 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: loopy, namespace: ns}
+spec:
+  name: Loopy
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://loopy.example.com/cb"]
+  secret:
+    template: |
+      {{ range $i := .ClientID }}x: y{{ end }}

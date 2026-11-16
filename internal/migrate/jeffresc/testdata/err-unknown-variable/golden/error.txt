@@ -1,0 +1,1 @@
+input.yaml: AuthentikApplication ns/badvar: secret.template: template uses unsupported variable(s) .Namespace; supported: .AuthURL, .ClientID, .ClientSecret, .IssuerURL, .JWKSURL, .LogoutURL, .Name, .ProviderInfoURL, .Slug, .TokenURL, .UserInfoURL

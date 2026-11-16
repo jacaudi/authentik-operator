@@ -2,7 +2,7 @@
 
 ## Ticket
 - Ticket: none
-- Status: Planned
+- Status: In Progress
 - Milestone: parity-with-jeffresc-v0.2.5
 
 ## Context
@@ -12,9 +12,9 @@ split kinds mean no in-place upgrade. JeffResc itself renamed
 hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
 
 ## Implementation Plan
-- [ ] Field map document (`docs/migration-from-jeffresc.md`): every JeffResc
+- [x] Field map document (`docs/migration-from-jeffresc.md`): every JeffResc
       field -> provider/application field, defaults that differ, dropped fields
-- [ ] Converter: `hack/convert-jeffresc` (Go, testable) reading
+- [x] Converter: `hack/convert-jeffresc` (Go, testable) reading
       AuthentikApplication / AuthentikOAuth2Application / AuthentikSAMLApplication
       YAML and emitting AuthentikOAuthProvider + AuthentikApplication (one object
       per file, `<kind>-<name>.yaml`), plus one cluster-scoped
@@ -27,7 +27,7 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
       default connection the platform admin also allows the namespace with
       `--default-connection-adoption-namespace-selector` (an `authentikRef` needs
       no allowance)
-- [ ] Runbook, zero-downtime, credentials preserved:
+- [x] Runbook, zero-downtime, credentials preserved:
   1. install new operator alongside the old (different group, no CRD clash)
   2. apply converted CRs with adoption (+ dryRun first); confirm Ready and that
      the rendered Secret is byte-identical to the old one
@@ -37,7 +37,38 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
      Scale the old operator to 0, strip `goauthentik.io/finalizer` from its CRs,
      then delete them, so the Authentik objects survive
   5. uninstall the old chart and CRDs
-- [ ] Converter tests against representative real-world manifests (golden files)
+- [x] Converter tests against representative real-world manifests (golden files)
+
+## Notes
+- Converter: `internal/migrate/jeffresc` (+ `hack/convert-jeffresc`); golden
+  fixtures in `internal/migrate/jeffresc/testdata`, refreshed with
+  `go test ./internal/migrate/... -run Golden -update`. Output is also decoded
+  strictly into the typed structs and created in an envtest apiserver.
+- Fields JeffResc left unset stay unset in the output: adoption keeps the live
+  value of any field the spec does not set (TASK-05), so JeffResc's defaults are
+  no longer written out. The converter copies what JeffResc set, and always
+  writes `grantTypes`: JeffResc's list (v0.2.7+, deduplicated) or its default
+  pair when absent or empty. JeffResc v0.2.6 and older never sent it (#279), so
+  adoption would keep an empty live value, which Authentik 2026.5+ rejects every
+  login for. Providers back-filled with all 7 grant types (Authentik migration
+  0032) are narrowed to the pair, as JeffResc v0.2.7+ does itself.
+- Input range: JeffResc 0.1.8 through v0.2.10, decoded strictly. A non-empty
+  `groupBindings` (v0.2.8+) is refused unless `--accept-unmanaged-group-bindings`
+  (Authentik lets everyone in when an application has no bindings); the
+  `AuthentikGroup` kind gets a tailored error.
+
+## Known gaps (open follow-ups, not designed here)
+- `AuthentikGroup` (JeffResc v0.2.8+): its `deletionPolicy` defaults to `Delete`,
+  so deleting those CRs while JeffResc runs deletes the groups and cascades away
+  the application bindings. The runbook has no gate for it yet (for example set
+  `Retain` first); the converter only refuses the kind.
+- JeffResc v0.2.9+ ownership: v0.2.9 binds ownership to status IDs, so the
+  runbook's rollback (re-apply a status-stripped backup) can fail with
+  `errNotOwned`. The migration e2e covers JeffResc 0.1.8 only.
+- Runbook and field map: `docs/migration-from-jeffresc.md`. Finding that shaped
+  it: this operator refuses to overwrite a Secret it does not own, and
+  JeffResc's Secret is owned by its CR, so the runbook renders the new Secrets
+  under a suffix (`--secret-suffix`) to compare and cut over without a gap.
 
 ## Dependencies
 - Requires: TASK-02..TASK-05, TASK-08

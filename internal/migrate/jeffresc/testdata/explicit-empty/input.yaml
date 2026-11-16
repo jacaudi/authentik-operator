@@ -1,0 +1,12 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: demo, namespace: ns}
+spec:
+  name: Demo
+  provider:
+    authorizationFlow: a
+    invalidationFlow: b
+    redirectUris: ["https://demo.example.com/cb"]
+    signingKey: ""
+    scopes: []
+    propertyMappings: ["11111111-2222-3333-4444-555555555555"]

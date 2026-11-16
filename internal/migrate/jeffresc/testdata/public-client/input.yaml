@@ -1,0 +1,15 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikApplication
+metadata: {name: spa, namespace: web}
+spec:
+  name: Single Page App
+  provider:
+    authorizationFlow: default-provider-authorization-implicit-consent
+    invalidationFlow: default-provider-invalidation-flow
+    redirectUris: ["https://spa.example.com/callback"]
+    clientType: public
+  secret:
+    template: |
+      client_id: {{ .ClientID }}
+      client_secret: {{ .ClientSecret }}
+      issuer: {{ .IssuerURL }}
