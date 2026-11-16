@@ -294,7 +294,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			pk := int(getProvider(ctx, Default, createdName).Status.ProviderPK)
 			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{
 				akAccessTokenValidity: "minutes=10", // spec default: minutes=5
-				"redirect_uris":         []aktest.Obj{{"matching_mode": "strict", "url": "https://drift.invalid/cb"}},
+				"redirect_uris":       []aktest.Obj{{"matching_mode": "strict", "url": "https://drift.invalid/cb"}},
 			})).To(Succeed())
 			Expect(ak.Do(ctx, "PATCH", "/api/v3/core/applications/e2e-oidc/",
 				aktest.Obj{"meta_publisher": "someone-else"}, nil)).To(Succeed())
