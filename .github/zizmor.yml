@@ -9,4 +9,6 @@ rules:
       - ci.yaml
       - ci-artifact.yml
       - ci-test.yml
+      - ci-smoke.yml
+      - ci-chart.yml
       - release-republish.yml

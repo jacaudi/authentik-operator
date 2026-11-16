@@ -62,3 +62,55 @@ jobs:
         env:
           IMAGE: ${{ inputs.image }}
         run: task smoke
+
+  # Installs dist/chart into a throwaway kind cluster with the image this
+  # pipeline just built (digest-pinned), and waits for the Deployment to be
+  # Available. `task chart:smoke` owns what that means (see .taskfiles/chart.yml).
+  chart:
+    name: smoke test chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      APP_ID: ${{ secrets.APP_ID }}
+      # renovate: datasource=go depName=sigs.k8s.io/kind
+      KIND_VERSION: v0.33.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate a GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Scoped to what this job does with it (registry pull); zizmor github-app.
+          permission-packages: read
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ steps.app-token.outputs.token && 'x-access-token' || github.actor }}
+          password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          lint-tools: 'false'
+
+      - name: Install kind
+        run: |
+          go install "sigs.k8s.io/kind@${KIND_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run task chart:smoke
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: task chart:smoke

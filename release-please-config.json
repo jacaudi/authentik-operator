@@ -22,6 +22,10 @@
         {
           "type": "generic",
           "path": "config/default/kustomization.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "dist/chart/Chart.yaml"
         }
       ]
     }

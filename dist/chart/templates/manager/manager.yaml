@@ -1,0 +1,196 @@
+{{- /*
+Hand-owned: the kubebuilder helm/v2-alpha plugin regenerates this path, and
+hack/chart-regen.sh restores this file afterwards. Keep it in sync with
+config/manager/manager.yaml and config/default by hand (see AGENTS.md).
+*/ -}}
+{{- include "authentik-operator.validate" . }}
+{{- $auth := .Values.authentik }}
+{{- $caCM := dig "caBundle" "configMap" "name" "" $auth }}
+{{- $caSecret := dig "caBundle" "secret" "name" "" $auth }}
+{{- if and $caCM $caSecret }}
+{{- fail "authentik.caBundle: set either configMap.name or secret.name, not both" }}
+{{- end }}
+{{- $tokenSecret := dig "tokenSecret" "name" "" $auth }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "authentik-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    control-plane: controller-manager
+  name: {{ include "authentik-operator.resourceName" (dict "suffix" "controller-manager" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "authentik-operator.name" . }}
+      control-plane: controller-manager
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml (omit . "kubectl.kubernetes.io/default-container") | nindent 8 }}
+        {{- end }}
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml (omit . "app.kubernetes.io/name" "helm.sh/chart" "app.kubernetes.io/instance" "app.kubernetes.io/managed-by" "control-plane") | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/name: {{ include "authentik-operator.name" . }}
+        helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
+        control-plane: controller-manager
+    spec:
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - command:
+        - /manager
+        args:
+        {{- if .Values.metrics.enabled }}
+        - --metrics-bind-address=:{{ .Values.metrics.port }}
+        {{- if not .Values.metrics.secure }}
+        - --metrics-secure=false
+        {{- end }}
+        {{- else }}
+        # Bind to 0 to disable the controller-runtime managed metrics server
+        - --metrics-bind-address=0
+        {{- end }}
+        - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
+        {{- if .Values.leaderElection.enabled }}
+        - --leader-elect
+        {{- end }}
+        - --zap-log-level={{ .Values.logging.level }}
+        - --zap-devel={{ .Values.logging.devel }}
+        - --zap-encoder={{ .Values.logging.encoder }}
+        {{- with $auth.url }}
+        - {{ printf "--authentik-url=%s" . | quote }}
+        {{- end }}
+        {{- with $auth.externalUrl }}
+        - {{ printf "--authentik-external-url=%s" . | quote }}
+        {{- end }}
+        {{- if $tokenSecret }}
+        - --authentik-token-file=/var/run/secrets/authentik/token/token
+        {{- end }}
+        {{- if or $caCM $caSecret }}
+        - --authentik-ca-file=/etc/authentik/ca/ca.crt
+        {{- end }}
+        {{- if $auth.insecureSkipVerify }}
+        - --authentik-insecure-skip-verify=true
+        {{- end }}
+        {{- with .Values.adoption.defaultConnectionNamespaceSelector }}
+        - {{ printf "--default-connection-adoption-namespace-selector=%s" . | quote }}
+        {{- end }}
+        {{- range .Values.extraArgs }}
+        - {{ tpl . $ | quote }}
+        {{- end }}
+        image: {{ include "authentik-operator.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- with .Values.extraEnv }}
+        env:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.healthProbe.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: {{ .Values.healthProbe.port }}
+          name: health
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: {{ .Values.healthProbe.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          {{- toYaml (.Values.resources | default dict) | nindent 10 }}
+        securityContext:
+          {{- toYaml (.Values.securityContext | default dict) | nindent 10 }}
+        {{- if or $tokenSecret $caCM $caSecret .Values.extraVolumeMounts }}
+        volumeMounts:
+          {{- if $tokenSecret }}
+          - name: authentik-token
+            mountPath: /var/run/secrets/authentik/token
+            readOnly: true
+          {{- end }}
+          {{- if or $caCM $caSecret }}
+          - name: authentik-ca
+            mountPath: /etc/authentik/ca
+            readOnly: true
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+        {{- end }}
+      securityContext:
+        {{- toYaml (.Values.podSecurityContext | default dict) | nindent 8 }}
+      serviceAccountName: {{ include "authentik-operator.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if or $tokenSecret $caCM $caSecret .Values.extraVolumes }}
+      volumes:
+        {{- if $tokenSecret }}
+        - name: authentik-token
+          secret:
+            secretName: {{ $tokenSecret }}
+            items:
+              - key: {{ dig "tokenSecret" "key" "token" $auth }}
+                path: token
+        {{- end }}
+        {{- if $caCM }}
+        - name: authentik-ca
+          configMap:
+            name: {{ $caCM }}
+            items:
+              - key: {{ dig "caBundle" "configMap" "key" "ca.crt" $auth }}
+                path: ca.crt
+        {{- end }}
+        {{- if $caSecret }}
+        - name: authentik-ca
+          secret:
+            secretName: {{ $caSecret }}
+            items:
+              - key: {{ dig "caBundle" "secret" "key" "ca.crt" $auth }}
+                path: ca.crt
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}

@@ -1,0 +1,14 @@
+suite: notes
+templates:
+  - NOTES.txt
+tests:
+  - it: mentions CRDs when they are installed
+    asserts:
+      - matchRegexRaw:
+          pattern: CRDs have been installed
+  - it: does not mention CRDs when crd.enabled is false
+    set:
+      crd.enabled: false
+    asserts:
+      - notMatchRegexRaw:
+          pattern: CRD|customresourcedefinitions

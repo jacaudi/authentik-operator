@@ -1,0 +1,76 @@
+suite: rbac and crds
+templates:
+  - rbac/manager-role.yaml
+  - rbac/controller-manager.yaml
+  - rbac/authentikuser-viewer-role.yaml
+  - crd/authentikusers.authentik.io.yaml
+tests:
+  - it: grants the manager ClusterRole the rules in config/rbac/role.yaml
+    template: rbac/manager-role.yaml
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: [secrets]
+            verbs: [create, delete, get, update]
+      - contains:
+          path: rules
+          content:
+            apiGroups: [events.k8s.io]
+            resources: [events]
+            verbs: [create, patch]
+
+  - it: creates a ServiceAccount with annotations
+    template: rbac/controller-manager.yaml
+    set:
+      serviceAccount.annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::1:role/x
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.annotations["eks.amazonaws.com/role-arn"]
+          value: arn:aws:iam::1:role/x
+
+  - it: skips the ServiceAccount when serviceAccount.enabled is false
+    template: rbac/controller-manager.yaml
+    set:
+      serviceAccount.enabled: false
+      serviceAccount.name: existing
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: leaves the admin/editor/viewer helper roles off by default
+    template: rbac/authentikuser-viewer-role.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: ships CRDs with helm.sh/resource-policy keep by default
+    template: crd/authentikusers.authentik.io.yaml
+    asserts:
+      - isKind:
+          of: CustomResourceDefinition
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  - it: drops the keep policy when crd.keep is false
+    template: crd/authentikusers.authentik.io.yaml
+    set:
+      crd.keep: false
+    asserts:
+      - notExists:
+          path: metadata.annotations["helm.sh/resource-policy"]
+
+  - it: skips CRDs when crd.enabled is false
+    template: crd/authentikusers.authentik.io.yaml
+    set:
+      crd.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

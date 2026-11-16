@@ -1,0 +1,135 @@
+# Stage f — package the Helm chart, prove it installs with its DEFAULT image values, then push it to OCI.
+# Publishing runs only on a public repository (TASK-11); private copies do the dry run (package + install).
+name: ci-chart
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version without the leading v (e.g. 1.2.3). Must equal Chart.yaml version/appVersion.
+        required: true
+        type: string
+      ref:
+        description: Git ref to package (the release tag, so Chart.yaml carries the bumped version).
+        required: true
+        type: string
+    secrets:
+      APP_ID:
+        description: GitHub App id. Only needed to push outside this repo's own GHCR namespace.
+        required: false
+      APP_PRIVATE_KEY:
+        description: Private key for the above App
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: package + publish chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      APP_ID: ${{ secrets.APP_ID }}
+      # renovate: datasource=go depName=sigs.k8s.io/kind
+      KIND_VERSION: v0.33.0
+      # renovate: datasource=go depName=github.com/mikefarah/yq/v4
+      YQ_VERSION: v4.54.3
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          lint-tools: 'false'
+
+      - name: Install yq
+        run: |
+          go install "github.com/mikefarah/yq/v4@${YQ_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Verify the checkout matches the release being published
+        run: |
+          set -euo pipefail
+          for k in version appVersion; do
+            have=$(yq -r ".${k}" dist/chart/Chart.yaml)
+            [ "${have}" = "${VERSION}" ] || { echo "::error::refusing to publish ${VERSION}: Chart.yaml ${k} is ${have}"; exit 1; }
+          done
+
+      - name: Generate a GitHub App token
+        id: app-token
+        if: ${{ env.APP_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Scoped to what this job does with it (registry login); zizmor github-app.
+          permission-packages: write
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ steps.app-token.outputs.token && 'x-access-token' || github.actor }}
+          password: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+
+      - name: Install kind
+        run: |
+          go install "sigs.k8s.io/kind@${KIND_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Owner-agnostic release: the committed default stays
+      # ghcr.io/jacaudi/authentik-operator, but the PACKAGED chart points at the
+      # image this repository built (ci-build pushes ghcr.io/<lowercased
+      # github.repository>), so a private copy's dry run smokes its own image
+      # and a chart published under another owner pulls that owner's image.
+      - name: Point the packaged chart at this repository
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          repo=$(printf '%s' "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REPO="ghcr.io/${repo}" yq -i '.image.repository = strenv(IMAGE_REPO)' dist/chart/values.yaml
+          URL="${SERVER_URL}/${REPOSITORY}" yq -i '.home = strenv(URL) | .sources = [strenv(URL)]' dist/chart/Chart.yaml
+          yq '.image.repository' dist/chart/values.yaml
+          yq '.home' dist/chart/Chart.yaml
+
+      - name: Package the chart
+        id: pkg
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/chart"
+          helm package dist/chart --destination "${RUNNER_TEMP}/chart"
+          echo "tgz=${RUNNER_TEMP}/chart/authentik-operator-${VERSION}.tgz" >> "$GITHUB_OUTPUT"
+
+      # The packaged chart, no IMAGE override: its DEFAULT image
+      # (ghcr.io/<owner>/authentik-operator:v<version>) must exist and boot, or
+      # the chart never ships (the JeffResc lesson in TASK-07).
+      - name: Smoke test the packaged chart with its default image values
+        env:
+          CHART: ${{ steps.pkg.outputs.tgz }}
+        run: task chart:smoke
+
+      - name: Push the chart to GHCR (OCI)
+        if: ${{ !github.event.repository.private }}
+        env:
+          TGZ: ${{ steps.pkg.outputs.tgz }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # GHCR rejects uppercase references.
+          owner=$(printf '%s' "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')
+          helm push "${TGZ}" "oci://ghcr.io/${owner}/charts"
+
+      - name: Note the dry run
+        if: ${{ github.event.repository.private }}
+        run: echo "private repository - chart packaged and smoke-tested, not published (TASK-11)"

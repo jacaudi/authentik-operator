@@ -1,0 +1,140 @@
+# Helm chart (dist/chart) — lint, unit tests, and drift checks. Repo-specific (kubebuilder helm/v2-alpha hybrid chart); not a fleet template.
+version: '3'
+
+vars:
+  CHART_DIR: dist/chart
+
+tasks:
+  ci:
+    desc: All chart checks
+    cmds:
+      - task: lint
+      - task: test
+      - task: drift
+
+  lint:
+    desc: helm lint --strict + kubeconform on helm template output (default and full-feature values)
+    cmds:
+      - |
+        set -eu
+        command -v helm >/dev/null || { echo "helm not installed: brew install helm" >&2; exit 1; }
+        helm lint --strict {{.CHART_DIR}}
+        helm lint --strict {{.CHART_DIR}} -f {{.CHART_DIR}}/ci/full-values.yaml
+        # Same kubeconform and flags as `task k8s:manifests`: our own CRD kinds
+        # and the ServiceMonitor have no published schema (-ignore-missing-schemas);
+        # Deployment, RBAC, PDB, NetworkPolicy, ... are validated strictly.
+        for values in "" "-f {{.CHART_DIR}}/ci/full-values.yaml"; do
+          # shellcheck disable=SC2086  # deliberate word split of the -f flag
+          helm template chart-lint {{.CHART_DIR}} --namespace chart-lint ${values} \
+            | go run "github.com/yannh/kubeconform/cmd/kubeconform@${KUBECONFORM_VERSION}" \
+                -strict -summary -ignore-missing-schemas
+        done
+      - task: version-sync
+      - bash hack/verify-chart-rbac.sh
+      - make kustomize
+      - bash hack/verify-chart-deployment.sh
+    env:
+      # renovate: datasource=go depName=github.com/yannh/kubeconform
+      KUBECONFORM_VERSION: v0.8.0
+
+  version-sync:
+    desc: Fail unless Chart.yaml version and appVersion equal the release-please manifest
+    cmds:
+      - |
+        set -eu
+        want=$(yq -r '.["."]' .release-please-manifest.json)
+        for k in version appVersion; do
+          got=$(yq -r ".${k}" {{.CHART_DIR}}/Chart.yaml)
+          [ "${got}" = "${want}" ] || { echo "Chart.yaml ${k}=${got} != .release-please-manifest.json ${want}" >&2; exit 1; }
+        done
+        echo "chart version == app version == ${want}"
+
+  test:
+    desc: helm-unittest suites in dist/chart/tests
+    cmds:
+      - |
+        set -eu
+        command -v helm >/dev/null || { echo "helm not installed: brew install helm" >&2; exit 1; }
+        if ! helm plugin list | awk 'NR>1{print $1}' | grep -qx unittest; then
+          # Helm 4 verifies plugin provenance by default; the project ships none.
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" --verify=false \
+            || helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}"
+        fi
+        helm unittest {{.CHART_DIR}}
+    env:
+      # renovate: datasource=github-releases depName=helm-unittest/helm-unittest
+      HELM_UNITTEST_VERSION: v1.2.1
+
+  drift:
+    desc: Fail if the plugin-owned chart templates no longer match config/ (kubebuilder helm/v2-alpha)
+    cmds:
+      # Installs the pinned kubebuilder CLI into bin/ and regenerates into a
+      # temp copy; hand-owned files are never touched. See AGENTS.md.
+      - make chart-regen-check
+
+  # Runs in CI (ci-smoke.yml, ci-chart.yml) and locally:
+  #   IMAGE=ghcr.io/jacaudi/authentik-operator@sha256:... task chart:smoke
+  #   KIND_LOAD=true IMAGE=authentik-operator:dev task chart:smoke   # local image
+  #   task chart:smoke                                  # chart DEFAULT image values
+  # CHART may point at a packaged .tgz instead of the dist/chart directory.
+  smoke:
+    desc: Install the chart into a throwaway kind cluster and wait for the Deployment to be Available
+    env:
+      IMAGE: '{{.IMAGE}}'
+      CHART: '{{.CHART | default .CHART_DIR}}'
+      KIND_CLUSTER: '{{.KIND_CLUSTER | default "ao-chart-smoke"}}'
+      KIND_LOAD: '{{.KIND_LOAD | default "false"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        for tool in kind kubectl helm; do
+          command -v "${tool}" >/dev/null || { echo "${tool} not installed" >&2; exit 1; }
+        done
+        ns=authentik-operator-system
+        ctx="kind-${KIND_CLUSTER}"
+
+        set_args=()
+        case "${IMAGE:-}" in
+          "")        echo "no IMAGE: installing with the chart's DEFAULT image values" ;;
+          *@sha256:*) set_args+=(--set "image.repository=${IMAGE%@*}" --set "image.digest=${IMAGE#*@}") ;;
+          *)          set_args+=(--set "image.repository=${IMAGE%:*}" --set "image.tag=${IMAGE##*:}") ;;
+        esac
+
+        if kind get clusters 2>/dev/null | grep -qx "${KIND_CLUSTER}"; then
+          echo "kind cluster ${KIND_CLUSTER} already exists; refusing to reuse or delete it" >&2
+          exit 1
+        fi
+        # Deletes EXACTLY the cluster this task created, by name; nothing else.
+        trap 'kind delete cluster --name "${KIND_CLUSTER}" || true' EXIT
+        kind create cluster --name "${KIND_CLUSTER}" --wait 120s
+
+        if [ "${KIND_LOAD}" = "true" ]; then
+          kind load docker-image "${IMAGE}" --name "${KIND_CLUSTER}"
+          set_args+=(--set image.pullPolicy=Never)
+        elif [ -f "${HOME}/.docker/config.json" ] \
+            && jq -e '.auths["ghcr.io"]' "${HOME}/.docker/config.json" >/dev/null 2>&1; then
+          # The GHCR package may be private: turn the runner's ghcr.io login into
+          # a pull Secret (the chart's imagePullSecrets path). Only the ghcr.io
+          # entry is copied, never the rest of ~/.docker/config.json.
+          pull_cfg=$(mktemp)
+          jq '{auths: {"ghcr.io": .auths["ghcr.io"]}}' "${HOME}/.docker/config.json" > "${pull_cfg}"
+          kubectl --context "${ctx}" create namespace "${ns}"
+          kubectl --context "${ctx}" -n "${ns}" create secret generic ghcr-pull \
+            --type=kubernetes.io/dockerconfigjson \
+            --from-file=.dockerconfigjson="${pull_cfg}"
+          rm -f "${pull_cfg}"
+          set_args+=(--set "imagePullSecrets[0].name=ghcr-pull")
+        fi
+
+        helm install authentik-operator "${CHART}" \
+          --kube-context "${ctx}" --namespace "${ns}" --create-namespace \
+          "${set_args[@]}" --wait --timeout 4m \
+          || { kubectl --context "${ctx}" -n "${ns}" get pods -o wide || true
+               kubectl --context "${ctx}" -n "${ns}" describe pods || true
+               kubectl --context "${ctx}" -n "${ns}" logs deploy/authentik-operator-controller-manager --tail=100 || true
+               exit 1; }
+
+        kubectl --context "${ctx}" -n "${ns}" wait --for=condition=Available \
+          deployment --all --timeout=120s
+        kubectl --context "${ctx}" get crd | grep authentik.io
+        echo "ok: chart installed and Deployment Available"

@@ -1,0 +1,191 @@
+## String to partially override chart.fullname template (will maintain the release name)
+# nameOverride: ""
+
+## String to fully override chart.fullname template
+# fullnameOverride: ""
+
+replicaCount: 1
+
+image:
+  ## Lowercase on purpose: GHCR rejects uppercase references.
+  repository: ghcr.io/jacaudi/authentik-operator
+  ## Defaults to "v" + Chart.appVersion (release images are tagged v<semver>).
+  tag: ""
+  ## When set, renders repository@digest and the tag is ignored. Prefer pinning a
+  ## single-platform digest if your registry mirror cannot sync multi-arch indexes.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+## The GHCR package may be private; reference a pull Secret here.
+imagePullSecrets: []
+# - name: ghcr-pull
+
+## Leader election (--leader-elect). On by default, matching config/manager.
+leaderElection:
+  enabled: true
+
+## Health probe server (/healthz, /readyz).
+healthProbe:
+  port: 8081
+
+## Logging (controller-runtime zap flags).
+## DELIBERATE DIFFERENCE from config/ (the kustomize deployment): the binary
+## defaults to zap Development=true (console encoder, debug-ish) when no flag is
+## passed, and config/manager passes none. The chart sets production defaults
+## instead: json encoder, info level, devel=false.
+logging:
+  ## --zap-log-level: debug | info | error | a positive integer
+  level: info
+  ## --zap-devel: development mode (console encoder defaults, debug level, stack traces on warn)
+  devel: false
+  ## --zap-encoder: json | console
+  encoder: json
+
+## Default Authentik connection, used by objects without spec.authentikRef.
+## Leave everything empty to run without a default connection.
+authentik:
+  ## --authentik-url (env AUTHENTIK_URL)
+  url: ""
+  ## --authentik-external-url: browser-facing URL used in rendered credential Secrets
+  externalUrl: ""
+  ## API token from an EXISTING Secret, mounted as a file and passed via
+  ## --authentik-token-file. The token never appears in values or in the pod spec.
+  ## The token is read once at startup; rotating it requires a pod restart.
+  tokenSecret:
+    name: ""
+    key: token
+  ## PEM CA bundle (trusted in addition to system roots) from an EXISTING
+  ## ConfigMap OR Secret (set only one), mounted and passed via --authentik-ca-file.
+  caBundle:
+    configMap:
+      name: ""
+      key: ca.crt
+    secret:
+      name: ""
+      key: ca.crt
+  ## --authentik-insecure-skip-verify. Testing only.
+  insecureSkipVerify: false
+
+## Adoption on the default connection (spec.managementPolicy Adopt, AdoptOrCreate,
+## ReadOnly and spec.dryRun). The default connection's token is the operator's own
+## and spans every team, so which namespaces may take over existing Authentik
+## objects with it is an administrator decision.
+adoption:
+  ## --default-connection-adoption-namespace-selector: a Kubernetes label selector
+  ## matched against the resource's Namespace labels, e.g.
+  ##   kubernetes.io/metadata.name=team-a
+  ##   kubernetes.io/metadata.name in (team-a, team-b)
+  ## Empty (default) denies every namespace: such resources report
+  ## AdoptionNotAllowed. Resources with a same-namespace spec.authentikRef are not
+  ## affected. Read at startup; changing it restarts the pod.
+  defaultConnectionNamespaceSelector: ""
+
+## Extra command-line flags appended to the manager args (rendered with tpl).
+extraArgs: []
+# - --enable-http2
+
+## Extra environment variables for the manager container.
+extraEnv: []
+# - name: HTTPS_PROXY
+#   value: http://proxy.example.com:3128
+
+extraVolumes: []
+extraVolumeMounts: []
+
+## Defaults match config/manager/manager.yaml.
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+## "restricted" Pod Security Standard, matching config/manager/manager.yaml.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+terminationGracePeriodSeconds: 10
+
+## Deployment strategy
+# strategy:
+#   type: RollingUpdate
+
+podAnnotations: {}
+podLabels: {}
+deploymentAnnotations: {}
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+## PodDisruptionBudget. Off by default: with replicaCount=1 a budget of
+## minAvailable=1 would block node drains.
+podDisruptionBudget:
+  enabled: false
+  ## Set one of the two; minAvailable wins. Default when enabled: maxUnavailable 1.
+  # minAvailable: 1
+  # maxUnavailable: 1
+
+## ServiceAccount. (Key is `enabled`, not `create`: the plugin-generated
+## templates use it.) `name` is honoured whether or not the chart creates it;
+## it is required when enabled=false (use "default" for the namespace default).
+serviceAccount:
+  enabled: true
+  # name: ""
+  # annotations: {}
+  # labels: {}
+
+## RBAC
+rbac:
+  ## Kept for plugin-template compatibility. The operator needs cluster-wide
+  ## access (it has no watch-namespaces flag), so leave this false.
+  namespaced: false
+  helpers:
+    ## Install convenience admin/editor/viewer ClusterRoles for each CRD
+    enabled: false
+
+## CRDs are rendered as templates (not crds/) so `helm upgrade` updates them.
+## With keep=true they carry helm.sh/resource-policy: keep and survive
+## `helm uninstall` (deleting a CRD deletes every custom resource of that kind).
+crd:
+  enabled: true
+  keep: true
+
+## Metrics endpoint (Service + controller-runtime metrics server).
+metrics:
+  enabled: true
+  port: 8443
+  ## HTTPS with authn/authz (true) or plain HTTP (false); matches config/default.
+  secure: true
+
+## ServiceMonitor for the metrics Service. Requires prometheus-operator CRDs.
+## (Key is `prometheus`: the plugin-generated template uses it.)
+prometheus:
+  enabled: false
+  # labels: {}
+  # annotations: {}
+
+## NetworkPolicy allowing metrics scrapes from namespaces labelled `metrics: enabled`.
+networkPolicy:
+  enabled: false
+
+## Reserved by the plugin-generated ServiceMonitor template. The chart does not
+## ship Certificate resources; leave false (metrics use controller-runtime's
+## self-signed certificate, as in config/default).
+certManager:
+  enabled: false
+
+## Not exposed on purpose (the binary has no such support yet; see
+## docs/roadmap/TASK-06): webhook toggles, watchNamespaces.

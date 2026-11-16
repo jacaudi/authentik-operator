@@ -154,6 +154,24 @@ jobs:
     with:
       image: ${{ needs.release-image.outputs.image }}
 
+  # Chart version == app version (release-please extra-files bump
+  # dist/chart/Chart.yaml in the release PR). Waits on release-smoke so a chart
+  # never ships pointing at an image that failed to boot. Packages and installs
+  # the chart with its DEFAULT image values everywhere; pushes to
+  # oci://ghcr.io/<owner>/charts only on a public repo (gated inside ci-chart).
+  release-chart:
+    needs: [release, release-image, release-smoke]
+    if: ${{ needs.release.outputs.release_created == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    # No App secrets: GHCR auth uses this run's GITHUB_TOKEN (packages scope above);
+    # the App is only for pushing outside this repo's namespace. See ci-build.
+    uses: ./.github/workflows/ci-chart.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      ref: ${{ needs.release.outputs.tag_name }}   # package the TAG, not this run's commit
+
   # Attaches dist/install.yaml (`task artifact` on the tag) to the Release, so
   # `kubectl apply -f .../releases/download/<tag>/install.yaml` installs it.
   # Waits on release-smoke, and verify-images re-checks the pinned image exists.
@@ -171,22 +189,6 @@ jobs:
       assets: dist/install.yaml
       verify-images: |
         ghcr.io/${{ github.repository }}:${VERSION}
-
-  # UNCOMMENT only in repos with a chart (conventionally at charts/). Waits on
-  # release-smoke so a chart never ships pointing at an image that failed to
-  # boot; `!= 'failure'` keeps the chart-only release path working, where both
-  # upstream jobs are legitimately skipped.
-  # release-chart:
-  #   needs: [release, release-image, release-smoke]
-  #   if: ${{ !cancelled() && needs.release.outputs.chart_release_created == 'true'
-  #        && needs.release-image.result != 'failure' && needs.release-smoke.result != 'failure' }}
-  #   permissions: { contents: read, packages: write }
-  #   secrets:
-  #     APP_ID: ${{ secrets.APP_ID }}
-  #     APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-  #   uses: ./.github/workflows/ci-chart.yml
-  #   with:
-  #     version: ${{ needs.release.outputs.chart_version }}
 
   # Multi-image repos: add one sibling ci-build job per image, NOT a matrix.
   #   build-agent:

@@ -12,6 +12,10 @@ includes:
   k8s:
     taskfile: .taskfiles/k8s.yml
 
+  # Repo-specific: Helm chart (dist/chart) lint, unit tests and drift checks.
+  chart:
+    taskfile: .taskfiles/chart.yml
+
   # Repo-specific: Trivy image and manifest scans.
   trivy:
     taskfile: .taskfiles/trivy.yml
@@ -28,6 +32,7 @@ tasks:
       - task: repo:ci
       - task: go:ci
       - task: k8s:ci
+      - task: chart:ci
       - task: trivy:config
 
   lint:
@@ -36,11 +41,13 @@ tasks:
       - task: repo:ci
       - task: go:lint
       - task: k8s:ci
+      - task: chart:lint
 
   test:
     desc: Tests only
     cmds:
       - task: go:test
+      - task: chart:test
 
   build:
     desc: Build artefacts

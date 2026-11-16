@@ -1,0 +1,100 @@
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "authentik-operator.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
+If release name contains chart name it will be used as a full name.
+*/}}
+{{- define "authentik-operator.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Namespace for generated references.
+Always uses the Helm release namespace.
+*/}}
+{{- define "authentik-operator.namespaceName" -}}
+{{- .Release.Namespace }}
+{{- end }}
+
+{{/*
+Resource name with proper truncation for Kubernetes 63-character limit.
+Takes a dict with:
+  - .suffix: Resource name suffix (e.g., "metrics", "webhook")
+  - .context: Template context (root context with .Values, .Release, etc.)
+Dynamically calculates safe truncation to ensure total name length <= 63 chars.
+*/}}
+{{- define "authentik-operator.resourceName" -}}
+{{- $fullname := include "authentik-operator.fullname" .context }}
+{{- $suffix := .suffix }}
+{{- $maxLen := sub 62 (len $suffix) | int }}
+{{- if gt (len $fullname) $maxLen }}
+{{- printf "%s-%s" (trunc $maxLen $fullname | trimSuffix "-") $suffix | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" $fullname $suffix | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
+{{/*
+ServiceAccount name to use.
+serviceAccount.name wins whether or not the chart creates the account.
+Otherwise the chart's own ServiceAccount is used; with serviceAccount.enabled=false
+a name is required (use "default" for the namespace default account).
+*/}}
+{{- define "authentik-operator.serviceAccountName" -}}
+{{- if .Values.serviceAccount.name }}
+{{- .Values.serviceAccount.name }}
+{{- else if .Values.serviceAccount.enabled }}
+{{- include "authentik-operator.resourceName" (dict "suffix" "controller-manager" "context" .) }}
+{{- else }}
+{{- required "serviceAccount.name is required when serviceAccount.enabled=false (set name: default explicitly to use the namespace default ServiceAccount)" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+Container image reference.
+- image.digest set: repository@digest (the tag is ignored; pin single-platform digests).
+- otherwise repository:tag, where tag defaults to v<Chart.appVersion> because
+  release images are tagged v<semver> (see .github/workflows/ci-build.yml).
+*/}}
+{{- define "authentik-operator.image" -}}
+{{- if .Values.image.digest }}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.image.repository (default (printf "v%s" .Chart.AppVersion) .Values.image.tag) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Render-time validation of value combinations the binary or chart cannot honour.
+Included from templates/manager/manager.yaml, which is always rendered.
+*/}}
+{{- define "authentik-operator.validate" -}}
+{{- $a := .Values.authentik }}
+{{- if and (not $a.url) (or $a.externalUrl (dig "tokenSecret" "name" "" $a) (dig "caBundle" "configMap" "name" "" $a) (dig "caBundle" "secret" "name" "" $a)) }}
+{{- fail "authentik.externalUrl, authentik.tokenSecret and authentik.caBundle only apply to the default connection: set authentik.url too (the binary refuses to start without --authentik-url)" }}
+{{- end }}
+{{- if .Values.certManager.enabled }}
+{{- fail "certManager.enabled is reserved and not implemented: the chart ships no Certificate resources" }}
+{{- end }}
+{{- if .Values.rbac.namespaced }}
+{{- fail "rbac.namespaced=true is not supported: the operator needs cluster-wide access (it reads Namespaces and watches every namespace; there is no watch-namespaces flag)" }}
+{{- end }}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest)) }}
+{{- fail "image.digest must match ^sha256:[a-f0-9]{64}$" }}
+{{- end }}
+{{- end }}
