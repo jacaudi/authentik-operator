@@ -111,6 +111,9 @@ spec:
         {{- if $auth.insecureSkipVerify }}
         - --authentik-insecure-skip-verify=true
         {{- end }}
+        {{- with .Values.adoption.defaultConnectionNamespaceSelector }}
+        - {{ printf "--default-connection-adoption-namespace-selector=%s" . | quote }}
+        {{- end }}
         {{- range .Values.extraArgs }}
         - {{ tpl . $ | quote }}
         {{- end }}

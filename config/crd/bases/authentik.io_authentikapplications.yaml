@@ -57,57 +57,6 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikApplication
             properties:
-              adoption:
-                description: |-
-                  adoption controls whether this resource may take over an application
-                  that already exists in Authentik with this slug instead of reporting
-                  a Conflict. The application is matched by slug. Adoption patches the
-                  fields the spec sets and leaves the others (group, metaLaunchUrl,
-                  metaDescription, metaPublisher, metaIcon, and the provider link when
-                  providerRef is unset) as they are. The defaulted fields it will write
-                  are: policyEngineMode, openInNewTab and metaHide. When providerRef is
-                  set, the application's provider link is set to that provider (normally
-                  the adopted provider, so a no-op). Because the application waits for
-                  its providerRef to be Ready, that provider must itself be adopted
-                  (adoption.dryRun off) before this application can complete adoption.
-                  See APIAdoptionSpec.
-                properties:
-                  createIfMissing:
-                    default: false
-                    description: |-
-                      createIfMissing lets a resource with adoption enabled create the
-                      object when none is found to adopt. When false (the default) a miss is
-                      reported as AdoptionTargetNotFound and nothing is written, so a
-                      migrating user can never mint new client credentials by a typo in the
-                      name, slug or pk. A disaster-recovery re-bootstrap (the Authentik
-                      database was lost, nothing exists to adopt) sets it to true
-                      deliberately. With adoption disabled the resource creates as usual,
-                      and a resource that created its object itself recreates it if it
-                      vanishes, whatever this says. Treat it as a temporary toggle: leaving
-                      it true in Git removes the typo protection. For a disaster-recovery
-                      re-bootstrap, clear status.providerPk/applicationUid, provenance and
-                      clientId, set this, pin spec.clientId to the old client ID if
-                      consumers must keep it (the client secret is always new), and turn it
-                      off again once the object exists.
-                    type: boolean
-                  dryRun:
-                    default: false
-                    description: |-
-                      dryRun finds the existing object and reports, in the Ready condition
-                      (reason AdoptionDryRun) and an event, which fields adoption would
-                      change. Nothing is written to Authentik, and no credentials Secret is
-                      rendered. Set it back to false to adopt for real. Only meaningful
-                      with enabled true. dryRun gates only the initial takeover (and the
-                      decision to create when createIfMissing is set): once the object is
-                      adopted, spec edits are applied live whatever dryRun says.
-                    type: boolean
-                  enabled:
-                    default: false
-                    description: |-
-                      enabled permits this resource to take over an existing Authentik
-                      object that it did not create.
-                    type: boolean
-                type: object
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -128,24 +77,61 @@ spec:
                 type: object
               deletionPolicy:
                 description: |-
-                  deletionPolicy is what happens to the application in Authentik when
-                  this resource is deleted: Delete or Retain. When unset: Delete for an
-                  application this resource created, Retain for an adopted one.
+                  deletionPolicy is what happens to the object in Authentik when this
+                  resource is deleted: Delete or Retain. When unset: Delete for an object
+                  this resource created, Retain for an adopted one or one of undecided
+                  provenance. An explicit Delete always wins, so it can remove an object
+                  this resource did not create; a Warning event is emitted when it does so
+                  for undecided provenance. ReadOnly never deletes (Delete is rejected).
+                  The rendered credentials Secret is a Kubernetes object owned by this
+                  resource and is garbage-collected with it under either policy.
                 enum:
                 - Delete
                 - Retain
                 type: string
+              dryRun:
+                description: |-
+                  dryRun finds the existing object and reports, in the Ready condition
+                  (reason AdoptionDryRun) and an event, which fields adoption would
+                  change. Nothing is written to Authentik, and no credentials Secret is
+                  rendered. Set it back to false to adopt for real. Only with
+                  managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
+                  takeover (and the decision to create under AdoptOrCreate): once the
+                  object is adopted, spec edits are applied live whatever dryRun says.
+                type: boolean
               group:
                 description: group groups applications on the user's library page.
                 maxLength: 255
+                type: string
+              managementPolicy:
+                default: Create
+                description: |-
+                  managementPolicy is how this resource relates to the object in
+                  Authentik. Create (the default) creates it and treats an existing one as
+                  a Conflict. Adopt takes over an existing object and never creates one.
+                  AdoptOrCreate adopts if the object exists and creates it if not.
+                  ReadOnly finds the existing object, renders the credentials Secret and
+                  reports drift in the Drifted condition, and never writes to Authentik
+                  or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+                  operator's default connection need an administrator to allow the
+                  namespace (--default-connection-adoption-namespace-selector); with
+                  spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
+                  temporary choice for a disaster-recovery re-bootstrap: it removes the
+                  protection against minting new client credentials through a typo in a
+                  name, slug or pk.
+                enum:
+                - Create
+                - Adopt
+                - AdoptOrCreate
+                - ReadOnly
                 type: string
               metaDescription:
                 description: metaDescription is shown on the library page.
                 type: string
               metaHide:
-                default: false
-                description: metaHide hides the application from the user's library
-                  page.
+                description: |-
+                  metaHide hides the application from the user's library page. Unset: false
+                  on create, the live value on an adopted application.
                 type: boolean
               metaIcon:
                 description: metaIcon is an icon URL (http(s)) or an Authentik-relative
@@ -173,13 +159,14 @@ spec:
                 pattern: ^[^\x00-\x1F\x7F]+$
                 type: string
               openInNewTab:
-                default: true
-                description: openInNewTab opens the launch URL in a new tab.
+                description: |-
+                  openInNewTab opens the launch URL in a new tab. Unset: true on create, the
+                  live value on an adopted application.
                 type: boolean
               policyEngineMode:
-                default: any
-                description: 'policyEngineMode: any (one passing policy grants access)
-                  or all.'
+                description: |-
+                  policyEngineMode: any (one passing policy grants access) or all. Unset:
+                  any on create, the live value on an adopted application.
                 enum:
                 - all
                 - any
@@ -221,6 +208,13 @@ spec:
             - message: authentikRef is immutable
               rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
                 || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
+              rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
+                && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
+            - message: managementPolicy ReadOnly never deletes; deletionPolicy Delete
+                is not allowed
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''ReadOnly''
+                && has(self.deletionPolicy) && self.deletionPolicy == ''Delete'')'
           status:
             description: status defines the observed state of AuthentikApplication
             properties:

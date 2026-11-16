@@ -22,8 +22,11 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
       annotations) tuple, with a `namespaceSelector` on
       `kubernetes.io/metadata.name` listing the source namespaces, referenced via
       `spec.secret.templateRef`. Templates are admin-owned (TASK-04), so the
-      runbook has the platform admin apply them. Also: `adoption.enabled: true`,
-      `adoption.match` targeting `<slug>-provider`, `deletionPolicy: Retain`
+      runbook has the platform admin apply them. Also: `managementPolicy: Adopt`,
+      `match` targeting `<slug>-provider`, `deletionPolicy: Retain`; on the
+      default connection the platform admin also allows the namespace with
+      `--default-connection-adoption-namespace-selector` (an `authentikRef` needs
+      no allowance)
 - [x] Runbook, zero-downtime, credentials preserved:
   1. install new operator alongside the old (different group, no CRD clash)
   2. apply converted CRs with adoption (+ dryRun first); confirm Ready and that

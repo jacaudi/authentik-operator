@@ -28,6 +28,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -81,6 +82,7 @@ type options struct {
 	probeAddr                                                     string
 	enableLeaderElection, secureMetrics, enableHTTP2              bool
 	defaultConn                                                   connection.DefaultOptions
+	adoptionNamespaces                                            string
 	zap                                                           zap.Options
 }
 
@@ -119,6 +121,10 @@ func registerFlags() *options {
 		"Optional PEM CA bundle for the default connection, trusted in addition to system roots.")
 	flag.BoolVar(&o.defaultConn.InsecureSkipVerify, "authentik-insecure-skip-verify", false,
 		"Disable TLS verification for the default connection. Testing only.")
+	flag.StringVar(&o.adoptionNamespaces, "default-connection-adoption-namespace-selector", "",
+		"Label selector (e.g. kubernetes.io/metadata.name=team-a) for the namespaces whose resources may use "+
+			"managementPolicy Adopt, AdoptOrCreate or ReadOnly on the default connection. Empty denies every "+
+			"namespace. Resources with spec.authentikRef are not affected.")
 	o.zap.BindFlags(flag.CommandLine)
 	return o
 }
@@ -238,7 +244,11 @@ func run(o *options) error {
 	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg,
 		DefaultExternalURL: o.defaultConn.ExternalURL}
 
-	if err := setupControllers(mgr, connections); err != nil {
+	adoptionNamespaces, err := controller.ParseAdoptionNamespaceSelector(o.adoptionNamespaces)
+	if err != nil {
+		return fmt.Errorf("--default-connection-adoption-namespace-selector: %w", err)
+	}
+	if err := setupControllers(mgr, connections, adoptionNamespaces); err != nil {
 		return err
 	}
 	// +kubebuilder:scaffold:builder
@@ -257,7 +267,7 @@ func run(o *options) error {
 }
 
 // setupControllers registers every reconciler with the manager.
-func setupControllers(mgr ctrl.Manager, connections *connection.Resolver) error {
+func setupControllers(mgr ctrl.Manager, connections *connection.Resolver, adoptionNamespaces labels.Selector) error {
 	controllers := []struct {
 		name       string
 		reconciler interface{ SetupWithManager(ctrl.Manager) error }
@@ -268,10 +278,12 @@ func setupControllers(mgr ctrl.Manager, connections *connection.Resolver) error 
 			Connections: connections,
 		}},
 		{"authentikapplication", &controller.AuthentikApplicationReconciler{
-			Client:      mgr.GetClient(),
-			Scheme:      mgr.GetScheme(),
-			Connections: connections,
-			Recorder:    mgr.GetEventRecorder("authentikapplication"),
+			Client:                    mgr.GetClient(),
+			Scheme:                    mgr.GetScheme(),
+			Connections:               connections,
+			Recorder:                  mgr.GetEventRecorder("authentikapplication"),
+			APIReader:                 mgr.GetAPIReader(),
+			AdoptionNamespaceSelector: adoptionNamespaces,
 		}},
 		{"authentikuser", &controller.AuthentikUserReconciler{
 			Client:      mgr.GetClient(),
@@ -284,11 +296,12 @@ func setupControllers(mgr ctrl.Manager, connections *connection.Resolver) error 
 			Connections: connections,
 		}},
 		{"authentikoauthprovider", &controller.AuthentikOAuthProviderReconciler{
-			Client:      mgr.GetClient(),
-			Scheme:      mgr.GetScheme(),
-			Connections: connections,
-			Recorder:    mgr.GetEventRecorder("authentikoauthprovider"),
-			APIReader:   mgr.GetAPIReader(),
+			Client:                    mgr.GetClient(),
+			Scheme:                    mgr.GetScheme(),
+			Connections:               connections,
+			Recorder:                  mgr.GetEventRecorder("authentikoauthprovider"),
+			APIReader:                 mgr.GetAPIReader(),
+			AdoptionNamespaceSelector: adoptionNamespaces,
 		}},
 		{"authentikcredentialstemplate", &controller.AuthentikCredentialsTemplateReconciler{
 			Client: mgr.GetClient(),

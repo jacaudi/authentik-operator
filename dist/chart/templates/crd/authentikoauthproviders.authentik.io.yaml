@@ -64,91 +64,17 @@ spec:
             description: spec defines the desired state of AuthentikOAuthProvider
             properties:
               accessCodeValidity:
-                default: minutes=1
-                description: accessCodeValidity, e.g. "minutes=1".
+                description: |-
+                  accessCodeValidity, e.g. "minutes=1". Unset: minutes=1 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               accessTokenValidity:
-                default: minutes=5
-                description: accessTokenValidity, e.g. "minutes=5".
+                description: |-
+                  accessTokenValidity, e.g. "minutes=5". Unset: minutes=5 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
-              adoption:
-                description: |-
-                  adoption controls whether this resource may take over a provider that
-                  already exists in Authentik (for example one created by another
-                  operator) instead of reporting a Conflict. See APIAdoptionSpec for
-                  what adoption writes and which defaulted fields are included. An
-                  adopted provider's client ID and secret are kept as they are (the
-                  credentials Secret is rendered from the existing values) unless
-                  spec.clientId is set. Unset optional fields (authenticationFlow,
-                  encryptionKey, logoutUri, name) are left as the existing provider has
-                  them. The defaulted fields adoption will write are: scopes, clientType,
-                  grantTypes, accessCodeValidity, accessTokenValidity,
-                  refreshTokenValidity, refreshTokenThreshold, subMode,
-                  includeClaimsInIdToken, issuerMode, logoutMethod, and the
-                  matchingMode and type of each redirect URI.
-                properties:
-                  createIfMissing:
-                    default: false
-                    description: |-
-                      createIfMissing lets a resource with adoption enabled create the
-                      object when none is found to adopt. When false (the default) a miss is
-                      reported as AdoptionTargetNotFound and nothing is written, so a
-                      migrating user can never mint new client credentials by a typo in the
-                      name, slug or pk. A disaster-recovery re-bootstrap (the Authentik
-                      database was lost, nothing exists to adopt) sets it to true
-                      deliberately. With adoption disabled the resource creates as usual,
-                      and a resource that created its object itself recreates it if it
-                      vanishes, whatever this says. Treat it as a temporary toggle: leaving
-                      it true in Git removes the typo protection. For a disaster-recovery
-                      re-bootstrap, clear status.providerPk/applicationUid, provenance and
-                      clientId, set this, pin spec.clientId to the old client ID if
-                      consumers must keep it (the client secret is always new), and turn it
-                      off again once the object exists.
-                    type: boolean
-                  dryRun:
-                    default: false
-                    description: |-
-                      dryRun finds the existing object and reports, in the Ready condition
-                      (reason AdoptionDryRun) and an event, which fields adoption would
-                      change. Nothing is written to Authentik, and no credentials Secret is
-                      rendered. Set it back to false to adopt for real. Only meaningful
-                      with enabled true. dryRun gates only the initial takeover (and the
-                      decision to create when createIfMissing is set): once the object is
-                      adopted, spec edits are applied live whatever dryRun says.
-                    type: boolean
-                  enabled:
-                    default: false
-                    description: |-
-                      enabled permits this resource to take over an existing Authentik
-                      object that it did not create.
-                    type: boolean
-                  match:
-                    description: |-
-                      match selects the existing provider by name or pk. When unset, the
-                      provider named like this resource's desired name (spec.name, else
-                      metadata.name) is the candidate and, if there is none, a new provider
-                      is created only if createIfMissing is set. A missing match is otherwise
-                      an error (reason AdoptionTargetNotFound), never a create, so a
-                      migration cannot silently mint new credentials.
-                    properties:
-                      name:
-                        description: name is the provider's exact name in Authentik.
-                        maxLength: 255
-                        minLength: 1
-                        type: string
-                      pk:
-                        description: pk is the provider's primary key in Authentik.
-                        format: int32
-                        minimum: 1
-                        type: integer
-                    type: object
-                    x-kubernetes-validations:
-                    - message: set exactly one of name or pk
-                      rule: '(has(self.name) ? 1 : 0) + (has(self.pk) ? 1 : 0) ==
-                        1'
-                type: object
               authenticationFlow:
                 description: |-
                   authenticationFlow is the slug of the flow used when an
@@ -188,36 +114,49 @@ spec:
                 pattern: ^[\x21-\x7E]+$
                 type: string
               clientType:
-                default: confidential
-                description: clientType is confidential (has a client secret) or public.
+                description: |-
+                  clientType is confidential (has a client secret) or public. Unset:
+                  confidential on create, the live value on an adopted provider.
                 enum:
                 - confidential
                 - public
                 type: string
               deletionPolicy:
                 description: |-
-                  deletionPolicy is what happens to the provider in Authentik when this
-                  resource is deleted: Delete or Retain. When unset: Delete for a
-                  provider this resource created, Retain for an adopted one. The
-                  rendered credentials Secret is a Kubernetes object owned by this
+                  deletionPolicy is what happens to the object in Authentik when this
+                  resource is deleted: Delete or Retain. When unset: Delete for an object
+                  this resource created, Retain for an adopted one or one of undecided
+                  provenance. An explicit Delete always wins, so it can remove an object
+                  this resource did not create; a Warning event is emitted when it does so
+                  for undecided provenance. ReadOnly never deletes (Delete is rejected).
+                  The rendered credentials Secret is a Kubernetes object owned by this
                   resource and is garbage-collected with it under either policy.
                 enum:
                 - Delete
                 - Retain
                 type: string
+              dryRun:
+                description: |-
+                  dryRun finds the existing object and reports, in the Ready condition
+                  (reason AdoptionDryRun) and an event, which fields adoption would
+                  change. Nothing is written to Authentik, and no credentials Secret is
+                  rendered. Set it back to false to adopt for real. Only with
+                  managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
+                  takeover (and the decision to create under AdoptOrCreate): once the
+                  object is adopted, spec edits are applied live whatever dryRun says.
+                type: boolean
               encryptionKey:
                 description: |-
                   encryptionKey is the name of a certificate-key pair used to encrypt
                   tokens (JWE). Optional.
                 type: string
               grantTypes:
-                default:
-                - authorization_code
-                - refresh_token
                 description: |-
                   grantTypes lists the grant types the provider accepts. Always sent
                   explicitly: Authentik 2026.8+ rejects logins for providers created
-                  with an empty list ("Invalid grant_type for provider").
+                  with an empty list ("Invalid grant_type for provider"). Unset:
+                  authorization_code and refresh_token on create, the live value on an
+                  adopted provider.
                 items:
                   description: OAuthGrantType is an OAuth2 grant type Authentik can
                     allow for a provider.
@@ -235,9 +174,9 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               includeClaimsInIdToken:
-                default: true
-                description: includeClaimsInIdToken includes user claims from scopes
-                  in the id_token.
+                description: |-
+                  includeClaimsInIdToken includes user claims from scopes in the id_token.
+                  Unset: true on create, the live value on an adopted provider.
                 type: boolean
               invalidationFlow:
                 description: invalidationFlow is the slug of the flow used when ending
@@ -245,17 +184,20 @@ spec:
                 minLength: 1
                 type: string
               issuerMode:
-                default: per_provider
-                description: issuerMode selects how the iss claim is built.
+                description: |-
+                  issuerMode selects how the iss claim is built. Unset: per_provider on
+                  create, the live value on an adopted provider. In per_provider mode the
+                  iss claim contains the application slug, so changing the application's
+                  slug changes iss.
                 enum:
                 - global
                 - per_provider
                 type: string
               logoutMethod:
-                default: backchannel
                 description: |-
                   logoutMethod is backchannel (server-to-server) or frontchannel
-                  (browser iframes; requires logoutUri).
+                  (browser iframes; requires logoutUri). Unset: backchannel on create, the
+                  live value on an adopted provider.
                 enum:
                 - backchannel
                 - frontchannel
@@ -265,6 +207,51 @@ spec:
                 maxLength: 2048
                 minLength: 1
                 type: string
+              managementPolicy:
+                default: Create
+                description: |-
+                  managementPolicy is how this resource relates to the object in
+                  Authentik. Create (the default) creates it and treats an existing one as
+                  a Conflict. Adopt takes over an existing object and never creates one.
+                  AdoptOrCreate adopts if the object exists and creates it if not.
+                  ReadOnly finds the existing object, renders the credentials Secret and
+                  reports drift in the Drifted condition, and never writes to Authentik
+                  or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+                  operator's default connection need an administrator to allow the
+                  namespace (--default-connection-adoption-namespace-selector); with
+                  spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
+                  temporary choice for a disaster-recovery re-bootstrap: it removes the
+                  protection against minting new client credentials through a typo in a
+                  name, slug or pk.
+                enum:
+                - Create
+                - Adopt
+                - AdoptOrCreate
+                - ReadOnly
+                type: string
+              match:
+                description: |-
+                  match selects the existing provider by name or pk, for managementPolicy
+                  Adopt, AdoptOrCreate or ReadOnly. When unset, the provider named like
+                  this resource's desired name (spec.name, else metadata.name) is the
+                  candidate. A miss is reported as AdoptionTargetNotFound under Adopt and
+                  ReadOnly, never a create, so a migration cannot silently mint new
+                  credentials; AdoptOrCreate creates the provider instead.
+                properties:
+                  name:
+                    description: name is the provider's exact name in Authentik.
+                    maxLength: 255
+                    minLength: 1
+                    type: string
+                  pk:
+                    description: pk is the provider's primary key in Authentik.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: set exactly one of name or pk
+                  rule: '(has(self.name) ? 1 : 0) + (has(self.pk) ? 1 : 0) == 1'
               name:
                 description: name of the provider in Authentik. Defaults to metadata.name.
                 maxLength: 255
@@ -279,21 +266,27 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
               redirectUris:
-                description: redirectUris lists the allowed redirect URIs.
+                description: |-
+                  redirectUris lists the allowed redirect URIs. Required when the provider
+                  is created (the resource reports InvalidSpec otherwise); unset on an
+                  adopted provider, its live redirect URIs are kept.
                 items:
                   description: RedirectURI is an allowed redirect URI.
                   properties:
                     matchingMode:
-                      default: strict
-                      description: matchingMode is strict (exact match) or regex.
+                      description: |-
+                        matchingMode is strict (exact match) or regex. Unset: strict on create;
+                        an adopted provider keeps the mode of the live redirect URI with the same
+                        url, else strict.
                       enum:
                       - strict
                       - regex
                       type: string
                     type:
-                      default: authorization
-                      description: type is authorization (default) or logout (post-logout
-                        redirect).
+                      description: |-
+                        type is authorization or logout (post-logout redirect). Unset:
+                        authorization on create; an adopted provider keeps the type of the live
+                        redirect URI with the same url, else authorization.
                       enum:
                       - authorization
                       - logout
@@ -313,26 +306,25 @@ spec:
                 type: array
                 x-kubernetes-list-type: atomic
               refreshTokenThreshold:
-                default: seconds=0
                 description: |-
                   refreshTokenThreshold: a refresh token valid for less than this is
-                  renewed on refresh; "seconds=0" renews on every refresh.
+                  renewed on refresh; "seconds=0" renews on every refresh. Unset: seconds=0
+                  on create, the live value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               refreshTokenValidity:
-                default: days=30
-                description: refreshTokenValidity, e.g. "days=30".
+                description: |-
+                  refreshTokenValidity, e.g. "days=30". Unset: days=30 on create, the live
+                  value on an adopted provider.
                 pattern: ^((weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?;)*(weeks|days|hours|minutes|seconds|milliseconds|microseconds)=[0-9]+(\.[0-9]+)?$
                 type: string
               scopes:
-                default:
-                - openid
-                - profile
-                - email
                 description: |-
                   scopes lists OAuth scope mappings by scope_name (e.g. openid, profile,
                   email). When several mappings share a scope name, the managed
-                  (built-in) one is used.
+                  (built-in) one is used. Unset: openid, profile and email on create; an
+                  adopted provider keeps its live mappings and gains any propertyMappings
+                  named below. Set, the spec owns the whole list.
                 items:
                   type: string
                 maxItems: 64
@@ -375,8 +367,10 @@ spec:
                 minLength: 1
                 type: string
               subMode:
-                default: hashed_user_id
-                description: subMode selects the value of the sub claim.
+                description: |-
+                  subMode selects the value of the sub claim. Unset: hashed_user_id on
+                  create, the live value on an adopted provider. Changing it on a provider
+                  with live clients changes every user's sub.
                 enum:
                 - hashed_user_id
                 - user_id
@@ -388,7 +382,6 @@ spec:
             required:
             - authorizationFlow
             - invalidationFlow
-            - redirectUris
             type: object
             x-kubernetes-validations:
             - message: authentikRef is immutable
@@ -397,6 +390,16 @@ spec:
             - message: logoutMethod frontchannel requires logoutUri
               rule: '!has(self.logoutMethod) || self.logoutMethod != ''frontchannel''
                 || has(self.logoutUri)'
+            - message: match requires managementPolicy Adopt, AdoptOrCreate or ReadOnly
+              rule: '!has(self.match) || (has(self.managementPolicy) && self.managementPolicy
+                != ''Create'')'
+            - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
+              rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
+                && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
+            - message: managementPolicy ReadOnly never deletes; deletionPolicy Delete
+                is not allowed
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''ReadOnly''
+                && has(self.deletionPolicy) && self.deletionPolicy == ''Delete'')'
           status:
             description: status defines the observed state of AuthentikOAuthProvider
             properties:
