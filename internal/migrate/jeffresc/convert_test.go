@@ -29,7 +29,10 @@ import (
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 )
 
-const testSource = "in.yaml"
+const (
+	testSource = "in.yaml"
+	acceptFlag = "--accept-unmanaged-group-bindings"
+)
 
 const minimalApp = `apiVersion: goauthentik.io/v1alpha1
 kind: AuthentikApplication
@@ -328,7 +331,7 @@ func TestGroupBindings(t *testing.T) {
 			t.Fatal("want an error")
 		}
 		for _, want := range []string{
-			"ns/x", `"media-users"`, `"admins"`, "allows every user", "--accept-unmanaged-group-bindings",
+			"ns/x", `"media-users"`, `"admins"`, "allows every user", acceptFlag,
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error lacks %q: %v", want, err)
@@ -353,7 +356,7 @@ func TestGroupBindings(t *testing.T) {
 				t.Errorf("%s: notice present = %v, want %v:\n%s", f.Name, hasNotice, want, f.Data)
 			}
 		}
-		for _, want := range []string{`"media-users"`, "--accept-unmanaged-group-bindings"} {
+		for _, want := range []string{`"media-users"`, acceptFlag} {
 			if !strings.Contains(res.Report, want) {
 				t.Errorf("report lacks %q:\n%s", want, res.Report)
 			}
