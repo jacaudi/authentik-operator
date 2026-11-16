@@ -173,14 +173,15 @@ helm install jacaudi-authentik-operator oci://ghcr.io/jacaudi/charts/authentik-o
   --namespace authentik-operator --create-namespace \
   --set authentik.url=https://authentik.example.com \
   --set authentik.tokenSecret.name=authentik-api \
-  --set-string adoption.defaultConnectionNamespaceSelector='kubernetes.io/metadata.name in (NS1, NS2)'
+  --set-string 'adoption.defaultConnectionNamespaceSelector=kubernetes.io/metadata.name in (NS1\, NS2)'
 # from a checkout instead of the registry: helm install jacaudi-authentik-operator dist/chart ...
 ```
 
 `adoption.defaultConnectionNamespaceSelector` is the gate described above: the
 namespaces of the JeffResc objects you are migrating (the `NS` of every
-converted object; the converter's report prints the exact selector). It is
-rendered as the operator flag `--default-connection-adoption-namespace-selector`;
+converted object; the converter's report prints the exact selector, and with
+`--set` every comma in it needs a backslash, as above). It is rendered as the
+operator flag `--default-connection-adoption-namespace-selector`;
 without it every converted object stays at `AdoptionNotAllowed`. You can add it
 later with `helm upgrade --reuse-values --set-string ...` (the pod restarts to
 read it). Skip it, and use `--authentik-ref NAME` when converting, if you attach
