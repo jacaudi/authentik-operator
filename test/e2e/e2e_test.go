@@ -34,6 +34,10 @@ import (
 	"github.com/jacaudi/authentik-operator/test/aktest"
 )
 
+// akAccessTokenValidity is the provider field the drift, idempotency and adoption
+// specs change in Authentik.
+const akAccessTokenValidity = "access_token_validity"
+
 // typicalTemplate is the kind of template an administrator writes for an
 // application's environment: every variable the operator offers, quoted.
 const typicalTemplateName = "e2e-typical"
@@ -165,7 +169,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(fmt.Sscan(aktest.Str(created, "pk"), &pk)).To(Equal(1))
 			_, err = ak.CreateApplication(ctx, "E2E Adopt", adoptName, pk)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"access_token_validity": adoptLiveValidity})).To(Succeed())
+			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{akAccessTokenValidity: adoptLiveValidity})).To(Succeed())
 			before, err = ak.OAuthProvider(ctx, pk)
 			Expect(err).NotTo(HaveOccurred())
 			beforeApp, err = ak.ApplicationBySlug(ctx, adoptName)
@@ -228,7 +232,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(aktest.Str(now, "client_id")).To(Equal(aktest.Str(before, "client_id")))
 			Expect(aktest.Str(now, "client_secret")).To(Equal(aktest.Str(before, "client_secret")))
-			Expect(aktest.Str(now, "access_token_validity")).To(Equal(adoptLiveValidity),
+			Expect(aktest.Str(now, akAccessTokenValidity)).To(Equal(adoptLiveValidity),
 				"adoption overwrote a field the spec leaves unset")
 		})
 
@@ -289,7 +293,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		It("restores fields changed in Authentik behind the operator's back", func(ctx SpecContext) {
 			pk := int(getProvider(ctx, Default, createdName).Status.ProviderPK)
 			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{
-				"access_token_validity": "minutes=10", // spec default: minutes=5
+				akAccessTokenValidity: "minutes=10", // spec default: minutes=5
 				"redirect_uris":         []aktest.Obj{{"matching_mode": "strict", "url": "https://drift.invalid/cb"}},
 			})).To(Succeed())
 			Expect(ak.Do(ctx, "PATCH", "/api/v3/core/applications/e2e-oidc/",
@@ -301,7 +305,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Eventually(func(g Gomega) {
 				prov, err := ak.OAuthProvider(ctx, pk)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(aktest.Str(prov, "access_token_validity")).To(Equal("minutes=5"))
+				g.Expect(aktest.Str(prov, akAccessTokenValidity)).To(Equal("minutes=5"))
 				uris, _ := prov["redirect_uris"].([]any)
 				g.Expect(uris).To(HaveLen(1))
 				first, _ := uris[0].(map[string]any)
@@ -335,13 +339,13 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 			By("proving the operator-side measurement: a real change is counted as an Updated log line")
 			logBase := operatorUpdates(ctx, Default)
-			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"access_token_validity": "minutes=7"})).To(Succeed())
+			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{akAccessTokenValidity: "minutes=7"})).To(Succeed())
 			poke(ctx, Default, getProvider(ctx, Default, createdName))
 			Eventually(func(g Gomega) {
 				g.Expect(operatorUpdates(ctx, g)).To(BeNumerically(">", logBase))
 				prov, err := ak.OAuthProvider(ctx, pk)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(aktest.Str(prov, "access_token_validity")).To(Equal("minutes=5"))
+				g.Expect(aktest.Str(prov, akAccessTokenValidity)).To(Equal("minutes=5"))
 			}).WithContext(ctx).WithTimeout(waitTimeout).Should(Succeed())
 
 			By("forcing reconciles of every kind, each waited for through the controller metrics")
