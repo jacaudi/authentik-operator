@@ -272,15 +272,134 @@ func TestUnsetFieldsStayUnset(t *testing.T) {
 	}
 }
 
-// JeffResc never sends grant types (its issue #279), so on Authentik 2026.8+
-// its providers have none and reject every login. Adoption keeps the live
-// value of an unset field, so grantTypes is the one field the converter
-// writes without a JeffResc value; servers before 2026.8 ignore it.
-func TestWritesGrantTypes(t *testing.T) {
-	prov, _, _ := convertApp(t, app("x", "ns"), Options{})
-	want := []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
-	if !slices.Equal(prov.Spec.GrantTypes, want) {
-		t.Errorf("grantTypes = %v, want %v", prov.Spec.GrantTypes, want)
+// grantTypes is always written (adoption keeps the live value of an unset
+// field, and JeffResc v0.2.6 and older left providers with none, which
+// Authentik 2026.5+ rejects every login for). JeffResc v0.2.7+ copies
+// spec.provider.grantTypes, and treats an empty list as the default pair.
+func TestGrantTypes(t *testing.T) {
+	pair := []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
+	cases := []struct {
+		name, extra string
+		want        []authentikiov1alpha1.OAuthGrantType
+		note        string
+	}{
+		{"absent: the pair", "", pair, "defaulted"},
+		{"empty: the pair", "    grantTypes: []\n", pair, "defaulted"},
+		{"copied", "    grantTypes: [authorization_code, refresh_token, client_credentials]\n",
+			[]authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token", "client_credentials"}, "copied"},
+		{"copied without duplicates, in order", "    grantTypes: [client_credentials, authorization_code, client_credentials]\n",
+			[]authentikiov1alpha1.OAuthGrantType{"client_credentials", "authorization_code"}, "copied"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := app("x", "ns")
+			if tc.extra != "" {
+				in = withProvider(tc.extra)
+			}
+			prov, _, _ := convertApp(t, in, Options{})
+			if !slices.Equal(prov.Spec.GrantTypes, tc.want) {
+				t.Errorf("grantTypes = %v, want %v", prov.Spec.GrantTypes, tc.want)
+			}
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "provider.grantTypes " + tc.note; !strings.Contains(res.Report, want) {
+				t.Errorf("report lacks %q:\n%s", want, res.Report)
+			}
+		})
+	}
+}
+
+// groupBindings are not managed by this operator and Authentik allows every
+// user when an application has no bindings, so converting one is refused
+// unless the user accepts that; the notice then travels with the YAML.
+func TestGroupBindings(t *testing.T) {
+	withBindings := func(list string) string {
+		return strings.Replace(app("x", "ns"), "  name: X\n", "  name: X\n  groupBindings: "+list+"\n", 1)
+	}
+	t.Run("refused without the flag, naming the groups and the consequence", func(t *testing.T) {
+		_, err := Convert([]Input{{Source: testSource, Data: []byte(withBindings(`[media-users, admins]`))}}, Options{})
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		for _, want := range []string{"ns/x", `"media-users"`, `"admins"`, "allows every user", "--accept-unmanaged-group-bindings"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error lacks %q: %v", want, err)
+			}
+		}
+	})
+	t.Run("one object's refusal stops the whole conversion", func(t *testing.T) {
+		in := app("a", "ns") + "---\n" + withBindings(`[g]`)
+		if res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{}); err == nil || res != nil {
+			t.Fatalf("want no result and an error, got %v, %v", res, err)
+		}
+	})
+	t.Run("accepted: notice in the application header and in the report", func(t *testing.T) {
+		in := withBindings(`[media-users]`)
+		res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AcceptUnmanagedGroupBindings: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range res.Files {
+			hasNotice := strings.Contains(string(f.Data), `"media-users"`)
+			if want := strings.HasPrefix(f.Name, "authentikapplication-"); hasNotice != want {
+				t.Errorf("%s: notice present = %v, want %v:\n%s", f.Name, hasNotice, want, f.Data)
+			}
+		}
+		if !strings.Contains(res.Report, `"media-users"`) || !strings.Contains(res.Report, "--accept-unmanaged-group-bindings") {
+			t.Errorf("report lacks the notice:\n%s", res.Report)
+		}
+	})
+	t.Run("a group name cannot break out of the header comment", func(t *testing.T) {
+		in := withBindings(`["a\nspec: injected"]`)
+		res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AcceptUnmanagedGroupBindings: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range res.Files {
+			if !strings.HasPrefix(f.Name, "authentikapplication-") {
+				continue
+			}
+			var obj struct {
+				Spec map[string]any `json:"spec"`
+			}
+			if err := sigsyaml.Unmarshal(f.Data, &obj); err != nil {
+				t.Fatal(err)
+			}
+			if _, bad := obj.Spec["injected"]; bad || strings.Contains(string(f.Data), "\nspec: injected") {
+				t.Errorf("group name reached the YAML body:\n%s", f.Data)
+			}
+		}
+	})
+	t.Run("an empty list or none triggers nothing", func(t *testing.T) {
+		for _, in := range []string{withBindings(`[]`), app("x", "ns")} {
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(res.Report, "groupBindings") {
+				t.Errorf("report mentions groupBindings:\n%s", res.Report)
+			}
+			for _, f := range res.Files {
+				if strings.Contains(string(f.Data), "groupBindings") {
+					t.Errorf("%s mentions groupBindings:\n%s", f.Name, f.Data)
+				}
+			}
+		}
+	})
+}
+
+func TestGroupKindIsRefusedWithGuidance(t *testing.T) {
+	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\nmetadata: {name: g, namespace: ns}\nspec: {name: g}\n"
+	_, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, want := range []string{"AuthentikGroup", "not supported", "keep it on JeffResc", "deletionPolicy Retain"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
 	}
 }
 

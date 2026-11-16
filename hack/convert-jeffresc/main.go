@@ -48,6 +48,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "directory to write the converted objects to (required)")
 	fs.BoolVar(&opts.DryRunAdoption, "dry-run-adoption", true,
 		"set spec.dryRun on every converted provider and application")
+	fs.BoolVar(&opts.AcceptUnmanagedGroupBindings, "accept-unmanaged-group-bindings", false,
+		"convert objects that list groupBindings although this operator does not manage or enforce them "+
+			"(Authentik then lets every user open the application)")
 	fs.StringVar(&opts.Namespace, "namespace", "",
 		"namespace for the converted objects (default: each source's namespace)")
 	fs.StringVar(&opts.AuthentikRef, "authentik-ref", "", "name of an AuthentikDeployment to reference as authentikRef")

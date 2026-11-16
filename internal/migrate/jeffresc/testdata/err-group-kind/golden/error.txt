@@ -1,0 +1,1 @@
+input.yaml: AuthentikGroup media/media-users: not supported: this operator has no group kind; keep it on JeffResc, or set deletionPolicy Retain on it and then delete it (JeffResc deletes the group in Authentik with the CR by default, which also removes its application bindings)
