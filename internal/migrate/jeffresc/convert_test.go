@@ -272,6 +272,18 @@ func TestUnsetFieldsStayUnset(t *testing.T) {
 	}
 }
 
+// JeffResc never sends grant types (its issue #279), so on Authentik 2026.8+
+// its providers have none and reject every login. Adoption keeps the live
+// value of an unset field, so grantTypes is the one field the converter
+// writes without a JeffResc value; servers before 2026.8 ignore it.
+func TestWritesGrantTypes(t *testing.T) {
+	prov, _, _ := convertApp(t, app("x", "ns"), Options{})
+	want := []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
+	if !slices.Equal(prov.Spec.GrantTypes, want) {
+		t.Errorf("grantTypes = %v, want %v", prov.Spec.GrantTypes, want)
+	}
+}
+
 func TestExplicitFieldsAreCopied(t *testing.T) {
 	in := withProvider(`    scopes: [openid]
     clientType: public

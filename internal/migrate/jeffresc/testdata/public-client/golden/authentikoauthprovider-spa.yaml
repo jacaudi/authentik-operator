@@ -9,6 +9,9 @@ spec:
   clientType: public
   deletionPolicy: Retain
   dryRun: true
+  grantTypes:
+  - authorization_code
+  - refresh_token
   invalidationFlow: default-provider-invalidation-flow
   managementPolicy: Adopt
   match:

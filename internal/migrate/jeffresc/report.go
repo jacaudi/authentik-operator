@@ -61,6 +61,9 @@ func (b *builder) report(skipped []string) string {
 	sb.WriteString("Every converted object adopts the provider or application JeffResc created\n")
 	sb.WriteString("(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc\n")
 	sb.WriteString("left unset (it applied its own default) is left unset here, so the live value stays.\n")
+	sb.WriteString("The one exception is grantTypes ([authorization_code, refresh_token]): JeffResc sends none, so\n")
+	sb.WriteString("on Authentik 2026.8+ its providers reject every login (JeffResc issue 279); servers before\n")
+	sb.WriteString("2026.8 ignore the field. Remove it from the spec to keep the live (empty) grant types.\n")
 	sb.WriteString("Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists\n")
 	sb.WriteString("`field: old -> new`) and edit the spec until the only listed changes are ones you intend.\n")
 	for _, r := range b.reports {

@@ -210,6 +210,11 @@ func (b *builder) providerSpec(
 		Secret:            &authentikiov1alpha1.CredentialsSecretSpec{Name: secretName},
 		Match:             &authentikiov1alpha1.ProviderMatch{Name: providerName},
 		APIManagementSpec: managementSpec(b.opts.DryRunAdoption),
+		// JeffResc never sends grant types (its issue #279), so on Authentik
+		// 2026.8+ its providers have none and reject every login. Adoption keeps
+		// the live value of an unset field, so this is the one field written
+		// without a JeffResc value; servers before 2026.8 ignore it.
+		GrantTypes: []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"},
 		// A field JeffResc left unset stays unset: JeffResc applied its own
 		// default to the live provider, and adoption keeps the live value of
 		// every field the spec does not set.
