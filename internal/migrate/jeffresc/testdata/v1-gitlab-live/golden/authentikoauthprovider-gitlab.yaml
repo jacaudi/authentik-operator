@@ -12,6 +12,9 @@ spec:
   clientType: confidential
   deletionPolicy: Retain
   dryRun: false
+  grantTypes:
+  - authorization_code
+  - refresh_token
   includeClaimsInIdToken: true
   invalidationFlow: default-provider-invalidation-flow
   issuerMode: per_provider

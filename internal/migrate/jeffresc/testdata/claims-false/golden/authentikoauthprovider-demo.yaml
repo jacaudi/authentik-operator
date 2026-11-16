@@ -8,6 +8,9 @@ spec:
   authorizationFlow: a
   deletionPolicy: Retain
   dryRun: true
+  grantTypes:
+  - authorization_code
+  - refresh_token
   includeClaimsInIdToken: false
   invalidationFlow: b
   managementPolicy: Adopt

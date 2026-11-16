@@ -112,18 +112,28 @@ the fields it names. To keep holding a defaulted field, add it to the spec.
 | `spec.secret.name` (default `<name>-oauth`) | `AuthentikOAuthProvider.spec.secret.name` (+ `--secret-suffix`) | |
 | `spec.secret.template` | `AuthentikCredentialsTemplate.spec.template` | variables below |
 | `spec.secret.labels`, `spec.secret.annotations` | `AuthentikCredentialsTemplate.spec.labels`, `.annotations` | keys under `authentik.io/` are reserved here |
-| (none) | `grantTypes`, `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
+| (none) | `grantTypes` | **written**: `[authorization_code, refresh_token]`, see below |
+| (none) | `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
 | `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
 | `AuthentikSAMLApplication` | none | error |
 | Secret label `goauthentik.io/application` | none | JeffResc sets it; this operator does not |
 | Secret owner | the `AuthentikOAuthProvider` | JeffResc's Secret is owned by its CR; see step 4 |
 
-**Fields JeffResc has no field for are not written.** This operator's own
-defaults (`grantTypes`, `refreshTokenThreshold`, `logoutMethod`, redirect
+**Fields JeffResc has no field for are not written, except `grantTypes`.** This
+operator's own defaults (`refreshTokenThreshold`, `logoutMethod`, redirect
 `matchingMode` and `type`, `metaHide`) apply only when this operator creates an
-object. Adoption never applies them, so a grant type someone changed in the UI
+object. Adoption never applies them, so a value someone changed in the UI
 survives. Set one of these in the spec if you want this operator to enforce it;
 the dry run in step 3 then shows the change.
+
+`grantTypes` is the exception because of a JeffResc bug (its issue #279):
+JeffResc never sends grant types, so on Authentik 2026.8 and later its
+providers have none and reject every login ("Invalid grant_type for provider").
+Adoption keeps the live value of an unset field, which would carry that bug
+over, so the converter writes `grantTypes: [authorization_code, refresh_token]`;
+the dry run shows `grant_types: [] -> [...]`. Servers before 2026.8 do not
+report the property and ignore it. Delete the field from the converted spec if
+you want to keep the live grant types as they are.
 
 ### Template variables
 
@@ -255,6 +265,8 @@ are ones you intend. Watch especially:
 - `scopes` / property mappings: when the spec sets `scopes`, adoption replaces the
   provider's mappings with `scopes` + `propertyMappings`, so a mapping added in
   the UI would be dropped; unset `scopes` keeps the live mappings;
+- `grant_types`: `[] -> [authorization_code, refresh_token]` on Authentik 2026.8+
+  is the intended fix for JeffResc's missing grant types (see the field map);
 - `accessCodeValidity`, `accessTokenValidity`, `refreshTokenValidity`: only
   listed when the JeffResc object set them. Fields the spec does not set are
   never in the diff: adoption keeps their live values.
