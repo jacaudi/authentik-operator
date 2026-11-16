@@ -277,18 +277,22 @@ func TestUnsetFieldsStayUnset(t *testing.T) {
 // Authentik 2026.5+ rejects every login for). JeffResc v0.2.7+ copies
 // spec.provider.grantTypes, and treats an empty list as the default pair.
 func TestGrantTypes(t *testing.T) {
-	pair := []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
+	const (
+		code, refresh, creds = "authorization_code", "refresh_token", "client_credentials"
+		copied, defaulted    = "copied", "defaulted"
+	)
+	grants := func(g ...authentikiov1alpha1.OAuthGrantType) []authentikiov1alpha1.OAuthGrantType { return g }
+	pair := grants(code, refresh)
 	cases := []struct {
 		name, extra string
 		want        []authentikiov1alpha1.OAuthGrantType
 		note        string
 	}{
-		{"absent: the pair", "", pair, "defaulted"},
-		{"empty: the pair", "    grantTypes: []\n", pair, "defaulted"},
-		{"copied", "    grantTypes: [authorization_code, refresh_token, client_credentials]\n",
-			[]authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token", "client_credentials"}, "copied"},
-		{"copied without duplicates, in order", "    grantTypes: [client_credentials, authorization_code, client_credentials]\n",
-			[]authentikiov1alpha1.OAuthGrantType{"client_credentials", "authorization_code"}, "copied"},
+		{"absent: the pair", "", pair, defaulted},
+		{"empty: the pair", "    grantTypes: []\n", pair, defaulted},
+		{"copied", "    grantTypes: [" + code + ", " + refresh + ", " + creds + "]\n", grants(code, refresh, creds), copied},
+		{"copied without duplicates, in order", "    grantTypes: [" + creds + ", " + code + ", " + creds + "]\n",
+			grants(creds, code), copied},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,7 +327,9 @@ func TestGroupBindings(t *testing.T) {
 		if err == nil {
 			t.Fatal("want an error")
 		}
-		for _, want := range []string{"ns/x", `"media-users"`, `"admins"`, "allows every user", "--accept-unmanaged-group-bindings"} {
+		for _, want := range []string{
+			"ns/x", `"media-users"`, `"admins"`, "allows every user", "--accept-unmanaged-group-bindings",
+		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error lacks %q: %v", want, err)
 			}
@@ -347,8 +353,10 @@ func TestGroupBindings(t *testing.T) {
 				t.Errorf("%s: notice present = %v, want %v:\n%s", f.Name, hasNotice, want, f.Data)
 			}
 		}
-		if !strings.Contains(res.Report, `"media-users"`) || !strings.Contains(res.Report, "--accept-unmanaged-group-bindings") {
-			t.Errorf("report lacks the notice:\n%s", res.Report)
+		for _, want := range []string{`"media-users"`, "--accept-unmanaged-group-bindings"} {
+			if !strings.Contains(res.Report, want) {
+				t.Errorf("report lacks %q:\n%s", want, res.Report)
+			}
 		}
 	})
 	t.Run("a group name cannot break out of the header comment", func(t *testing.T) {
@@ -391,7 +399,8 @@ func TestGroupBindings(t *testing.T) {
 }
 
 func TestGroupKindIsRefusedWithGuidance(t *testing.T) {
-	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\nmetadata: {name: g, namespace: ns}\nspec: {name: g}\n"
+	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\n" +
+		"metadata: {name: g, namespace: ns}\nspec: {name: g}\n"
 	_, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
 	if err == nil {
 		t.Fatal("want an error")
