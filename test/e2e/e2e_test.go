@@ -66,6 +66,10 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 		adoptName       = "e2e-adopt"
 		adoptExisting   = "e2e-adopt-provider" // what JeffResc would have called it
 		adoptRedirect   = "https://e2e-adopt.invalid/callback"
+		// adoptLiveValidity is set on the pre-created provider and not in the
+		// adopting spec: adoption keeps the live value of a field the spec leaves
+		// unset, where the operator's own default would be minutes=5.
+		adoptLiveValidity = "minutes=7"
 	)
 
 	BeforeAll(func(ctx SpecContext) {
@@ -161,6 +165,7 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(fmt.Sscan(aktest.Str(created, "pk"), &pk)).To(Equal(1))
 			_, err = ak.CreateApplication(ctx, "E2E Adopt", adoptName, pk)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(ak.PatchOAuthProvider(ctx, pk, aktest.Obj{"access_token_validity": adoptLiveValidity})).To(Succeed())
 			before, err = ak.OAuthProvider(ctx, pk)
 			Expect(err).NotTo(HaveOccurred())
 			beforeApp, err = ak.ApplicationBySlug(ctx, adoptName)
@@ -171,14 +176,17 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 		It("reports a dry run and changes nothing in Authentik", func(ctx SpecContext) {
 			p := newProvider(adoptName, adoptRedirect)
-			p.Spec.Adoption.Enabled = true
-			p.Spec.Adoption.DryRun = true
-			p.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: adoptExisting}
+			p.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
+			p.Spec.DryRun = true
+			p.Spec.Match = &authentikiov1alpha1.ProviderMatch{Name: adoptExisting}
+			// The pre-created provider has no grant types on 2026.8+, and adoption
+			// keeps what is live for a field the spec leaves unset: set them.
+			p.Spec.GrantTypes = []authentikiov1alpha1.OAuthGrantType{"authorization_code", "refresh_token"}
 			p.Spec.Secret = &authentikiov1alpha1.CredentialsSecretSpec{Name: "e2e-adopt-creds"}
 			Expect(k8s.Create(ctx, p)).To(Succeed())
 			a := newApplication(adoptName, "E2E Adopt", adoptName, adoptName)
-			a.Spec.Adoption.Enabled = true
-			a.Spec.Adoption.DryRun = true
+			a.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
+			a.Spec.DryRun = true
 			Expect(k8s.Create(ctx, a)).To(Succeed())
 
 			providerCondition(ctx, adoptName, metav1.ConditionFalse, "AdoptionDryRun")
@@ -201,14 +209,14 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 
 		It("adopts for real, keeping client_id and client_secret byte for byte", func(ctx SpecContext) {
 			p := getProvider(ctx, Default, adoptName)
-			p.Spec.Adoption.DryRun = false
+			p.Spec.DryRun = false
 			Expect(k8s.Update(ctx, p)).To(Succeed())
 			providerCondition(ctx, adoptName, metav1.ConditionTrue, "Synced")
 			Expect(getProvider(ctx, Default, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 			Expect(getProvider(ctx, Default, adoptName).Status.ProviderPK).To(BeEquivalentTo(pk))
 
 			a := getApplication(ctx, Default, adoptName)
-			a.Spec.Adoption.DryRun = false
+			a.Spec.DryRun = false
 			Expect(k8s.Update(ctx, a)).To(Succeed())
 			applicationCondition(ctx, adoptName, metav1.ConditionTrue)
 			Expect(getApplication(ctx, Default, adoptName).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
@@ -220,11 +228,14 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(aktest.Str(now, "client_id")).To(Equal(aktest.Str(before, "client_id")))
 			Expect(aktest.Str(now, "client_secret")).To(Equal(aktest.Str(before, "client_secret")))
+			Expect(aktest.Str(now, "access_token_validity")).To(Equal(adoptLiveValidity),
+				"adoption overwrote a field the spec leaves unset")
 		})
 
-		// The pre-created provider has whatever grant types Authentik gave it;
-		// adoption writes the spec's. On the 2026.8 leg this login is the
-		// guard for JeffResc #279 (no grant types: "Invalid grant_type").
+		// The pre-created provider has whatever grant types Authentik gave it
+		// (none on 2026.8+); the spec sets them, so adoption writes them. On the
+		// 2026.8 leg this login is the guard for JeffResc #279 (no grant types:
+		// "Invalid grant_type").
 		It("lets a user log in with the adopted credentials", func(ctx SpecContext) {
 			res, err := login(ctx, defaultCreds(secretData(ctx, "e2e-adopt-creds")), adoptRedirect)
 			Expect(err).NotTo(HaveOccurred())
@@ -239,11 +250,11 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			p := newProvider("e2e-miss", "https://e2e-miss.invalid/callback")
-			p.Spec.Adoption.Enabled = true // createIfMissing left unset
-			p.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: "e2e-miss-provider"}
+			p.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt // not AdoptOrCreate: a miss creates nothing
+			p.Spec.Match = &authentikiov1alpha1.ProviderMatch{Name: "e2e-miss-provider"}
 			Expect(k8s.Create(ctx, p)).To(Succeed())
 			a := newApplication("e2e-miss", "E2E Miss", "e2e-miss", "e2e-miss")
-			a.Spec.Adoption.Enabled = true
+			a.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
 			Expect(k8s.Create(ctx, a)).To(Succeed())
 
 			providerCondition(ctx, "e2e-miss", metav1.ConditionFalse, "AdoptionTargetNotFound")
@@ -414,8 +425,8 @@ var _ = Describe("operator against a real Authentik", Ordered, func() {
 			_, err := ak.CreateOAuthProvider(ctx, "e2e-adel-provider", []string{"https://e2e-adel.invalid/callback"})
 			Expect(err).NotTo(HaveOccurred())
 			p := newProvider("e2e-adel", "https://e2e-adel.invalid/callback")
-			p.Spec.Adoption.Enabled = true
-			p.Spec.Adoption.Match = &authentikiov1alpha1.ProviderMatch{Name: "e2e-adel-provider"}
+			p.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyAdopt
+			p.Spec.Match = &authentikiov1alpha1.ProviderMatch{Name: "e2e-adel-provider"}
 			p.Spec.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
 			Expect(k8s.Create(ctx, p)).To(Succeed())
 			providerCondition(ctx, "e2e-adel", metav1.ConditionTrue, "Synced")

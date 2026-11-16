@@ -39,6 +39,13 @@ const (
 	operatorRelease = "jacaudi-authentik-operator"
 	appsNS          = "e2e-apps"
 
+	// adoptionSelector is the chart value adoption.defaultConnectionNamespaceSelector:
+	// the namespaces whose resources may Adopt on the default connection (the
+	// chart default, empty, denies every namespace). The adoption specs live in
+	// appsNS and the migration scenario's converted objects in migratedNS. Every
+	// helm install passes it: an upgrade without --reuse-values resets values.
+	adoptionSelector = "kubernetes.io/metadata.name in (" + appsNS + ", " + migratedNS + ")"
+
 	bootstrapUser     = "akadmin"
 	bootstrapPassword = "e2e-bootstrap-password-not-a-secret"
 	bootstrapToken    = "e2e-bootstrap-token-not-a-secret-0123456789"

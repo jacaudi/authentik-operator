@@ -30,8 +30,12 @@ real server.
   - [x] a full OIDC authorization-code login succeeds (guards #279 grant_types;
         headless, PKCE, id_token `iss`/`aud`/`nonce` checked, userinfo called)
   - [x] adoption of a pre-created app + `<slug>-provider` keeps client_id/secret
-        byte for byte: dry run (Authentik unchanged, no Secret), real adoption,
-        login with the adopted credentials; adopt-only miss creates nothing
+        byte for byte (`managementPolicy: Adopt`): dry run (Authentik unchanged,
+        no Secret), real adoption that leaves a field the spec does not set at
+        its live value, login with the adopted credentials; an Adopt miss
+        creates nothing. The chart installs with
+        `adoption.defaultConnectionNamespaceSelector` for the test namespaces
+        (the default-connection adoption gate)
   - [x] Retain vs Delete on CR deletion, defaults and explicit overrides
         (Created+Retain keeps, Adopted+Delete deletes)
   - [x] drift: change a provider and an application field in Authentik, the

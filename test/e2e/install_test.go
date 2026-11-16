@@ -149,7 +149,8 @@ func startAuthentikAccess(ctx context.Context) (*portForward, *aktest.API) {
 
 // installOperator installs (or upgrades) the operator from the in-repo chart
 // with a default connection to url (also the external URL, so rendered
-// Secrets carry the address the test dials). extra are further helm args.
+// Secrets carry the address the test dials) and adoption allowed in the test
+// namespaces (adoptionSelector). extra are further helm args.
 func installOperator(ctx context.Context, url string, extra ...string) error {
 	repo, tag := imageParts(managerImage)
 	args := []string{"upgrade", "--install", operatorRelease, "./dist/chart",
@@ -160,6 +161,8 @@ func installOperator(ctx context.Context, url string, extra ...string) error {
 		setString, "authentik.url=" + url,
 		setString, "authentik.externalUrl=" + url,
 		setString, "authentik.tokenSecret.name=authentik-api",
+		// --set splits on commas: the selector's own must be escaped.
+		setString, "adoption.defaultConnectionNamespaceSelector=" + strings.ReplaceAll(adoptionSelector, ",", `\,`),
 	}
 	args = append(args, extra...)
 	if _, err := helm(ctx, args...); err != nil {

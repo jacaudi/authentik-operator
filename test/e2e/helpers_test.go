@@ -42,8 +42,10 @@ const (
 	pokeAnnotation   = "e2e.authentik.io/poke"
 )
 
-// newProvider returns a provider CR with the API server's defaults applied on
-// create (scopes, grant types, validities, ...), as a user's manifest would.
+// newProvider returns a provider CR with only the required fields, as a user's
+// manifest would. The schema carries no defaults for the rest: the operator
+// applies them when it creates the object (and an adopted object keeps its
+// live values).
 func newProvider(name, redirect string) *authentikiov1alpha1.AuthentikOAuthProvider {
 	return &authentikiov1alpha1.AuthentikOAuthProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appsNS},

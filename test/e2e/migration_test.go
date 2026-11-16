@@ -342,6 +342,13 @@ stringData:
 		Expect(installOperator(ctx, authentikURL)).To(Succeed())
 		Expect(deploymentReady(ctx, operatorNS, operatorRelease+"-controller-manager")).To(BeTrue())
 		Expect(deploymentReady(ctx, jrNS, jrRelease)).To(BeTrue())
+
+		By("the chart value adoption.defaultConnectionNamespaceSelector reached the operator, allowing " + migratedNS)
+		args, err := kubectl(ctx, "-n", operatorNS, "get", "deploy", operatorRelease+"-controller-manager",
+			"-o", "jsonpath={.spec.template.spec.containers[0].args}")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(args).To(ContainSubstring("--default-connection-adoption-namespace-selector="))
+		Expect(args).To(ContainSubstring(migratedNS))
 	})
 
 	It("runbook 2: backs up, converts with --secret-suffix -v2 and applies the template", func(ctx SpecContext) {
@@ -397,7 +404,7 @@ stringData:
 	})
 
 	It("runbook 3: takes the provider, then the application, out of dry run", func(ctx SpecContext) {
-		patch := `{"spec":{"adoption":{"dryRun":false}}}`
+		patch := `{"spec":{"dryRun":false}}`
 		_, err := kubectl(ctx, "-n", migratedNS, "patch", "authentikoauthproviders.authentik.io", jrApp,
 			"--type", "merge", "-p", patch)
 		Expect(err).NotTo(HaveOccurred())
@@ -410,7 +417,8 @@ stringData:
 		Expect(p).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 		Expect(a).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 		if atLeast(2026, 8) {
-			// Adoption wrote the spec's grant types: the fix for #279.
+			// The converter wrote grantTypes (JeffResc never sends them) and
+			// adoption writes the fields the spec sets: the fix for #279.
 			after, err := ak.OAuthProvider(ctx, pk)
 			Expect(err).NotTo(HaveOccurred())
 			grants, _ := after["grant_types"].([]any)
@@ -508,12 +516,22 @@ stringData:
 		Expect(res.UserInfo["preferred_username"]).To(Equal(bootstrapUser))
 	})
 
-	It("runbook 7: leaves adopt-only mode and a reconcile then writes nothing", func(ctx SpecContext) {
-		patch := `{"spec":{"adoption":{"enabled":false}}}`
-		for _, kind := range []string{"authentikoauthproviders.authentik.io", "authentikapplications.authentik.io"} {
+	It("runbook 7: returns to the default policy and a reconcile then writes nothing", func(ctx SpecContext) {
+		// Removing the fields returns the objects to Create (the schema default);
+		// only the provider has match. The admission rules reject match and
+		// dryRun without Adopt, so they go in the same patch.
+		patches := map[string]string{
+			"authentikoauthproviders.authentik.io": `{"spec":{"managementPolicy":null,"match":null,"dryRun":null}}`,
+			"authentikapplications.authentik.io":   `{"spec":{"managementPolicy":null,"dryRun":null}}`,
+		}
+		for kind, patch := range patches {
 			_, err := kubectl(ctx, "-n", migratedNS, "patch", kind, jrApp, "--type", "merge", "-p", patch)
 			Expect(err).NotTo(HaveOccurred())
 		}
+		var back authentikiov1alpha1.AuthentikOAuthProvider
+		Expect(k8s.Get(ctx, newKey(jrApp), &back)).To(Succeed())
+		Expect(back.Spec.ManagementPolicy).To(Equal(authentikiov1alpha1.ManagementPolicyCreate))
+		Expect(back.Spec.Match).To(BeNil())
 		wantReady(ctx, metav1.ConditionTrue, "Synced")
 		wantAppReady(ctx)
 		p, a := provenance(ctx, Default)
