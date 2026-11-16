@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -79,6 +82,10 @@ type AuthentikOAuthProviderReconciler struct {
 	// APIReader reads Secrets uncached (the operator has no list/watch on
 	// Secrets); use the manager's API reader.
 	APIReader client.Reader
+	// AdoptionNamespaceSelector picks the namespaces whose resources may
+	// adopt or observe existing providers on the default connection. nil
+	// denies every namespace. See adoptionGate.
+	AdoptionNamespaceSelector labels.Selector
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders,verbs=get;list;watch;create;update;patch;delete
@@ -94,11 +101,11 @@ type AuthentikOAuthProviderReconciler struct {
 // Reconcile makes the OAuth2 provider in Authentik match the spec.
 //
 // Identity: the provider is tracked by status.providerPk once this resource
-// created it. A pre-existing provider with the same name is never taken
-// over unless spec.adoption.enabled: that is reported as a Conflict. A
-// provider found while status.pendingCreate shows this resource's own create
-// was in flight, and carrying the client ID this resource sends, is its own
-// (Created), not an adoption.
+// created or adopted it. A pre-existing provider with the same name is never
+// taken over under managementPolicy Create: that is reported as a Conflict.
+// A provider found while status.pendingCreate shows this resource's own
+// create was in flight, and carrying the client ID this resource sends, is
+// its own (Created), not an adoption.
 func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var p authentikiov1alpha1.AuthentikOAuthProvider
 	if err := r.Get(ctx, req.NamespacedName, &p); err != nil {
@@ -144,6 +151,10 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 // before the create request is sent.
 func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (ctrl.Result, error) {
+	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, p.Namespace,
+		p.Spec.AuthentikRef, p.Spec.ManagementPolicy); err != nil {
+		return r.failed(p, err)
+	}
 	resolved, err := resolve(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 	if err != nil {
 		return r.failed(p, err)
@@ -156,8 +167,14 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	p.Status.PendingCreate = ""
 	p.Status.ClientID = got.GetClientId()
 	p.Status.ObservedGeneration = p.Generation
-	r.setReady(p, metav1.ConditionTrue, reasonSynced,
-		fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
+	if readOnly(p.Spec.ManagementPolicy) {
+		r.setReady(p, metav1.ConditionTrue, reasonReadOnly,
+			fmt.Sprintf("OAuth2 provider %q (pk %d) found; observed read only", got.Name, got.Pk))
+	} else {
+		meta.RemoveStatusCondition(&p.Status.Conditions, ConditionDrifted)
+		r.setReady(p, metav1.ConditionTrue, reasonSynced,
+			fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
+	}
 
 	// The credentials Secret has its own condition and never affects Ready
 	// (see ConditionCredentialsReady).
@@ -183,9 +200,12 @@ func (r *AuthentikOAuthProviderReconciler) syncProvider(ctx context.Context, c *
 	if err != nil {
 		return nil, err
 	}
-	adopted := got != nil && p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted
+	// An adopted provider, and any provider a ReadOnly resource observes, is
+	// compared on the fields the spec sets only.
+	observing := readOnly(p.Spec.ManagementPolicy)
+	adopted := got != nil && (observing || p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted)
 	if !adopted {
-		if err := resolveDefaultSigningKey(ctx, c, p, want); err != nil {
+		if err := applyCreateDefaults(ctx, c, p, want); err != nil {
 			return nil, err
 		}
 	}
@@ -195,47 +215,66 @@ func (r *AuthentikOAuthProviderReconciler) syncProvider(ctx context.Context, c *
 	if adopted {
 		adoptionView(p, want, got)
 	}
+	if observing {
+		patch, changed := oauth2ProviderPatch(want, got)
+		recordDrift(&p.Status.Conditions, p.Generation, patch, got, changed)
+		return got, nil
+	}
 	return r.updateProvider(ctx, c, p, want, got)
 }
 
+// providerByName is a memoised lookup of the desired name: the same name is
+// needed to recover a lost create, to detect a Conflict and to pick the
+// adoption target, and must cost one request.
+type providerByName = func() (*api.OAuth2Provider, error)
+
 // observeProvider finds the provider this resource manages: by
 // status.providerPk, then for a create whose outcome was lost by name, then
-// (only with spec.adoption.enabled) the adoption target. nil means it has to
-// be created; an existing provider that is none of these is a Conflict.
+// (policies that may adopt) the adoption target. nil means it has to be
+// created; an existing provider that is none of these is a Conflict.
 func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
 	persist func() error) (*api.OAuth2Provider, error) {
 	log := logf.FromContext(ctx)
 	name := want.Name
+	byName := sync.OnceValues(func() (*api.OAuth2Provider, error) { return c.FindOAuth2ProviderByName(ctx, name) })
+
 	if p.Status.ProviderPK != 0 {
 		got, err := r.observeTracked(ctx, c, p)
 		if err != nil || got != nil {
 			return got, err
 		}
-	}
-
-	existing, err := c.FindOAuth2ProviderByName(ctx, name)
-	if err != nil && !authentik.IsNotFound(err) && !errors.Is(err, authentik.ErrAmbiguous) {
-		return nil, err
-	}
-	if err == nil && p.Status.PendingCreate == name && existing.GetClientId() == expectedClientID(p) {
-		// Ours: a previous create succeeded but its outcome was lost. The
-		// marker proves a create was sent; the client ID that it was this
-		// one that landed (a pinned ID could also be someone else's). This
-		// is checked before adoption so a recovered own create is never
-		// classified as Adopted.
-		log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
-		p.Status.ProviderPK = existing.Pk
-		p.Status.ClientID = existing.GetClientId()
-		p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
-		return existing, nil
-	}
-
-	if !p.Spec.Adoption.Enabled {
+		// A provider this resource created vanished: it is recreated whatever
+		// the policy and match say, unless another provider took its name.
+		existing, err := byName()
 		return nil, providerConflict(name, existing, err)
 	}
 
-	target, err := r.adoptionTarget(ctx, c, p, providerLookup{name: name, got: existing, err: err})
+	if p.Status.PendingCreate == name {
+		existing, err := byName()
+		if err != nil && !authentik.IsNotFound(err) && !errors.Is(err, authentik.ErrAmbiguous) {
+			return nil, err
+		}
+		if err == nil && existing.GetClientId() == expectedClientID(p) {
+			// Ours: a previous create succeeded but its outcome was lost. The
+			// marker proves a create was sent; the client ID that it was this
+			// one that landed (a pinned ID could also be someone else's). This
+			// is checked before adoption so a recovered own create is never
+			// classified as Adopted.
+			log.Info("Recovered OAuth2 provider created by an earlier reconcile", "pk", existing.Pk)
+			p.Status.ProviderPK = existing.Pk
+			p.Status.ClientID = existing.GetClientId()
+			p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
+			return existing, nil
+		}
+	}
+
+	if !p.Spec.ManagementPolicy.MayAdopt() {
+		existing, err := byName()
+		return nil, providerConflict(name, existing, err)
+	}
+
+	target, err := r.adoptionTarget(ctx, c, p, name, byName)
 	if err != nil || target == nil {
 		return nil, err
 	}
@@ -243,9 +282,9 @@ func (r *AuthentikOAuthProviderReconciler) observeProvider(ctx context.Context, 
 }
 
 // observeTracked looks up the provider recorded in status.providerPk. It
-// returns it when it is still this resource's own, or nil to carry on
-// looking when a provider this resource created no longer exists (its pk
-// and client ID are then cleared; a vanished adopted one is an error).
+// returns it when it is still this resource's own. nil, nil means a provider
+// this resource created no longer exists (its pk and client ID are cleared;
+// the caller recreates it). A vanished adopted or observed one is an error.
 func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2Provider, error) {
 	log := logf.FromContext(ctx)
@@ -261,28 +300,34 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 				"refusing to modify it. If this resource should manage a new provider, clear status.providerPk, "+
 				"status.provenance and status.clientId",
 			pk, got.GetClientId(), p.Status.ClientID)
-	case err == nil && p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
-		return got, r.yieldToLower(ctx, p)
 	case err == nil:
+		if err := r.yieldIfOutranked(ctx, r.Client, true, p); err != nil {
+			return nil, err
+		}
 		return got, nil
 	case authentik.IsNotFound(err):
-		if p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted {
+		switch {
+		case p.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted:
 			// Recreating would mint new credentials, which is what adopting
 			// avoided. The pk stays in status so this is not forgotten.
 			return nil, condErrf(reasonAdoptionTargetNotFound,
 				"the adopted OAuth2 provider pk %d no longer exists in Authentik; not recreating it (that would "+
 					"issue new client credentials). Restore it, or clear status.providerPk, status.provenance and "+
-					"status.clientId and set spec.adoption.createIfMissing to create a new one", pk)
+					"status.clientId and set spec.managementPolicy to AdoptOrCreate (or Create) to create a new one", pk)
+		case readOnly(p.Spec.ManagementPolicy):
+			return nil, condErrf(reasonAdoptionTargetNotFound,
+				"the OAuth2 provider pk %d no longer exists in Authentik; managementPolicy ReadOnly never "+
+					"writes to Authentik, so it is not recreated", pk)
 		}
 		log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
 		r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
 			"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
 		p.Status.ProviderPK = 0
 		p.Status.ClientID = ""
+		return nil, nil
 	default:
 		return nil, err
 	}
-	return nil, nil
 }
 
 // providerConflict is the outcome of finding a provider this resource may not
@@ -290,29 +335,31 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 // create.
 func providerConflict(name string, existing *api.OAuth2Provider, err error) error {
 	if err != nil && !errors.Is(err, authentik.ErrAmbiguous) {
-		return nil
+		if authentik.IsNotFound(err) {
+			return nil
+		}
+		return err
 	}
 	msg := fmt.Sprintf("an OAuth2 provider named %q already exists in Authentik and was not created by "+
-		"this resource; set spec.adoption.enabled to adopt it", name)
+		"this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it over or observe it",
+		name)
 	if existing != nil {
 		msg += fmt.Sprintf(" (existing pk %d)", existing.Pk)
 	}
 	return condErr(reasonConflict, errors.New(msg))
 }
 
-// missingProvider decides what a miss means when adoption is enabled and no
-// provider matched: nil to create (a provider this resource created itself
-// that vanished, or createIfMissing), otherwise an error that writes nothing.
+// missingProvider decides what a miss means when the policy may adopt and no
+// provider matched: nil to create (AdoptOrCreate), otherwise an error that
+// writes nothing.
 func (r *AuthentikOAuthProviderReconciler) missingProvider(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	which string) error {
-	explicit := p.Spec.Adoption.Match != nil && !p.Spec.Adoption.CreateIfMissing
 	switch {
-	case p.Status.Provenance == authentikiov1alpha1.ProvenanceCreated && !explicit:
-		return nil // a provider this resource created vanished: recreate
-	case !p.Spec.Adoption.CreateIfMissing:
-		return condErrf(reasonAdoptionTargetNotFound, "no OAuth2 provider %s exists in Authentik to adopt; nothing "+
-			"was written. Fix spec.adoption.match, or set spec.adoption.createIfMissing to create one", which)
-	case p.Spec.Adoption.DryRun:
+	case !p.Spec.ManagementPolicy.MayCreate():
+		return condErrf(reasonAdoptionTargetNotFound, "no OAuth2 provider %s exists in Authentik to %s; nothing "+
+			"was written. Fix spec.match (or the name), or set spec.managementPolicy to AdoptOrCreate to create one",
+			which, adoptVerb(p.Spec.ManagementPolicy))
+	case p.Spec.DryRun:
 		return condErrf(reasonAdoptionDryRun, "dry run: no existing OAuth2 provider %s; a new one would be "+
 			"created; nothing was written", which)
 	}
@@ -321,20 +368,13 @@ func (r *AuthentikOAuthProviderReconciler) missingProvider(p *authentikiov1alpha
 	return nil
 }
 
-// providerLookup is the result of looking a provider up by the desired name.
-type providerLookup struct {
-	name string
-	got  *api.OAuth2Provider
-	err  error
-}
-
-// adoptionTarget picks the provider to adopt. byName is the lookup of the
-// desired name. With no spec.adoption.match, that is the
-// candidate, and nil (create) when absent. An explicit match must resolve:
-// creating instead would mint new credentials, the thing adoption avoids.
+// adoptionTarget picks the provider to adopt or observe. With no spec.match
+// the provider named like the resource is the candidate. A miss is reported
+// (or, under AdoptOrCreate, creates): creating on a miss is how a typo mints
+// new credentials, which is why only AdoptOrCreate does it.
 func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c *authentik.Client,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, byName providerLookup) (*api.OAuth2Provider, error) {
-	m := p.Spec.Adoption.Match
+	p *authentikiov1alpha1.AuthentikOAuthProvider, name string, byName providerByName) (*api.OAuth2Provider, error) {
+	m := p.Spec.Match
 	var (
 		got   *api.OAuth2Provider
 		err   error
@@ -342,12 +382,14 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 	)
 	switch {
 	case m == nil:
-		got, err, which = byName.got, byName.err, fmt.Sprintf("named %q", byName.name)
+		got, err = byName()
+		which = fmt.Sprintf("named %q", name)
 	case m.PK != 0:
 		got, err = c.GetOAuth2Provider(ctx, m.PK)
 		which = fmt.Sprintf("with pk %d", m.PK)
-	case m.Name == byName.name:
-		got, err, which = byName.got, byName.err, fmt.Sprintf("named %q", m.Name)
+	case m.Name == name:
+		got, err = byName()
+		which = fmt.Sprintf("named %q", m.Name)
 	default:
 		got, err = c.FindOAuth2ProviderByName(ctx, m.Name)
 		which = fmt.Sprintf("named %q", m.Name)
@@ -357,7 +399,7 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 		return got, nil
 	case errors.Is(err, authentik.ErrAmbiguous):
 		return nil, condErrf(reasonConflict, "several OAuth2 providers %s exist in Authentik; "+
-			"select one with spec.adoption.match.pk", which)
+			"select one with spec.match.pk", which)
 	case authentik.IsNotFound(err):
 		return nil, r.missingProvider(p, which)
 	default:
@@ -372,25 +414,22 @@ func (r *AuthentikOAuthProviderReconciler) adoptionTarget(ctx context.Context, c
 func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest, target *api.OAuth2Provider,
 	persist func() error) (*api.OAuth2Provider, error) {
-	if other, err := r.otherTracking(ctx, p, target.Pk); err != nil {
+	// Any other holder, terminating ones included, refuses the adoption. This
+	// read may be served by a lagging cache; the re-check after the claim is
+	// persisted below is the authoritative one.
+	if others, err := r.claimants(ctx, r.Client, true, p, target.Pk); err != nil {
 		return nil, err
-	} else if other != "" {
+	} else if len(others) > 0 {
 		return nil, condErrf(reasonConflict, "OAuth2 provider pk %d is already managed by %s; "+
-			"two resources cannot manage one provider", target.Pk, other)
+			"two resources cannot manage one provider", target.Pk, others[0])
 	}
-	if p.Spec.Adoption.DryRun {
+	if p.Spec.DryRun {
 		view := *want
 		adoptionView(p, &view, target)
 		patch, changed := oauth2ProviderPatch(&view, target)
-		msg := fmt.Sprintf("dry run: would adopt OAuth2 provider %q (pk %d); ", target.Name, target.Pk)
-		if len(changed) == 0 {
-			msg += "would change no fields"
-		} else {
-			msg += "would change " + describeChanges(patch, target)
-		}
-		msg += "; nothing was written. Set spec.adoption.dryRun to false to adopt"
-		if cond := meta.FindStatusCondition(p.Status.Conditions, ConditionReady); cond == nil ||
-			cond.Reason != reasonAdoptionDryRun || cond.Message != msg {
+		msg, announce := dryRunReport(p.Status.Conditions,
+			fmt.Sprintf("OAuth2 provider %q (pk %d)", target.Name, target.Pk), patch, target, changed)
+		if announce {
 			r.event(p, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 		}
 		return nil, condErr(reasonAdoptionDryRun, errors.New(msg))
@@ -402,56 +441,80 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 	if err := persist(); err != nil {
 		return nil, err
 	}
-	// Re-check after the claim is visible: a resource that passed the
-	// pre-check at the same time is settled by UID. No Authentik write has
-	// happened yet.
-	if err := r.yieldToLower(ctx, p); err != nil {
+	// Re-check after the claim is persisted, reading the API rather than the
+	// informer cache, which need not hold another resource's just-written
+	// claim: a resource that passed the pre-check at the same time is settled
+	// by the tie-break. No Authentik write has happened yet.
+	if err := r.yieldIfOutranked(ctx, r.APIReader, false, p); err != nil {
 		return nil, err
 	}
-	r.event(p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
-		target.Name, target.Pk)
+	if readOnly(p.Spec.ManagementPolicy) {
+		r.event(p, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing OAuth2 provider %q (pk %d) read only",
+			target.Name, target.Pk)
+	} else {
+		r.event(p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
+			target.Name, target.Pk)
+	}
 	return target, nil
 }
 
-// yieldToLower clears this resource's claim and reports a Conflict when
-// another resource tracks the same provider and has the lower UID. It
-// settles the race in which two resources pass the pre-adoption check
-// together: the lower UID keeps the provider, the other backs off.
-func (r *AuthentikOAuthProviderReconciler) yieldToLower(ctx context.Context,
+// selfClaim is p's own hold on its provider.
+func selfClaim(p *authentikiov1alpha1.AuthentikOAuthProvider) claim {
+	return claim{namespace: p.Namespace, name: p.Name, uid: p.UID, provenance: p.Status.Provenance,
+		ref: p.Spec.AuthentikRef}
+}
+
+// claimants lists the other provider resources, terminating ones included,
+// that track pk on the same Authentik as p. rd is the cached client for the
+// routine check, which lists through the field index (cached true), and the
+// API reader where a stale answer is not good enough, which cannot filter
+// on a custom field and lists everything.
+func (r *AuthentikOAuthProviderReconciler) claimants(ctx context.Context, rd client.Reader, cached bool,
+	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) ([]claim, error) {
+	var opts []client.ListOption
+	if cached {
+		opts = append(opts, client.MatchingFields{indexProviderPK: strconv.Itoa(int(pk))})
+	}
+	var list authentikiov1alpha1.AuthentikOAuthProviderList
+	if err := rd.List(ctx, &list, opts...); err != nil {
+		return nil, fmt.Errorf("list AuthentikOAuthProviders: %w", err)
+	}
+	var candidates []claim
+	for i := range list.Items {
+		if o := &list.Items[i]; o.UID != p.UID && o.Status.ProviderPK == pk {
+			candidates = append(candidates, selfClaim(o))
+		}
+	}
+	return holders(ctx, r.Connections, selfClaim(p), candidates)
+}
+
+// yieldIfOutranked releases this resource's claim and reports a Conflict when
+// another resource holding the same provider outranks it (see claim.outranks).
+// It settles the race in which two resources pass the pre-adoption check
+// together, and a Created resource that outranks an adopter keeps the
+// provider. The loser also deletes the credentials Secret it rendered, which
+// holds the live client secret. rd is the reader the holders are listed with.
+func (r *AuthentikOAuthProviderReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader, cached bool,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) error {
-	other, otherUID, err := r.trackingBy(ctx, p, p.Status.ProviderPK)
-	if err != nil || other == "" || otherUID >= p.UID {
+	others, err := r.claimants(ctx, rd, cached, p, p.Status.ProviderPK)
+	if err != nil {
 		return err
 	}
+	winner, lost := outrankedBy(selfClaim(p), others)
+	if !lost {
+		return nil
+	}
+	if prev := p.Status.SecretName; prev != "" {
+		if err := r.deleteOwnedSecret(ctx, p, prev); err != nil {
+			return err
+		}
+		p.Status.SecretName = ""
+	}
+	meta.RemoveStatusCondition(&p.Status.Conditions, ConditionCredentialsReady)
 	pk := p.Status.ProviderPK
 	p.Status.Provenance, p.Status.ProviderPK, p.Status.ClientID = "", 0, ""
 	return condErrf(reasonConflict, "OAuth2 provider pk %d is also claimed by %s, which takes precedence; "+
-		"this resource released it", pk, other)
-}
-
-// otherTracking names another provider resource (namespace/name) that
-// already tracks pk on the same connection, or "".
-func (r *AuthentikOAuthProviderReconciler) otherTracking(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, error) {
-	name, _, err := r.trackingBy(ctx, p, pk)
-	return name, err
-}
-
-// trackingBy is otherTracking that also returns the other resource's UID.
-func (r *AuthentikOAuthProviderReconciler) trackingBy(ctx context.Context,
-	p *authentikiov1alpha1.AuthentikOAuthProvider, pk int32) (string, types.UID, error) {
-	var list authentikiov1alpha1.AuthentikOAuthProviderList
-	if err := r.List(ctx, &list); err != nil {
-		return "", "", fmt.Errorf("list AuthentikOAuthProviders: %w", err)
-	}
-	for i := range list.Items {
-		o := &list.Items[i]
-		if o.UID != p.UID && o.Status.ProviderPK == pk && o.DeletionTimestamp.IsZero() &&
-			sameConnection(o.Namespace, o.Spec.AuthentikRef, p.Namespace, p.Spec.AuthentikRef) {
-			return o.Namespace + "/" + o.Name, o.UID, nil
-		}
-	}
-	return "", "", nil
+		"this resource released it", pk, winner)
 }
 
 // createProvider creates the provider, recording status.pendingCreate first
@@ -517,7 +580,7 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 	log := logf.FromContext(ctx)
 
 	if pk := p.Status.ProviderPK; pk != 0 && authentikiov1alpha1.EffectiveDeletionPolicy(
-		p.Spec.DeletionPolicy, p.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
+		p.Spec.ManagementPolicy, p.Spec.DeletionPolicy, p.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining OAuth2 provider in Authentik", "pk", pk)
 		if p.Status.Provenance == "" && p.Spec.DeletionPolicy == "" {
 			r.event(p, corev1.EventTypeWarning, "Retained", "Delete",
@@ -527,6 +590,13 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 				"OAuth2 provider pk %d left in Authentik (deletionPolicy Retain)", pk)
 		}
 	} else if pk != 0 {
+		if p.Status.Provenance == "" {
+			// Undecided provenance resolves to Retain unless the spec says
+			// Delete, so reaching here means an explicit Delete.
+			r.event(p, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+				"Deleting OAuth2 provider pk %d on an explicit deletionPolicy Delete although this resource's "+
+					"provenance is undecided: it may not have created it", pk)
+		}
 		resolved, err := resolveForDeletion(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)
 		switch {
 		case err == nil:
@@ -619,9 +689,7 @@ func (r *AuthentikOAuthProviderReconciler) setReady(p *authentikiov1alpha1.Authe
 //nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
 func (r *AuthentikOAuthProviderReconciler) event(p *authentikiov1alpha1.AuthentikOAuthProvider,
 	eventType, reason, action, note string, args ...any) {
-	if r.Recorder != nil {
-		r.Recorder.Eventf(p, nil, eventType, reason, action, note, args...)
-	}
+	emit(r.Recorder, p, eventType, reason, action, note, args...)
 }
 
 func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
@@ -640,6 +708,9 @@ func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AuthentikOAuthProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := indexProviderPKs(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikOAuthProvider{}).
 		// An application being attached (or renamed) changes the
