@@ -5,21 +5,19 @@ metadata:
   name: gitlab
   namespace: sso
 spec:
-  accessCodeValidity: minutes=1
   accessTokenValidity: minutes=10
-  adoption:
-    dryRun: false
-    enabled: true
-    match:
-      name: gitlab-provider
   authentikRef:
     name: main
   authorizationFlow: default-provider-authorization-implicit-consent
   clientType: confidential
   deletionPolicy: Retain
+  dryRun: false
   includeClaimsInIdToken: true
   invalidationFlow: default-provider-invalidation-flow
   issuerMode: per_provider
+  managementPolicy: Adopt
+  match:
+    name: gitlab-provider
   name: gitlab-provider
   redirectUris:
   - url: https://gitlab.example.com/users/auth/openid_connect/callback
@@ -32,5 +30,4 @@ spec:
     name: gitlab-oidc-credentials
     templateRef:
       name: jeffresc-a4704637
-  signingKey: authentik Self-signed Certificate
   subMode: hashed_user_id

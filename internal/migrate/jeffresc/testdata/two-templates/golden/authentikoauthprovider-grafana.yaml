@@ -5,30 +5,17 @@ metadata:
   name: grafana
   namespace: monitoring
 spec:
-  accessCodeValidity: minutes=1
-  accessTokenValidity: minutes=5
-  adoption:
-    dryRun: true
-    enabled: true
-    match:
-      name: grafana-provider
   authorizationFlow: default-provider-authorization-implicit-consent
-  clientType: confidential
   deletionPolicy: Retain
-  includeClaimsInIdToken: true
+  dryRun: true
   invalidationFlow: default-provider-invalidation-flow
-  issuerMode: per_provider
+  managementPolicy: Adopt
+  match:
+    name: grafana-provider
   name: grafana-provider
   redirectUris:
   - url: https://grafana.example.com/login/generic_oauth
-  refreshTokenValidity: days=30
-  scopes:
-  - openid
-  - profile
-  - email
   secret:
     name: grafana-oauth-env
     templateRef:
       name: jeffresc-70f59156
-  signingKey: authentik Self-signed Certificate
-  subMode: hashed_user_id

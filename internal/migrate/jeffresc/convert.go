@@ -27,7 +27,7 @@ import (
 
 // Options control the conversion.
 type Options struct {
-	// DryRunAdoption sets adoption.dryRun on every emitted object.
+	// DryRunAdoption sets spec.dryRun on every emitted provider and application.
 	DryRunAdoption bool
 	// Namespace is the namespace of the emitted namespaced objects; empty
 	// keeps each source object's namespace.
@@ -62,8 +62,9 @@ type File struct {
 type Result struct {
 	// Files are the emitted objects, sorted by name.
 	Files []File
-	// Report is a human-readable account of what the new operator will
-	// default, for the person running the migration.
+	// Report is a human-readable account of the conversion (how adoption
+	// treats unset fields, the Secret names, the adoption-gate selector to
+	// set), for the person running the migration.
 	Report string
 }
 

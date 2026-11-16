@@ -5,14 +5,11 @@ metadata:
   name: grafana
   namespace: authentik-operator-system
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   metaLaunchUrl: https://grafana.example.com
   name: Grafana
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: grafana

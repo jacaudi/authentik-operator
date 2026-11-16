@@ -5,13 +5,10 @@ metadata:
   name: grafana
   namespace: monitoring
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   name: Grafana
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: grafana

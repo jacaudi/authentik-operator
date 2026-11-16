@@ -17,7 +17,7 @@ limitations under the License.
 // Command convert-jeffresc converts JeffResc/authentik-k8s-operator
 // resources (AuthentikApplication, AuthentikOAuth2Application) into this
 // operator's AuthentikOAuthProvider, AuthentikApplication and
-// AuthentikCredentialsTemplate, with adoption enabled. See
+// AuthentikCredentialsTemplate, with managementPolicy Adopt. See
 // docs/migration-from-jeffresc.md.
 package main
 
@@ -46,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var opts jeffresc.Options
 	force := fs.Bool("force", false, "write into a non-empty --out directory")
 	out := fs.String("out", "", "directory to write the converted objects to (required)")
-	fs.BoolVar(&opts.DryRunAdoption, "dry-run-adoption", true, "set adoption.dryRun on every converted object")
+	fs.BoolVar(&opts.DryRunAdoption, "dry-run-adoption", true, "set spec.dryRun on every converted provider and application")
 	fs.StringVar(&opts.Namespace, "namespace", "",
 		"namespace for the converted objects (default: each source's namespace)")
 	fs.StringVar(&opts.AuthentikRef, "authentik-ref", "", "name of an AuthentikDeployment to reference as authentikRef")

@@ -17,10 +17,16 @@ limitations under the License.
 package jeffresc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	sigsyaml "sigs.k8s.io/yaml"
+
+	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 )
 
 const testSource = "in.yaml"
@@ -186,5 +192,148 @@ func TestEmptyLabelsEqualAbsent(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("want one shared template, got %d", n)
+	}
+}
+
+// convertApp converts one JeffResc application and returns its provider and
+// application, decoded strictly, with the raw provider YAML.
+func convertApp(t *testing.T, in string, opts Options) (
+	prov *authentikiov1alpha1.AuthentikOAuthProvider, application *authentikiov1alpha1.AuthentikApplication, raw string,
+) {
+	t.Helper()
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov = &authentikiov1alpha1.AuthentikOAuthProvider{}
+	application = &authentikiov1alpha1.AuthentikApplication{}
+	for _, f := range res.Files {
+		var err error
+		switch {
+		case strings.HasPrefix(f.Name, "authentikoauthprovider-"):
+			raw = string(f.Data)
+			err = sigsyaml.UnmarshalStrict(f.Data, prov)
+		case strings.HasPrefix(f.Name, "authentikapplication-"):
+			err = sigsyaml.UnmarshalStrict(f.Data, application)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return prov, application, raw
+}
+
+// withProvider adds provider fields to minimalApp.
+func withProvider(extra string) string {
+	return strings.Replace(app("x", "ns"), "    redirectUris: [\"https://x.example.com/cb\"]\n",
+		"    redirectUris: [\"https://x.example.com/cb\"]\n"+extra, 1)
+}
+
+func TestEmitsAdoptPolicy(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		name := map[bool]string{true: "dryRun", false: "live"}[dryRun]
+		t.Run(name, func(t *testing.T) {
+			prov, application, raw := convertApp(t, app("x", "ns"), Options{DryRunAdoption: dryRun})
+			if prov.Spec.ManagementPolicy != authentikiov1alpha1.ManagementPolicyAdopt ||
+				application.Spec.ManagementPolicy != authentikiov1alpha1.ManagementPolicyAdopt {
+				t.Errorf("managementPolicy: provider %q, application %q, want Adopt",
+					prov.Spec.ManagementPolicy, application.Spec.ManagementPolicy)
+			}
+			if prov.Spec.Match == nil || prov.Spec.Match.Name != "x-provider" {
+				t.Errorf("match = %+v, want name x-provider", prov.Spec.Match)
+			}
+			if prov.Spec.DeletionPolicy != authentikiov1alpha1.DeletionPolicyRetain ||
+				application.Spec.DeletionPolicy != authentikiov1alpha1.DeletionPolicyRetain {
+				t.Error("deletionPolicy is not Retain")
+			}
+			if prov.Spec.DryRun != dryRun || application.Spec.DryRun != dryRun {
+				t.Errorf("dryRun: provider %v, application %v, want %v", prov.Spec.DryRun, application.Spec.DryRun, dryRun)
+			}
+			// dryRun is written out even when false, so it is easy to flip.
+			if want := fmt.Sprintf("dryRun: %t", dryRun); !strings.Contains(raw, want) {
+				t.Errorf("provider YAML lacks %q:\n%s", want, raw)
+			}
+		})
+	}
+}
+
+// Adoption keeps the live value of every field the spec leaves unset, so a
+// field JeffResc left unset (and defaulted itself) is not written out.
+func TestUnsetFieldsStayUnset(t *testing.T) {
+	prov, application, _ := convertApp(t, app("x", "ns"), Options{})
+	p := prov.Spec
+	if p.Scopes != nil || p.ClientType != "" || p.AccessCodeValidity != "" || p.AccessTokenValidity != "" ||
+		p.RefreshTokenValidity != "" || p.SubMode != "" || p.IssuerMode != "" || p.SigningKey != "" ||
+		p.IncludeClaimsInIDToken != nil {
+		t.Errorf("provider spec sets fields JeffResc left unset: %+v", p)
+	}
+	if a := application.Spec; a.PolicyEngineMode != "" || a.OpenInNewTab != nil {
+		t.Errorf("application spec sets fields JeffResc left unset: %+v", a)
+	}
+}
+
+func TestExplicitFieldsAreCopied(t *testing.T) {
+	in := withProvider(`    scopes: [openid]
+    clientType: public
+    accessCodeValidity: minutes=2
+    accessTokenValidity: minutes=6
+    refreshTokenValidity: days=7
+    subMode: user_id
+    issuerMode: global
+    includeClaimsInIdToken: false
+    signingKey: my-key
+`)
+	in = strings.Replace(in, "  name: X\n", "  name: X\n  policyEngineMode: all\n  openInNewTab: false\n", 1)
+	prov, application, _ := convertApp(t, in, Options{})
+	p := prov.Spec
+	if !slices.Equal(p.Scopes, []string{"openid"}) || p.ClientType != "public" || p.AccessCodeValidity != "minutes=2" ||
+		p.AccessTokenValidity != "minutes=6" || p.RefreshTokenValidity != "days=7" || p.SubMode != "user_id" ||
+		p.IssuerMode != "global" || p.SigningKey != "my-key" ||
+		p.IncludeClaimsInIDToken == nil || *p.IncludeClaimsInIDToken {
+		t.Errorf("provider spec does not carry the JeffResc values: %+v", p)
+	}
+	if a := application.Spec; a.PolicyEngineMode != "all" || a.OpenInNewTab == nil || *a.OpenInNewTab {
+		t.Errorf("application spec does not carry the JeffResc values: %+v", a)
+	}
+}
+
+// An explicit scopes: [] makes JeffResc leave the live property mappings
+// alone when propertyMappings is empty, which is what an unset scopes means
+// to adoption. With propertyMappings the provider keeps only those, which
+// needs scopes: [] to stay explicit.
+func TestExplicitEmptyScopes(t *testing.T) {
+	t.Run("no propertyMappings: unset keeps the live mappings", func(t *testing.T) {
+		prov, _, raw := convertApp(t, withProvider("    scopes: []\n"), Options{})
+		if prov.Spec.Scopes != nil || strings.Contains(raw, "scopes:") {
+			t.Errorf("want scopes omitted, got:\n%s", raw)
+		}
+	})
+	t.Run("propertyMappings: scopes stays an explicit empty list", func(t *testing.T) {
+		prov, _, raw := convertApp(t, withProvider("    scopes: []\n    propertyMappings: [m1]\n"), Options{})
+		if !strings.Contains(raw, "scopes: []") || len(prov.Spec.PropertyMappings) != 1 {
+			t.Errorf("want scopes: [] and the mapping, got:\n%s", raw)
+		}
+	})
+}
+
+// On the default connection the admin must allow the migrated namespaces, so
+// the report says which; an authentikRef needs no allowance.
+func TestReportNamesAdoptionGateSelector(t *testing.T) {
+	in := app("a", "ns2") + "---\n" + app("b", "ns1")
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"kubernetes.io/metadata.name in (ns1, ns2)", "adoption.defaultConnectionNamespaceSelector"} {
+		if !strings.Contains(res.Report, want) {
+			t.Errorf("report lacks %q:\n%s", want, res.Report)
+		}
+	}
+	res, err = Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AuthentikRef: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Report, "adoption.defaultConnectionNamespaceSelector") {
+		t.Errorf("report names the selector although authentikRef is set:\n%s", res.Report)
 	}
 }

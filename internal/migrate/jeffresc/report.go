@@ -22,28 +22,14 @@ import (
 	"strings"
 )
 
-// Values the new CRDs default for fields JeffResc has no equivalent of.
-// Adoption writes them onto the live object (the API server fills a CRD
-// default before the operator sees the spec), so the report lists them. A
-// test checks them against config/crd/bases.
-const (
-	newGrantTypes            = "[authorization_code, refresh_token]"
-	newRefreshTokenThreshold = "seconds=0"
-	newLogoutMethod          = "backchannel"
-	newRedirectMatchingMode  = "strict"
-	newRedirectType          = "authorization"
-	newMetaHide              = "false"
-)
-
 // objectReport is what the person migrating should know about one object.
 type objectReport struct {
-	ref    string
-	files  []string
-	filled []string
-	notes  []string
+	ref   string
+	files []string
+	notes []string
 }
 
-// describe adds the notes that do not depend on defaults.
+// describe adds the notes about the credentials Secret.
 func (b *builder) describe(a source, ns, oldSecret, newSecret string, rep *objectReport) {
 	if a.spec.Provider.ClientType == "public" && usesClientSecret(a.spec.Secret.Template) {
 		rep.notes = append(rep.notes,
@@ -72,23 +58,14 @@ func usesClientSecret(tmpl string) bool { return strings.Contains(tmpl, ".Client
 func (b *builder) report(skipped []string) string {
 	var sb strings.Builder
 	sb.WriteString("convert-jeffresc report\n=======================\n\n")
-	sb.WriteString("Adoption will WRITE every field below onto the live objects in Authentik. Before turning\n")
-	sb.WriteString("dryRun off, read each object's Ready condition (reason AdoptionDryRun lists `field: old -> new`)\n")
-	sb.WriteString("and edit the spec until the only listed changes are ones you intend.\n")
+	sb.WriteString("Every converted object adopts the provider or application JeffResc created (managementPolicy: Adopt).\n")
+	sb.WriteString("Adoption writes only the fields in the spec: a field JeffResc left unset (it applied its own\n")
+	sb.WriteString("default) is left unset here, so the live value stays. Before turning dryRun off, read each\n")
+	sb.WriteString("object's Ready condition (reason AdoptionDryRun lists `field: old -> new`) and edit the spec\n")
+	sb.WriteString("until the only listed changes are ones you intend.\n")
 	for _, r := range b.reports {
 		fmt.Fprintf(&sb, "\n%s\n", r.ref)
 		fmt.Fprintf(&sb, "  files: %s\n", strings.Join(r.files, ", "))
-		sb.WriteString("  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):\n")
-		writeList(&sb, r.filled)
-		sb.WriteString("  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):\n")
-		writeList(&sb, []string{
-			"provider.grantTypes = " + newGrantTypes,
-			"provider.refreshTokenThreshold = " + newRefreshTokenThreshold,
-			"provider.logoutMethod = " + newLogoutMethod,
-			fmt.Sprintf("provider.redirectUris[*].matchingMode = %s, .type = %s (what JeffResc sent for plain URIs)",
-				newRedirectMatchingMode, newRedirectType),
-			"application.metaHide = " + newMetaHide,
-		})
 		if len(r.notes) > 0 {
 			sb.WriteString("  notes:\n")
 			writeList(&sb, r.notes)
@@ -106,10 +83,17 @@ func (b *builder) report(skipped []string) string {
 		slices.Sort(skipped)
 		writeList(&sb, skipped)
 	}
-	sb.WriteString("\nAdopt-only mode: createIfMissing is not set, so a missing match target is reported as\n")
-	sb.WriteString("AdoptionTargetNotFound and nothing is created. Once every app is migrated and SSO login is\n")
-	sb.WriteString("verified, leave adopt-only mode: set spec.adoption.enabled: false on every converted\n")
-	sb.WriteString("provider and application (final runbook step in docs/migration-from-jeffresc.md).\n")
+	if b.opts.AuthentikRef == "" {
+		sb.WriteString("\nAdoption gate: these objects use the operator's default connection, where Adopt is refused\n")
+		sb.WriteString("(reason AdoptionNotAllowed) unless the operator admin allows their namespaces. Set the flag\n")
+		sb.WriteString("--default-connection-adoption-namespace-selector, or the Helm value\n")
+		sb.WriteString("adoption.defaultConnectionNamespaceSelector, to:\n")
+		fmt.Fprintf(&sb, "  %s in (%s)\n", metaNamespaceLabel, strings.Join(slices.Sorted(slices.Values(b.namespaces)), ", "))
+	}
+	sb.WriteString("\nAdopt mode: a missing match target is reported as AdoptionTargetNotFound and nothing is\n")
+	sb.WriteString("created. Once every app is migrated and SSO login is verified, leave adopt mode: remove\n")
+	sb.WriteString("managementPolicy, match and dryRun from every converted provider and application (final\n")
+	sb.WriteString("runbook step in docs/migration-from-jeffresc.md).\n")
 	return sb.String()
 }
 

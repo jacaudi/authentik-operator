@@ -1,1 +1,0 @@
-input.yaml: AuthentikApplication ns/demo: provider.scopes is [] and propertyMappings is empty: JeffResc then leaves the live property mappings alone, but adoption would replace them with none (dropping openid, profile, email); set scopes and/or propertyMappings to the provider's live mappings

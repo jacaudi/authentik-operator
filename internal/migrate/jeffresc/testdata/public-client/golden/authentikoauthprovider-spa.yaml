@@ -5,30 +5,18 @@ metadata:
   name: spa
   namespace: web
 spec:
-  accessCodeValidity: minutes=1
-  accessTokenValidity: minutes=5
-  adoption:
-    dryRun: true
-    enabled: true
-    match:
-      name: spa-provider
   authorizationFlow: default-provider-authorization-implicit-consent
   clientType: public
   deletionPolicy: Retain
-  includeClaimsInIdToken: true
+  dryRun: true
   invalidationFlow: default-provider-invalidation-flow
-  issuerMode: per_provider
+  managementPolicy: Adopt
+  match:
+    name: spa-provider
   name: spa-provider
   redirectUris:
   - url: https://spa.example.com/callback
-  refreshTokenValidity: days=30
-  scopes:
-  - openid
-  - profile
-  - email
   secret:
     name: spa-oauth
     templateRef:
       name: jeffresc-80ffa7c8
-  signingKey: authentik Self-signed Certificate
-  subMode: hashed_user_id

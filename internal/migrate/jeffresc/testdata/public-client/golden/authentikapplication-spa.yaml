@@ -5,13 +5,10 @@ metadata:
   name: spa
   namespace: web
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   name: Single Page App
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: spa

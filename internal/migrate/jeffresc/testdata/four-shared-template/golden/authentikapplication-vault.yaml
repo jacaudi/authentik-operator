@@ -5,14 +5,11 @@ metadata:
   name: vault
   namespace: authentik-operator-system
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   metaLaunchUrl: https://vault.example.com
   name: Vault
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: vault
