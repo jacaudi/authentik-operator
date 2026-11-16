@@ -12,11 +12,22 @@ becomes three here.
 
 `hack/convert-jeffresc` (`make convert-jeffresc` builds `bin/convert-jeffresc`)
 does the conversion. Everything it emits adopts the provider and application
-that JeffResc already created in Authentik, so client IDs and secrets do not
-change and consuming apps keep working. The adoption contract (dry run,
-`createIfMissing`, deletion policy, what adoption writes) is in
+that JeffResc already created in Authentik (`managementPolicy: Adopt`), so
+client IDs and secrets do not change and consuming apps keep working. The
+adoption contract (management policies, dry run, the adoption gate, deletion
+policy, what adoption writes) is in
 [scope.md, "API-object adoption"](design/scope.md#api-object-adoption-task-05);
 this page does not repeat it.
+
+**The operator admin must allow the namespaces being migrated.** On the
+operator's default connection `Adopt` is refused (reason `AdoptionNotAllowed`)
+unless the resource's namespace matches the operator flag
+`--default-connection-adoption-namespace-selector`, set in the chart as
+`adoption.defaultConnectionNamespaceSelector` (empty, the default, denies every
+namespace). With `spec.authentikRef` (converter flag `--authentik-ref`) the
+objects use a same-namespace `AuthentikDeployment` instead, and no allowance is
+needed. The converter's report prints the selector for the namespaces it
+converted. Step 1 shows how to set it.
 
 Both CRD sets define kinds called `AuthentikApplication`, so once both are
 installed `kubectl get authentikapplication` is ambiguous. **Always use the
@@ -40,7 +51,7 @@ operator does not support, a template that would render differently).
 | flag | default | meaning |
 |---|---|---|
 | `--out DIR` | required | output directory |
-| `--dry-run-adoption` | `true` | `adoption.dryRun` on every provider and application |
+| `--dry-run-adoption` | `true` | `spec.dryRun` on every provider and application: preview what adoption would change, write nothing |
 | `--namespace NS` | each source's namespace | namespace of the converted objects; the template's `namespaceSelector` follows it |
 | `--authentik-ref NAME` | none | `spec.authentikRef` (an `AuthentikDeployment` in the same namespace); omit to use the operator's default connection |
 | `--template-name NAME` | `jeffresc-<hash>` | name of the `AuthentikCredentialsTemplate`; with several distinct templates it is a prefix (`NAME-<hash>`) |
@@ -50,12 +61,14 @@ operator does not support, a template that would render differently).
 
 Emitted per JeffResc object:
 
-- `AuthentikOAuthProvider` named after the slug: `adoption: {enabled: true, dryRun: <flag>, match: {name: <slug>-provider}}`
-  (JeffResc names the Authentik provider `<slug>-provider`), `spec.name:
-  <slug>-provider`, `deletionPolicy: Retain`, every provider field mapped,
-  `secret.name` and `secret.templateRef`. `createIfMissing` is never set.
-- `AuthentikApplication` with `providerRef`, adoption enabled (same dry-run
-  flag) and `deletionPolicy: Retain`.
+- `AuthentikOAuthProvider` named after the slug: `managementPolicy: Adopt`,
+  `dryRun: <flag>`, `match: {name: <slug>-provider}` (JeffResc names the
+  Authentik provider `<slug>-provider`), `spec.name: <slug>-provider`,
+  `deletionPolicy: Retain`, every provider field JeffResc sets, `secret.name`
+  and `secret.templateRef`. The converter never emits `AdoptOrCreate`: a
+  typo in the name must not create a provider with new credentials.
+- `AuthentikApplication` with `providerRef`, `managementPolicy: Adopt` (same
+  dry-run flag) and `deletionPolicy: Retain`.
 - One cluster-scoped `AuthentikCredentialsTemplate` per distinct
   (template body, secret labels, secret annotations). Objects that share all
   three share one template, whose `namespaceSelector` is
@@ -69,9 +82,14 @@ Emitted per JeffResc object:
 
 JeffResc 0.1.8 and v0.2.5 have the same fields (note that the 0.1.x tags have
 no `v` prefix); v0.2.x renames the kind, adds validation and parses rendered
-Secret templates differently (see the template section). Fields JeffResc leaves unset take JeffResc's own CRD
-defaults; the converter writes those defaults out so that adoption keeps the
-live value.
+Secret templates differently (see the template section). Fields JeffResc leaves
+unset take JeffResc's own CRD defaults (listed in the table). The converter
+**leaves those fields unset**: adoption writes only the fields the spec sets and
+keeps the live value of the others, and the live object already has JeffResc's
+default. Fields JeffResc sets are copied, so the new operator holds them to
+those values. One difference to know about: JeffResc held every field, defaulted
+or not, to its default on each reconcile, whereas a converted object holds only
+the fields it names. To keep holding a defaulted field, add it to the spec.
 
 | JeffResc field | New field | Notes |
 |---|---|---|
@@ -79,35 +97,33 @@ live value.
 | `spec.name` | `AuthentikApplication.spec.name` | |
 | `spec.slug` (default `metadata.name`) | `AuthentikApplication.spec.slug` | always written; new limit is 50 characters (JeffResc 128); the converter errors above that |
 | `spec.group` | `AuthentikApplication.spec.group` | |
-| `spec.policyEngineMode` (default `any`) | `AuthentikApplication.spec.policyEngineMode` | |
+| `spec.policyEngineMode` (default `any`) | `AuthentikApplication.spec.policyEngineMode` | copied when set; unset stays unset |
 | `spec.metaLaunchUrl` | `AuthentikApplication.spec.metaLaunchUrl` | must be http(s) here; the converter errors otherwise |
 | `spec.metaDescription`, `spec.metaPublisher` | same names | |
-| `spec.openInNewTab` (default `true`) | `AuthentikApplication.spec.openInNewTab` | |
+| `spec.openInNewTab` (default `true`) | `AuthentikApplication.spec.openInNewTab` | copied when set; unset stays unset |
 | `spec.provider.authorizationFlow`, `invalidationFlow` | same names (flow slugs) | |
-| `spec.provider.redirectUris[]` (strings) | `redirectUris[].url` | JeffResc sent every URI as `strict` matching; here `matchingMode: strict`, `type: authorization` (the defaults) |
-| `spec.provider.scopes` (default `openid, profile, email`) | `scopes` | same default; replaces the provider's scope mappings. An explicit `scopes: []` is emitted as `scopes: []`. When several scope mappings share a scope name JeffResc takes the first result and this operator prefers the managed (built-in) mapping, which can show up as a `property_mappings` diff in the dry run |
+| `spec.provider.redirectUris[]` (strings) | `redirectUris[].url` | JeffResc sent every URI as `strict` matching; `matchingMode` and `type` are left unset, so an adopted URI keeps the live values of the same `url` |
+| `spec.provider.scopes` (default `openid, profile, email`) | `scopes` | copied when set (the spec then owns the provider's whole scope-mapping list); unset stays unset, so the live mappings are kept. An explicit `scopes: []` with `propertyMappings` is emitted as `scopes: []` (only those mappings); with no `propertyMappings` JeffResc leaves the live mappings alone, so `scopes` is omitted. When several scope mappings share a scope name JeffResc takes the first result and this operator prefers the managed (built-in) mapping, which can show up as a `property_mappings` diff in the dry run |
 | `spec.provider.propertyMappings` | `propertyMappings` | |
-| `spec.provider.clientType` (default `confidential`) | `clientType` | |
-| `spec.provider.accessCodeValidity` (`minutes=1`), `accessTokenValidity` (`minutes=5`), `refreshTokenValidity` (`days=30`) | same names | same defaults |
-| `spec.provider.subMode` (`hashed_user_id`), `includeClaimsInIdToken` (`true`), `issuerMode` (`per_provider`) | same names | same defaults |
-| `spec.provider.signingKey` (default `authentik Self-signed Certificate`) | `signingKey` | this operator has no schema default (an adopted provider keeps its key); the converter writes JeffResc's default explicitly, and omits the field for an explicit `signingKey: ""` (the live key is kept) |
+| `spec.provider.clientType` (default `confidential`) | `clientType` | copied when set; unset stays unset |
+| `spec.provider.accessCodeValidity` (`minutes=1`), `accessTokenValidity` (`minutes=5`), `refreshTokenValidity` (`days=30`) | same names | copied when set; unset stays unset |
+| `spec.provider.subMode` (`hashed_user_id`), `includeClaimsInIdToken` (`true`), `issuerMode` (`per_provider`) | same names | copied when set; unset stays unset |
+| `spec.provider.signingKey` (default `authentik Self-signed Certificate`) | `signingKey` | copied when set; unset, or an explicit `signingKey: ""`, stays unset (the live key is kept) |
 | `spec.secret.name` (default `<name>-oauth`) | `AuthentikOAuthProvider.spec.secret.name` (+ `--secret-suffix`) | |
 | `spec.secret.template` | `AuthentikCredentialsTemplate.spec.template` | variables below |
 | `spec.secret.labels`, `spec.secret.annotations` | `AuthentikCredentialsTemplate.spec.labels`, `.annotations` | keys under `authentik.io/` are reserved here |
-| (none) | `grantTypes`, `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new. Those with a CRD default are **written by adoption**: see below |
+| (none) | `grantTypes`, `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
 | `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
 | `AuthentikSAMLApplication` | none | error |
 | Secret label `goauthentik.io/application` | none | JeffResc sets it; this operator does not |
 | Secret owner | the `AuthentikOAuthProvider` | JeffResc's Secret is owned by its CR; see step 4 |
 
-**Defaults adoption will write that JeffResc has no field for** (listed per
-object in the converter's report): `grantTypes: [authorization_code,
-refresh_token]`, `refreshTokenThreshold: seconds=0`, `logoutMethod:
-backchannel`, redirect `matchingMode: strict` / `type: authorization`, and
-`metaHide: false` on the application. A drift test checks these against
-`config/crd/bases`. They may differ from the live provider (for example
-grant types someone changed in the UI): that is exactly what the dry run in
-step 3 shows.
+**Fields JeffResc has no field for are not written.** This operator's own
+defaults (`grantTypes`, `refreshTokenThreshold`, `logoutMethod`, redirect
+`matchingMode` and `type`, `metaHide`) apply only when this operator creates an
+object. Adoption never applies them, so a grant type someone changed in the UI
+survives. Set one of these in the spec if you want this operator to enforce it;
+the dry run in step 3 then shows the change.
 
 ### Template variables
 
@@ -142,12 +158,23 @@ kustomize default both use `authentik-operator-system`, and a shared namespace
 invites name clashes between the two controllers' objects.
 
 ```sh
+# authentik-api is a Secret holding a new Authentik API token
 helm install jacaudi-authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator --version X.Y.Z \
   --namespace authentik-operator --create-namespace \
   --set authentik.url=https://authentik.example.com \
-  --set authentik.tokenSecret.name=authentik-api     # Secret holding a new Authentik API token
+  --set authentik.tokenSecret.name=authentik-api \
+  --set-string adoption.defaultConnectionNamespaceSelector='kubernetes.io/metadata.name in (NS1, NS2)'
 # from a checkout instead of the registry: helm install jacaudi-authentik-operator dist/chart ...
 ```
+
+`adoption.defaultConnectionNamespaceSelector` is the gate described above: the
+namespaces of the JeffResc objects you are migrating (the `NS` of every
+converted object; the converter's report prints the exact selector). It is
+rendered as the operator flag `--default-connection-adoption-namespace-selector`;
+without it every converted object stays at `AdoptionNotAllowed`. You can add it
+later with `helm upgrade --reuse-values --set-string ...` (the pod restarts to
+read it). Skip it, and use `--authentik-ref NAME` when converting, if you attach
+the migrated objects to an `AuthentikDeployment` in each namespace instead.
 
 **Use a release name different from JeffResc's** (above: `jacaudi-authentik-operator`;
 JeffResc's chart is usually released as `authentik-operator`). Both charts name their
@@ -225,16 +252,22 @@ are ones you intend. Watch especially:
 
 - `signing_key`: must not change unless you mean it (tokens would be signed by another key);
 - `sub_mode`: changing it changes every user's `sub` and breaks existing sessions and account links;
-- `scopes` / property mappings: adoption replaces the provider's mappings with
-  `scopes` + `propertyMappings`; a mapping added in the UI would be dropped;
-- `grantTypes`, `accessCodeValidity`, `accessTokenValidity`, `refreshTokenValidity`, `refreshTokenThreshold`, `logoutMethod`.
+- `scopes` / property mappings: when the spec sets `scopes`, adoption replaces the
+  provider's mappings with `scopes` + `propertyMappings`, so a mapping added in
+  the UI would be dropped; unset `scopes` keeps the live mappings;
+- `accessCodeValidity`, `accessTokenValidity`, `refreshTokenValidity`: only
+  listed when the JeffResc object set them. Fields the spec does not set are
+  never in the diff: adoption keeps their live values.
 
+`AdoptionNotAllowed` means the namespace is not allowed on the default
+connection (see step 1): set the Helm value, or convert with `--authentik-ref`.
 `AdoptionTargetNotFound` means no provider named `<slug>-provider` exists
-(a name or slug typo, or the wrong Authentik): fix `adoption.match`; the
-converter never sets `createIfMissing`. Then take it out of dry run:
+(a name or slug typo, or the wrong Authentik): fix `match`; the converter
+never emits `AdoptOrCreate`, so a miss creates nothing. Then take it out of dry
+run:
 
 ```sh
-kubectl -n NS patch authentikoauthproviders.authentik.io gitlab --type merge -p '{"spec":{"adoption":{"dryRun":false}}}'
+kubectl -n NS patch authentikoauthproviders.authentik.io gitlab --type merge -p '{"spec":{"dryRun":false}}'
 kubectl -n NS get authentikoauthproviders.authentik.io gitlab    # PROVENANCE Adopted, READY True
 ```
 
@@ -453,28 +486,34 @@ only if you want the new operator to own its lifecycle.
 
 Rollback: reinstall the old chart and CRDs and re-apply the backups.
 
-### 7. Leave adopt-only mode
+### 7. Leave adopt mode
 
-The migration runs adopt-only: converted objects have `adoption.enabled: true`
-and never set `createIfMissing` (default false). In this mode the operator
-never creates a provider or application. If the match target is missing (a typo
-in `match.name` or the slug) it reports `AdoptionTargetNotFound` and writes
+The migration runs in `Adopt` mode: converted objects have `managementPolicy:
+Adopt`, never `AdoptOrCreate`. In this mode the operator never creates a
+provider or application. If the match target is missing (a typo in
+`match.name` or the slug) it reports `AdoptionTargetNotFound` and writes
 nothing.
 
-Once SSO login is verified for every application, set `spec.adoption.enabled:
-false` on every converted provider and application (remove the `adoption`
-block, or set `enabled: false`; `dryRun` becomes irrelevant), commit that to
-your manifests, and confirm each resource stays `Ready` with provenance
-`Adopted` and that its next reconcile writes nothing (no new events, no
-change in Authentik). Why: adoption is a one-time takeover. Afterwards the
-resources are managed by primary key; leaving adoption enabled would let a
-future CR with a matching name take over unrelated objects.
+Once SSO login is verified for every application, return every converted
+provider and application to the default policy: remove `managementPolicy`,
+`match` and `dryRun` from the spec (`Create` is the default; the admission rules
+reject `match` and `dryRun` without `Adopt`), commit that to your manifests, and
+confirm each resource stays `Ready` with provenance `Adopted` and that its next
+reconcile writes nothing (no new events, no change in Authentik). Why: adoption
+is a one-time takeover. Afterwards the resources are managed by primary key
+(provenance stays `Adopted`, so the default deletion policy remains `Retain`);
+leaving `Adopt` in place would let a future CR with a matching name take over
+unrelated objects, and it keeps needing the namespace in the selector. After
+the switch you can remove the namespaces from
+`adoption.defaultConnectionNamespaceSelector`; resources already on `Create`
+are not gated.
 
-Rollback: set `adoption.enabled: true` again.
+Rollback: set `managementPolicy: Adopt` and the `match` again (the namespace
+must be allowed again too).
 
 ## After migration: disaster recovery
 
-With adoption disabled (step 7):
+With the policy back at the default (step 7):
 
 - **Cluster and Authentik rebuilt, CRs re-applied with no status.** The
   operator creates new providers and applications normally. The client secret
@@ -484,15 +523,18 @@ With adoption disabled (step 7):
   set). The operator reports `AdoptionTargetNotFound` and never recreates an
   adopted object automatically. To let it create, clear `status.providerPk`,
   `status.provenance` and `status.clientId` (applications: `applicationUid`,
-  `provenance`), or delete and re-apply the CR.
+  `provenance`), or delete and re-apply the CR, and set
+  `managementPolicy: AdoptOrCreate` temporarily (see scope.md,
+  "Disaster-recovery re-bootstrap").
 
-- **Cluster rebuilt, Authentik intact, CRs re-applied without status, adoption
-  disabled.** The object already exists, so the operator reports `Conflict`
-  and changes nothing (safe). To take it over: set `adoption.enabled: true`
-  with `dryRun: true`, read the diff, set `dryRun: false`, then disable
-  adoption again. Deleting and re-applying a provider CR garbage-collects its
-  rendered Secret (the operator renders it again once the provider is Ready).
+- **Cluster rebuilt, Authentik intact, CRs re-applied without status, policy
+  `Create`.** The object already exists, so the operator reports `Conflict`
+  and changes nothing (safe). To take it over: allow the namespace again, set
+  `managementPolicy: Adopt` with `match` and `dryRun: true`, read the diff, set
+  `dryRun: false`, then return to the default policy. Deleting and re-applying
+  a provider CR garbage-collects its rendered Secret (the operator renders it
+  again once the provider is Ready).
 
-For the in-place toggle (`createIfMissing`) see
+For the management policies and the adoption gate see
 [scope.md, "API-object adoption"](design/scope.md#api-object-adoption-task-05).
 

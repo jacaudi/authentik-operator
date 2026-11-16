@@ -44,6 +44,9 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
   fixtures in `internal/migrate/jeffresc/testdata`, refreshed with
   `go test ./internal/migrate/... -run Golden -update`. Output is also decoded
   strictly into the typed structs and created in an envtest apiserver.
+- Fields JeffResc left unset stay unset in the output: adoption keeps the live
+  value of any field the spec does not set (TASK-05), so JeffResc's defaults are
+  no longer written out. The converter only copies what JeffResc set.
 - Runbook and field map: `docs/migration-from-jeffresc.md`. Finding that shaped
   it: this operator refuses to overwrite a Secret it does not own, and
   JeffResc's Secret is owned by its CR, so the runbook renders the new Secrets
