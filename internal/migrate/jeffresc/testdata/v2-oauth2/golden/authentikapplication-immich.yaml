@@ -5,11 +5,10 @@ metadata:
   name: immich
   namespace: media
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
   group: Photos
+  managementPolicy: Adopt
   metaPublisher: Example Co
   name: Immich
   openInNewTab: false

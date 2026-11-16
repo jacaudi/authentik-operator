@@ -33,9 +33,6 @@ import (
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 )
 
-// JeffResc defaults, applied by its CRDs when a field is unset (v0.1.8 and
-// v0.2.5). They are written out explicitly so that adoption keeps the values
-// the live provider has, instead of this operator's own defaults.
 const errDupFile = "two inputs convert to the same file %s; convert them separately or give them distinct names"
 
 func typeMeta(kind string) metav1.TypeMeta {
@@ -43,21 +40,10 @@ func typeMeta(kind string) metav1.TypeMeta {
 }
 
 const (
-	defClientType           = "confidential"
-	defAccessCodeValidity   = "minutes=1"
-	defAccessTokenValidity  = "minutes=5"
-	defRefreshTokenValidity = "days=30"
-	defSubMode              = "hashed_user_id"
-	defIssuerMode           = "per_provider"
-	defSigningKey           = "authentik Self-signed Certificate"
-	defPolicyEngineMode     = "any"
-
 	// metaNamespaceLabel is set by the API server on every namespace.
 	metaNamespaceLabel = "kubernetes.io/metadata.name"
 	maxSlugLen         = 50
 )
-
-func defScopes() []string { return []string{"openid", "profile", "email"} }
 
 // templateGroup is one distinct (template, labels, annotations) tuple.
 type templateGroup struct {
@@ -85,6 +71,7 @@ type builder struct {
 	files         map[string]File
 	reports       []objectReport
 	templateNames map[string]string
+	namespaces    []string // namespaces of the emitted objects, for the adoption-gate hint
 }
 
 func (b *builder) addFile(name string, data []byte) error {
@@ -99,6 +86,9 @@ func (b *builder) add(a source) error {
 	s := a.spec
 	rep := objectReport{ref: a.ref()}
 	ns := cmp.Or(b.opts.Namespace, a.namespace)
+	if !slices.Contains(b.namespaces, ns) {
+		b.namespaces = append(b.namespaces, ns)
+	}
 	slug := cmp.Or(s.Slug, a.name)
 	if err := validateSource(a, ns, slug); err != nil {
 		return err
@@ -121,9 +111,9 @@ func (b *builder) add(a source) error {
 		Spec:       prov,
 	}
 	provFile := "authentikoauthprovider-" + resName + ".yaml"
-	appObj := b.applicationObject(a, ns, slug, resName, &rep)
+	appObj := b.applicationObject(a, ns, slug, resName)
 	appFile := "authentikapplication-" + a.name + ".yaml"
-	appData, err := render(appObj, headerFor(a), adoptionDryRun(b.opts.DryRunAdoption))
+	appData, err := render(appObj, headerFor(a), dryRunExplicit(b.opts.DryRunAdoption))
 	if err != nil {
 		return err
 	}
@@ -158,11 +148,6 @@ func validateSource(a source, ns, slug string) error {
 	if l := a.spec.MetaLaunchURL; l != "" && !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
 		errs = append(errs, fmt.Sprintf("metaLaunchUrl %q is not http(s), which this operator requires; "+
 			"remove the field to keep the live launch URL on adoption", l))
-	}
-	if sc := a.spec.Provider.Scopes; sc != nil && len(*sc) == 0 && len(a.spec.Provider.PropertyMappings) == 0 {
-		errs = append(errs, "provider.scopes is [] and propertyMappings is empty: JeffResc then leaves the live "+
-			"property mappings alone, but adoption would replace them with none (dropping openid, profile, email); "+
-			"set scopes and/or propertyMappings to the provider's live mappings")
 	}
 	if a.spec.Name == "" {
 		errs = append(errs, "spec.name is required")
@@ -223,11 +208,21 @@ func (b *builder) providerSpec(
 		InvalidationFlow:  p.InvalidationFlow,
 		PropertyMappings:  p.PropertyMappings,
 		Secret:            &authentikiov1alpha1.CredentialsSecretSpec{Name: secretName},
-		DeletionPolicy:    authentikiov1alpha1.DeletionPolicyRetain,
-		Adoption: authentikiov1alpha1.ProviderAdoptionSpec{
-			APIAdoptionSpec: authentikiov1alpha1.APIAdoptionSpec{Enabled: true, DryRun: b.opts.DryRunAdoption},
-			Match:           &authentikiov1alpha1.ProviderMatch{Name: providerName},
-		},
+		Match:             &authentikiov1alpha1.ProviderMatch{Name: providerName},
+		APIManagementSpec: managementSpec(b.opts.DryRunAdoption),
+		// A field JeffResc left unset stays unset: JeffResc applied its own
+		// default to the live provider, and adoption keeps the live value of
+		// every field the spec does not set.
+		ClientType:             authentikiov1alpha1.OAuthClientType(p.ClientType),
+		AccessCodeValidity:     p.AccessCodeValidity,
+		AccessTokenValidity:    p.AccessTokenValidity,
+		RefreshTokenValidity:   p.RefreshTokenValidity,
+		SubMode:                authentikiov1alpha1.OAuthSubMode(p.SubMode),
+		IssuerMode:             authentikiov1alpha1.OAuthIssuerMode(p.IssuerMode),
+		IncludeClaimsInIDToken: p.IncludeClaimsInIDToken,
+	}
+	if p.SigningKey != nil { // an explicit "" is omitted: the live signing key is kept.
+		spec.SigningKey = *p.SigningKey
 	}
 	if b.opts.AuthentikRef != "" {
 		spec.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: b.opts.AuthentikRef}
@@ -235,67 +230,35 @@ func (b *builder) providerSpec(
 	for _, u := range p.RedirectURIs {
 		spec.RedirectURIs = append(spec.RedirectURIs, authentikiov1alpha1.RedirectURI{URL: u})
 	}
-	spec.Scopes = defScopes()
-	switch {
-	case p.Scopes == nil:
-		rep.filled = append(rep.filled, "provider.scopes = "+show(spec.Scopes))
-	case len(*p.Scopes) == 0:
-		spec.Scopes = nil
-		emptyScopes = true
-		rep.notes = append(rep.notes, "provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] "+
-			"(the provider keeps only the propertyMappings)")
-	default:
-		spec.Scopes = *p.Scopes
+	if p.Scopes != nil {
+		switch {
+		case len(*p.Scopes) > 0:
+			spec.Scopes = *p.Scopes
+		case len(p.PropertyMappings) > 0:
+			emptyScopes = true
+			rep.notes = append(rep.notes, "provider.scopes is explicitly empty in JeffResc: emitted as scopes: [] "+
+				"(the provider keeps only the propertyMappings)")
+		default:
+			rep.notes = append(rep.notes, "provider.scopes is explicitly empty in JeffResc with no propertyMappings, "+
+				"which leaves the live property mappings alone: scopes is left unset, so adoption keeps them too")
+		}
 	}
-	spec.ClientType = authentikiov1alpha1.OAuthClientType(fill(p.ClientType, defClientType, "provider.clientType", rep))
-	spec.AccessCodeValidity = fill(p.AccessCodeValidity, defAccessCodeValidity, "provider.accessCodeValidity", rep)
-	spec.AccessTokenValidity = fill(p.AccessTokenValidity, defAccessTokenValidity, "provider.accessTokenValidity", rep)
-	spec.RefreshTokenValidity = fill(p.RefreshTokenValidity, defRefreshTokenValidity, "provider.refreshTokenValidity", rep)
-	spec.SubMode = authentikiov1alpha1.OAuthSubMode(fill(p.SubMode, defSubMode, "provider.subMode", rep))
-	spec.IssuerMode = authentikiov1alpha1.OAuthIssuerMode(fill(p.IssuerMode, defIssuerMode, "provider.issuerMode", rep))
-	switch {
-	case p.SigningKey == nil:
-		spec.SigningKey = defSigningKey
-		rep.filled = append(rep.filled, "provider.signingKey = "+defSigningKey)
-	case *p.SigningKey == "":
-		rep.notes = append(rep.notes, "provider.signingKey is explicitly empty in JeffResc: omitted, so adoption "+
-			"keeps the live signing key")
-	default:
-		spec.SigningKey = *p.SigningKey
-	}
-	claims := true
-	if p.IncludeClaimsInIDToken != nil {
-		claims = *p.IncludeClaimsInIDToken
-	} else {
-		rep.filled = append(rep.filled, "provider.includeClaimsInIdToken = true")
-	}
-	spec.IncludeClaimsInIDToken = &claims
 	return spec, emptyScopes
 }
 
-func (b *builder) applicationObject(
-	a source, ns, slug, providerRes string, rep *objectReport,
-) *authentikiov1alpha1.AuthentikApplication {
+func (b *builder) applicationObject(a source, ns, slug, providerRes string) *authentikiov1alpha1.AuthentikApplication {
 	s := a.spec
-	open := true
-	if s.OpenInNewTab != nil {
-		open = *s.OpenInNewTab
-	} else {
-		rep.filled = append(rep.filled, "application.openInNewTab = true")
-	}
 	spec := authentikiov1alpha1.AuthentikApplicationSpec{
-		Name:        s.Name,
-		Slug:        slug,
-		ProviderRef: &authentikiov1alpha1.ProviderRef{Kind: authentikiov1alpha1.ProviderKindOAuth, Name: providerRes},
-		Group:       s.Group,
-		PolicyEngineMode: authentikiov1alpha1.PolicyEngineMode(
-			fill(s.PolicyEngineMode, defPolicyEngineMode, "application.policyEngineMode", rep)),
-		MetaLaunchURL:   s.MetaLaunchURL,
-		MetaDescription: s.MetaDescription,
-		MetaPublisher:   s.MetaPublisher,
-		OpenInNewTab:    &open,
-		DeletionPolicy:  authentikiov1alpha1.DeletionPolicyRetain,
-		Adoption:        authentikiov1alpha1.APIAdoptionSpec{Enabled: true, DryRun: b.opts.DryRunAdoption},
+		Name:              s.Name,
+		Slug:              slug,
+		ProviderRef:       &authentikiov1alpha1.ProviderRef{Kind: authentikiov1alpha1.ProviderKindOAuth, Name: providerRes},
+		Group:             s.Group,
+		PolicyEngineMode:  authentikiov1alpha1.PolicyEngineMode(s.PolicyEngineMode),
+		MetaLaunchURL:     s.MetaLaunchURL,
+		MetaDescription:   s.MetaDescription,
+		MetaPublisher:     s.MetaPublisher,
+		OpenInNewTab:      s.OpenInNewTab,
+		APIManagementSpec: managementSpec(b.opts.DryRunAdoption),
 	}
 	if b.opts.AuthentikRef != "" {
 		spec.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: b.opts.AuthentikRef}
@@ -351,7 +314,7 @@ func (b *builder) finish() error {
 		if p.group != "" {
 			p.obj.Spec.Secret.TemplateRef = &authentikiov1alpha1.CredentialsTemplateRef{Name: names[p.group]}
 		}
-		patches := []func(map[string]any){adoptionDryRun(b.opts.DryRunAdoption)}
+		patches := []func(map[string]any){dryRunExplicit(b.opts.DryRunAdoption)}
 		if p.emptyScopes {
 			// [0]string{} marshals as [], where a nil slice would be null.
 			patches = append(patches, func(spec map[string]any) { spec["scopes"] = [0]string{} })
@@ -366,25 +329,23 @@ func (b *builder) finish() error {
 	return errors.Join(errs...)
 }
 
-// adoptionDryRun writes dryRun out explicitly, so it is easy to flip.
-func adoptionDryRun(dryRun bool) func(map[string]any) {
-	return func(spec map[string]any) {
-		if ad, ok := spec["adoption"].(map[string]any); ok {
-			ad["dryRun"] = dryRun
-		}
+// managementSpec is what every converted object carries: it adopts the object
+// JeffResc created and, when deleted, leaves it in Authentik.
+func managementSpec(dryRun bool) authentikiov1alpha1.APIManagementSpec {
+	return authentikiov1alpha1.APIManagementSpec{
+		ManagementPolicy: authentikiov1alpha1.ManagementPolicyAdopt,
+		DryRun:           dryRun,
+		DeletionPolicy:   authentikiov1alpha1.DeletionPolicyRetain,
 	}
 }
 
-// show formats a value for the report: lists as [a, b].
-func show(v any) string {
-	if l, ok := v.([]string); ok {
-		return "[" + strings.Join(l, ", ") + "]"
-	}
-	return fmt.Sprint(v)
+// dryRunExplicit writes spec.dryRun out even when false, so it is easy to flip.
+func dryRunExplicit(dryRun bool) func(map[string]any) {
+	return func(spec map[string]any) { spec["dryRun"] = dryRun }
 }
 
-// render marshals obj without status or timestamps. For objects with
-// adoption, dryRun is written out explicitly so it is easy to flip.
+// render marshals obj without status or timestamps, then applies patches to
+// the spec map.
 func render(obj any, header string, patches ...func(spec map[string]any)) ([]byte, error) {
 	raw, err := json.Marshal(obj)
 	if err != nil {
@@ -415,13 +376,4 @@ func nilIfEmpty(m map[string]string) map[string]string {
 		return nil
 	}
 	return m
-}
-
-// fill returns v, or def (recording the substitution) when v is unset.
-func fill[T string | []string](v, def T, field string, rep *objectReport) T {
-	if len(v) > 0 {
-		return v
-	}
-	rep.filled = append(rep.filled, fmt.Sprintf("%s = %s", field, show(def)))
-	return def
 }

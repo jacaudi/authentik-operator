@@ -1,29 +1,14 @@
 convert-jeffresc report
 =======================
 
-Adoption will WRITE every field below onto the live objects in Authentik. Before turning
-dryRun off, read each object's Ready condition (reason AdoptionDryRun lists `field: old -> new`)
-and edit the spec until the only listed changes are ones you intend.
+Every converted object adopts the provider or application JeffResc created
+(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc
+left unset (it applied its own default) is left unset here, so the live value stays.
+Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists
+`field: old -> new`) and edit the spec until the only listed changes are ones you intend.
 
 AuthentikApplication web/spa
   files: authentikoauthprovider-spa.yaml, authentikapplication-spa.yaml
-  unset in JeffResc, written explicitly with JeffResc's default (keeps the live value):
-    - provider.scopes = [openid, profile, email]
-    - provider.accessCodeValidity = minutes=1
-    - provider.accessTokenValidity = minutes=5
-    - provider.refreshTokenValidity = days=30
-    - provider.subMode = hashed_user_id
-    - provider.issuerMode = per_provider
-    - provider.signingKey = authentik Self-signed Certificate
-    - provider.includeClaimsInIdToken = true
-    - application.openInNewTab = true
-    - application.policyEngineMode = any
-  defaulted by this operator's CRDs (no JeffResc equivalent; adoption writes them):
-    - provider.grantTypes = [authorization_code, refresh_token]
-    - provider.refreshTokenThreshold = seconds=0
-    - provider.logoutMethod = backchannel
-    - provider.redirectUris[*].matchingMode = strict, .type = authorization (what JeffResc sent for plain URIs)
-    - application.metaHide = false
   notes:
     - public client: the template reads .ClientSecret, which has the same value in both operators (Authentik's, normally empty for a public client)
     - Secret spa-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
@@ -32,7 +17,13 @@ AuthentikApplication web/spa
 AuthentikCredentialsTemplates (cluster-scoped; a platform admin applies them)
   jeffresc-80ffa7c8: namespaces web
 
-Adopt-only mode: createIfMissing is not set, so a missing match target is reported as
-AdoptionTargetNotFound and nothing is created. Once every app is migrated and SSO login is
-verified, leave adopt-only mode: set spec.adoption.enabled: false on every converted
-provider and application (final runbook step in docs/migration-from-jeffresc.md).
+Adoption gate: these objects use the operator's default connection, where Adopt is refused
+(reason AdoptionNotAllowed) unless the operator admin allows their namespaces. Set the flag
+--default-connection-adoption-namespace-selector, or the Helm value
+adoption.defaultConnectionNamespaceSelector, to:
+  kubernetes.io/metadata.name in (web)
+
+Adopt mode: a missing match target is reported as AdoptionTargetNotFound and nothing is
+created. Once every app is migrated and SSO login is verified, leave adopt mode: remove
+managementPolicy, match and dryRun from every converted provider and application (final
+runbook step in docs/migration-from-jeffresc.md).

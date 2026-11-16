@@ -66,6 +66,20 @@ authentik:
   ## --authentik-insecure-skip-verify. Testing only.
   insecureSkipVerify: false
 
+## Adoption on the default connection (spec.managementPolicy Adopt, AdoptOrCreate,
+## ReadOnly and spec.dryRun). The default connection's token is the operator's own
+## and spans every team, so which namespaces may take over existing Authentik
+## objects with it is an administrator decision.
+adoption:
+  ## --default-connection-adoption-namespace-selector: a Kubernetes label selector
+  ## matched against the resource's Namespace labels, e.g.
+  ##   kubernetes.io/metadata.name=team-a
+  ##   kubernetes.io/metadata.name in (team-a, team-b)
+  ## Empty (default) denies every namespace: such resources report
+  ## AdoptionNotAllowed. Resources with a same-namespace spec.authentikRef are not
+  ## affected. Read at startup; changing it restarts the pod.
+  defaultConnectionNamespaceSelector: ""
+
 ## Extra command-line flags appended to the manager args (rendered with tpl).
 extraArgs: []
 # - --enable-http2

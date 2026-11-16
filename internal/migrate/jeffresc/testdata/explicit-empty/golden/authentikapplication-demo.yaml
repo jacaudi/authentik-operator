@@ -5,13 +5,10 @@ metadata:
   name: demo
   namespace: ns
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   name: Demo
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: demo

@@ -59,7 +59,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		fake = fakeauthentik.New(testAPIToken)
 		recorder = events.NewFakeRecorder(100)
 		reconciler = &AuthentikOAuthProviderReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder, APIReader: k8sClient,
+			Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(), Recorder: recorder, APIReader: k8sClient,
 			Connections: &connection.Resolver{
 				Reader:             k8sClient,
 				Default:            &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
@@ -313,7 +313,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 				_ = k8sClient.Delete(ctx, &cur)
 			}
 		})
-		apps := &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps := &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: reconciler.Connections}
 		appReq := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
 

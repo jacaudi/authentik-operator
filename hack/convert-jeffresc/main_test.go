@@ -48,10 +48,10 @@ func TestRunWritesFilesAndReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(got), "dryRun: true") {
-		t.Errorf("adoption dry run should default on:\n%s", got)
+		t.Errorf("dry run should default on:\n%s", got)
 	}
 	if !strings.Contains(stderr.String(), "AuthentikApplication authentik-operator-system/gitlab") ||
-		!strings.Contains(stderr.String(), "provider.grantTypes") {
+		!strings.Contains(stderr.String(), "adoption.defaultConnectionNamespaceSelector") {
 		t.Errorf("report missing from stderr:\n%s", stderr.String())
 	}
 }

@@ -22,8 +22,11 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
       annotations) tuple, with a `namespaceSelector` on
       `kubernetes.io/metadata.name` listing the source namespaces, referenced via
       `spec.secret.templateRef`. Templates are admin-owned (TASK-04), so the
-      runbook has the platform admin apply them. Also: `adoption.enabled: true`,
-      `adoption.match` targeting `<slug>-provider`, `deletionPolicy: Retain`
+      runbook has the platform admin apply them. Also: `managementPolicy: Adopt`,
+      `match` targeting `<slug>-provider`, `deletionPolicy: Retain`; on the
+      default connection the platform admin also allows the namespace with
+      `--default-connection-adoption-namespace-selector` (an `authentikRef` needs
+      no allowance)
 - [x] Runbook, zero-downtime, credentials preserved:
   1. install new operator alongside the old (different group, no CRD clash)
   2. apply converted CRs with adoption (+ dryRun first); confirm Ready and that
@@ -41,6 +44,9 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
   fixtures in `internal/migrate/jeffresc/testdata`, refreshed with
   `go test ./internal/migrate/... -run Golden -update`. Output is also decoded
   strictly into the typed structs and created in an envtest apiserver.
+- Fields JeffResc left unset stay unset in the output: adoption keeps the live
+  value of any field the spec does not set (TASK-05), so JeffResc's defaults are
+  no longer written out. The converter only copies what JeffResc set.
 - Runbook and field map: `docs/migration-from-jeffresc.md`. Finding that shaped
   it: this operator refuses to overwrite a Secret it does not own, and
   JeffResc's Secret is owned by its CR, so the runbook renders the new Secrets

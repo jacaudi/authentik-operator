@@ -5,28 +5,16 @@ metadata:
   name: demo
   namespace: ns
 spec:
-  accessCodeValidity: minutes=1
-  accessTokenValidity: minutes=5
-  adoption:
-    dryRun: true
-    enabled: true
-    match:
-      name: demo-provider
   authorizationFlow: a
-  clientType: confidential
   deletionPolicy: Retain
+  dryRun: true
   includeClaimsInIdToken: false
   invalidationFlow: b
-  issuerMode: per_provider
+  managementPolicy: Adopt
+  match:
+    name: demo-provider
   name: demo-provider
   redirectUris:
   - url: https://demo.example.com/cb
-  refreshTokenValidity: days=30
-  scopes:
-  - openid
-  - profile
-  - email
   secret:
     name: demo-oauth
-  signingKey: authentik Self-signed Certificate
-  subMode: hashed_user_id

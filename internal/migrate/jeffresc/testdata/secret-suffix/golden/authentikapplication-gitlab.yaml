@@ -5,15 +5,12 @@ metadata:
   name: gitlab
   namespace: authentik-operator-system
 spec:
-  adoption:
-    dryRun: true
-    enabled: true
   deletionPolicy: Retain
+  dryRun: true
+  managementPolicy: Adopt
   metaDescription: Git repository hosting
   metaLaunchUrl: https://gitlab.example.com
   name: GitLab
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: gitlab-provider

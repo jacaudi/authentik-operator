@@ -5,17 +5,14 @@ metadata:
   name: gitlab
   namespace: sso
 spec:
-  adoption:
-    dryRun: false
-    enabled: true
   authentikRef:
     name: main
   deletionPolicy: Retain
+  dryRun: false
+  managementPolicy: Adopt
   metaDescription: Git repository hosting
   metaLaunchUrl: https://gitlab.example.com
   name: GitLab
-  openInNewTab: true
-  policyEngineMode: any
   providerRef:
     kind: AuthentikOAuthProvider
     name: gitlab

@@ -22,7 +22,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v4"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -146,66 +145,4 @@ func TestOutputAdmittedByAPIServer(t *testing.T) {
 			}
 		}
 	}
-}
-
-// TestReportedDefaultsMatchCRDs keeps the "defaulted by this operator"
-// section of the report honest against the generated CRDs.
-func TestReportedDefaultsMatchCRDs(t *testing.T) {
-	want := map[string]map[string]string{
-		"authentik.io_authentikoauthproviders.yaml": {
-			"grantTypes":            newGrantTypes,
-			"refreshTokenThreshold": newRefreshTokenThreshold,
-			"logoutMethod":          newLogoutMethod,
-		},
-		"authentik.io_authentikapplications.yaml": {"metaHide": newMetaHide},
-	}
-	for file, props := range want {
-		raw, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "crd", "bases", file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var crd struct {
-			Spec struct {
-				Versions []struct {
-					Schema struct {
-						OpenAPIV3Schema struct {
-							Properties struct {
-								Spec struct {
-									Properties map[string]struct {
-										Default any `yaml:"default"`
-									} `yaml:"properties"`
-								} `yaml:"spec"`
-							} `yaml:"properties"`
-						} `yaml:"openAPIV3Schema"`
-					} `yaml:"schema"`
-				} `yaml:"versions"`
-			} `yaml:"spec"`
-		}
-		if err := yaml.Unmarshal(raw, &crd); err != nil {
-			t.Fatal(err)
-		}
-		got := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties.Spec.Properties
-		for name, def := range props {
-			if render := fmtDefault(got[name].Default); render != def {
-				t.Errorf("%s %s: CRD default %q, report says %q", file, name, render, def)
-			}
-		}
-	}
-}
-
-func fmtDefault(v any) string {
-	if l, ok := v.([]any); ok {
-		parts := make([]string, len(l))
-		for i, e := range l {
-			parts[i] = e.(string) //nolint:forcetypeassert // test: CRD defaults here are strings.
-		}
-		return "[" + strings.Join(parts, ", ") + "]"
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	if b, ok := v.(bool); ok && !b {
-		return "false"
-	}
-	return "?"
 }

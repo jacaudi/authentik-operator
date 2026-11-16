@@ -105,7 +105,7 @@ var _ = Describe("AuthentikDeployment Controller", func() {
 					authentikiov1alpha1.LabelConnection: authentikiov1alpha1.LabelConnectionValue,
 				},
 			},
-			StringData: map[string]string{"token": token},
+			StringData: map[string]string{tokenSecretKey: token},
 		}
 	}
 

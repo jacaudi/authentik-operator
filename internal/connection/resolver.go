@@ -139,6 +139,37 @@ func (r *Resolver) ForRef(ctx context.Context, namespace string,
 	return r.ForDeployment(ctx, &d)
 }
 
+// BaseURL is the normalized base URL (see authentik.NormalizeURL) of the
+// Authentik an object in namespace with the given (possibly nil) authentikRef
+// talks to, without building a client or reading any Secret. It lets the
+// controllers tell whether two objects on different connections reach the same
+// instance. Only the URL is compared: a service DNS name and an ingress host
+// that reach one instance look different here.
+func (r *Resolver) BaseURL(ctx context.Context, namespace string,
+	ref *authentikiov1alpha1.AuthentikRef) (string, error) {
+	if ref == nil {
+		if r.Default == nil {
+			return "", &Error{
+				Reason:  ReasonNoConnection,
+				Message: "spec.authentikRef is not set and the operator has no default Authentik connection configured",
+			}
+		}
+		return authentik.NormalizeURL(r.Default.URL)
+	}
+	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
+	var d authentikiov1alpha1.AuthentikDeployment
+	if err := r.Reader.Get(ctx, key, &d); err != nil {
+		return "", readError("AuthentikDeployment", key.Namespace, key.Name, ReasonDeploymentNotFound, err)
+	}
+	if d.Spec.Connection == nil {
+		return "", &Error{
+			Reason:  ReasonConnectionNotConfigured,
+			Message: fmt.Sprintf("AuthentikDeployment %s/%s has no spec.connection", d.Namespace, d.Name),
+		}
+	}
+	return authentik.NormalizeURL(d.Spec.Connection.URL)
+}
+
 // ForDeployment resolves the client described by an AuthentikDeployment's
 // spec.connection.
 func (r *Resolver) ForDeployment(ctx context.Context, d *authentikiov1alpha1.AuthentikDeployment) (*Resolved, error) {

@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +40,31 @@ const (
 // schema default so that adopting a provider with another (or no) signing
 // key does not rewrite it.
 const defaultSigningKeyName = "authentik Self-signed Certificate"
+
+// The values a provider takes on create for every field the spec leaves unset.
+// They are applied by the controller, not by the CRD schema, so that adopting
+// a provider can tell "unset, keep what it has" from "set". A provider this
+// resource created is held to them on every reconcile.
+const (
+	defaultClientType            = "confidential"
+	defaultAccessCodeValidity    = "minutes=1"
+	defaultAccessTokenValidity   = "minutes=5"
+	defaultRefreshTokenValidity  = "days=30"
+	defaultRefreshTokenThreshold = "seconds=0"
+	defaultSubMode               = "hashed_user_id"
+	defaultIssuerMode            = "per_provider"
+	defaultLogoutMethod          = "backchannel"
+	defaultMatchingMode          = "strict"
+	defaultRedirectType          = "authorization"
+)
+
+// defaultScopes are the scope names a new provider takes when spec.scopes is unset.
+func defaultScopes() []string { return []string{"openid", "profile", "email"} }
+
+// defaultGrantTypes are the grant types a new provider takes when spec.grantTypes is unset.
+func defaultGrantTypes() []api.GrantTypeEnum {
+	return []api.GrantTypeEnum{api.GRANTTYPEENUM_AUTHORIZATION_CODE, api.GRANTTYPEENUM_REFRESH_TOKEN}
+}
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -79,18 +105,31 @@ func expectedClientID(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	}
 }
 
-// adoptionView narrows want, the full desired state, to what adoption may
-// write: the fields the spec sets. Where the spec says nothing, the adopted
-// provider's own value stands -- the client ID (unless spec.clientId is
-// set), the name (unless spec.name is set) and the optional authenticationFlow,
-// encryptionKey, logoutUri and signingKey. Fields with a CRD default are always "set"
-// (the API server fills them), so they stay in want; see APIAdoptionSpec.
+// adoptionView narrows want, the full desired state (spec values, with the
+// create defaults standing in for unset fields), to what adoption may write:
+// the fields the spec sets. Where the spec says nothing, the adopted
+// provider's own value stands -- the client ID (unless spec.clientId is set),
+// the name (unless spec.name is set), authenticationFlow, encryptionKey,
+// logoutUri, signingKey, redirectUris, scopes (see below), and every field
+// that takes a default on create (grantTypes, clientType, the four validity
+// and threshold fields, subMode, includeClaimsInIdToken, issuerMode,
+// logoutMethod, and the matchingMode and type of each redirect URI).
+//
+// Property mappings are one Authentik field built from scopes plus
+// propertyMappings. With scopes unset the live list is kept and the mappings
+// the spec names are added to it (never removed); with scopes set the spec
+// owns the whole list.
 func adoptionView(p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest,
 	got *api.OAuth2Provider) {
 	s := p.Spec
 	if s.ClientID == "" {
 		want.SetClientId(got.GetClientId())
 	}
+	keepLiveTuning(&s, want, got)
+	if s.Scopes == nil {
+		want.PropertyMappings = sortedUnique(slices.Concat(got.PropertyMappings, want.PropertyMappings))
+	}
+	want.RedirectUris = adoptedRedirects(s.RedirectURIs, want.RedirectUris, got.RedirectUris)
 	if s.Name == "" {
 		want.Name = got.Name
 	}
@@ -106,6 +145,84 @@ func adoptionView(p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth
 	if s.SigningKey == "" {
 		want.SigningKey = got.SigningKey
 	}
+}
+
+// keepLiveTuning is the part of adoptionView for the fields that take a
+// default on create: each one the spec leaves unset keeps the live value.
+func keepLiveTuning(s *authentikiov1alpha1.AuthentikOAuthProviderSpec, want *api.OAuth2ProviderRequest,
+	got *api.OAuth2Provider) {
+	if s.ClientType == "" {
+		want.SetClientType(got.GetClientType())
+	}
+	if len(s.GrantTypes) == 0 {
+		want.GrantTypes = slices.Clone(got.GrantTypes)
+		slices.Sort(want.GrantTypes)
+	}
+	if s.AccessCodeValidity == "" {
+		want.SetAccessCodeValidity(got.GetAccessCodeValidity())
+	}
+	if s.AccessTokenValidity == "" {
+		want.SetAccessTokenValidity(got.GetAccessTokenValidity())
+	}
+	if s.RefreshTokenValidity == "" {
+		want.SetRefreshTokenValidity(got.GetRefreshTokenValidity())
+	}
+	if s.RefreshTokenThreshold == "" {
+		want.SetRefreshTokenThreshold(got.GetRefreshTokenThreshold())
+	}
+	if s.SubMode == "" {
+		want.SetSubMode(got.GetSubMode())
+	}
+	if s.IncludeClaimsInIDToken == nil {
+		want.SetIncludeClaimsInIdToken(got.GetIncludeClaimsInIdToken())
+	}
+	if s.IssuerMode == "" {
+		want.SetIssuerMode(got.GetIssuerMode())
+	}
+	if s.LogoutMethod == "" {
+		want.SetLogoutMethod(got.GetLogoutMethod())
+	}
+}
+
+// adoptedRedirects is the redirect URIs an adopted provider should have. With
+// none in the spec, the live ones stand. Otherwise a spec entry that leaves
+// matchingMode or type unset takes the value of the live redirect URI with the
+// same url, and the create default when there is none. want holds the spec
+// entries with the create defaults already applied.
+func adoptedRedirects(spec []authentikiov1alpha1.RedirectURI, want []api.RedirectURIRequest,
+	live []api.RedirectURI) []api.RedirectURIRequest {
+	if len(spec) == 0 {
+		out := make([]api.RedirectURIRequest, 0, len(live))
+		for _, l := range live {
+			out = append(out, api.RedirectURIRequest{Url: l.Url, MatchingMode: l.MatchingMode,
+				RedirectUriType: l.RedirectUriType})
+		}
+		return out
+	}
+	out := slices.Clone(want)
+	for i, u := range spec {
+		if u.MatchingMode != "" && u.Type != "" {
+			continue
+		}
+		j := slices.IndexFunc(live, func(l api.RedirectURI) bool { return l.Url == u.URL })
+		if j < 0 {
+			continue
+		}
+		if u.MatchingMode == "" {
+			out[i].MatchingMode = live[j].MatchingMode
+		}
+		if u.Type == "" && live[j].RedirectUriType != nil {
+			out[i].RedirectUriType = live[j].RedirectUriType
+		}
+	}
+	return out
+}
+
+// sortedUnique returns the sorted, de-duplicated values of in.
+func sortedUnique[T cmp.Ordered](in []T) []T {
+	out := slices.Clone(in)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // ownsProvider reports whether got is the provider this resource created:
@@ -125,9 +242,35 @@ func providerName(p *authentikiov1alpha1.AuthentikOAuthProvider) string {
 	return p.Name
 }
 
+// setTuningWithDefaults sets the fields that take a create default when the
+// spec leaves them unset: client type, grant types, the four validity and
+// threshold fields, sub mode, issuer mode, includeClaimsInIdToken and the
+// logout method. Scopes and redirect URIs are not plain values and are
+// handled by their own code.
+func setTuningWithDefaults(req *api.OAuth2ProviderRequest, s *authentikiov1alpha1.AuthentikOAuthProviderSpec) {
+	req.SetClientType(api.ClientTypeEnum(cmp.Or(s.ClientType, defaultClientType)))
+	req.GrantTypes = defaultGrantTypes()
+	if len(s.GrantTypes) > 0 {
+		req.GrantTypes = make([]api.GrantTypeEnum, 0, len(s.GrantTypes))
+		for _, g := range s.GrantTypes {
+			req.GrantTypes = append(req.GrantTypes, api.GrantTypeEnum(g))
+		}
+	}
+	slices.Sort(req.GrantTypes)
+	req.SetAccessCodeValidity(cmp.Or(s.AccessCodeValidity, defaultAccessCodeValidity))
+	req.SetAccessTokenValidity(cmp.Or(s.AccessTokenValidity, defaultAccessTokenValidity))
+	req.SetRefreshTokenValidity(cmp.Or(s.RefreshTokenValidity, defaultRefreshTokenValidity))
+	req.SetRefreshTokenThreshold(cmp.Or(s.RefreshTokenThreshold, defaultRefreshTokenThreshold))
+	req.SetSubMode(api.SubModeEnum(cmp.Or(s.SubMode, defaultSubMode)))
+	req.SetIssuerMode(api.IssuerModeEnum(cmp.Or(s.IssuerMode, defaultIssuerMode)))
+	req.SetIncludeClaimsInIdToken(s.IncludeClaimsInIDToken == nil || *s.IncludeClaimsInIDToken)
+	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(cmp.Or(s.LogoutMethod, defaultLogoutMethod)))
+}
+
 // desiredOAuth2Provider resolves every reference in the spec and returns the
-// full request the provider should match. Spec defaults are applied by the
-// API server, so every defaulted field is read as is.
+// full request the provider should match. A field the spec leaves unset takes
+// its create default here (see the default* constants); adoptionView swaps
+// those for the live values when the provider is adopted.
 func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider) (*api.OAuth2ProviderRequest, error) {
 	s := p.Spec
@@ -160,8 +303,8 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	for _, u := range s.RedirectURIs {
 		redirects = append(redirects, api.RedirectURIRequest{
 			Url:             u.URL,
-			MatchingMode:    api.MatchingModeEnum(u.MatchingMode),
-			RedirectUriType: new(api.RedirectURITypeEnum(u.Type)),
+			MatchingMode:    api.MatchingModeEnum(cmp.Or(u.MatchingMode, defaultMatchingMode)),
+			RedirectUriType: new(api.RedirectURITypeEnum(cmp.Or(u.Type, defaultRedirectType))),
 		})
 	}
 
@@ -182,24 +325,11 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 		return nil, err
 	}
 
-	req.SetClientType(api.ClientTypeEnum(s.ClientType))
-	req.GrantTypes = make([]api.GrantTypeEnum, 0, len(s.GrantTypes))
-	for _, g := range s.GrantTypes {
-		req.GrantTypes = append(req.GrantTypes, api.GrantTypeEnum(g))
-	}
-	slices.Sort(req.GrantTypes)
 	req.SetClientId(expectedClientID(p))
-
-	req.SetAccessCodeValidity(s.AccessCodeValidity)
-	req.SetAccessTokenValidity(s.AccessTokenValidity)
-	req.SetRefreshTokenValidity(s.RefreshTokenValidity)
-	req.SetRefreshTokenThreshold(s.RefreshTokenThreshold)
-	req.SetSubMode(api.SubModeEnum(s.SubMode))
-	req.SetIssuerMode(api.IssuerModeEnum(s.IssuerMode))
-	req.SetIncludeClaimsInIdToken(*s.IncludeClaimsInIDToken)
+	setTuningWithDefaults(req, &s)
 
 	// An empty signingKey is resolved to the default certificate only where
-	// it will be used (see resolveDefaultSigningKey): not for an adopted
+	// it will be used (see applyCreateDefaults): not for an adopted
 	// provider, which keeps its own.
 	if s.SigningKey != "" {
 		signing, err := certPK(s.SigningKey)
@@ -219,38 +349,63 @@ func desiredOAuth2Provider(ctx context.Context, c *authentik.Client,
 	}
 
 	req.SetLogoutUri(s.LogoutURI)
-	req.SetLogoutMethod(api.OAuth2ProviderLogoutMethodEnum(s.LogoutMethod))
 	return req, nil
 }
 
-// resolveDefaultSigningKey fills in the default certificate when
-// spec.signingKey is empty, for a provider about to be created or managed as
-// created.
-func resolveDefaultSigningKey(ctx context.Context, c *authentik.Client,
+// applyCreateDefaults completes want for a provider about to be created or
+// managed as created: it refuses a spec without redirectUris (nothing to
+// adopt them from), and resolves the references whose defaults need Authentik
+// -- the default signing key when spec.signingKey is empty and the default
+// scope mappings when spec.scopes is unset. The plain defaults are already in
+// want (see desiredOAuth2Provider); an adopted provider is never given any of
+// these, see adoptionView.
+func applyCreateDefaults(ctx context.Context, c *authentik.Client,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, want *api.OAuth2ProviderRequest) error {
-	if p.Spec.SigningKey != "" {
-		return nil
+	if len(p.Spec.RedirectURIs) == 0 {
+		return condErr(reasonInvalidSpec, errors.New("spec.redirectUris is required when the provider is created; "+
+			"it may be omitted only when adopting a provider that already has redirect URIs"))
 	}
-	k, err := c.CertificateByName(ctx, defaultSigningKeyName)
-	if err != nil {
-		return referenceError(err)
+	if p.Spec.SigningKey == "" {
+		k, err := c.CertificateByName(ctx, defaultSigningKeyName)
+		if err != nil {
+			return referenceError(err)
+		}
+		want.SetSigningKey(k.Pk)
 	}
-	want.SetSigningKey(k.Pk)
+	if p.Spec.Scopes == nil {
+		pks, err := scopeMappingPKs(ctx, c, defaultScopes())
+		if err != nil {
+			return err
+		}
+		want.PropertyMappings = sortedUnique(slices.Concat(want.PropertyMappings, pks))
+	}
 	return nil
 }
 
-// propertyMappingPKs resolves the scope mappings and property mappings the
-// spec names to a sorted, de-duplicated list of pks.
-func propertyMappingPKs(ctx context.Context, c *authentik.Client,
-	s *authentikiov1alpha1.AuthentikOAuthProviderSpec) ([]string, error) {
-	mappings := make([]string, 0, len(s.Scopes)+len(s.PropertyMappings))
-	for _, name := range s.Scopes {
+// scopeMappingPKs resolves scope names to their scope mappings' pks.
+func scopeMappingPKs(ctx context.Context, c *authentik.Client, names []string) ([]string, error) {
+	pks := make([]string, 0, len(names))
+	for _, name := range names {
 		m, err := c.ScopeMappingByScopeName(ctx, name)
 		if err != nil {
 			return nil, referenceError(err)
 		}
-		mappings = append(mappings, m.Pk)
+		pks = append(pks, m.Pk)
 	}
+	return pks, nil
+}
+
+// propertyMappingPKs resolves the scope mappings and property mappings the
+// spec names to a sorted, de-duplicated list of pks. An unset spec.scopes
+// resolves none: the default scopes are added by applyCreateDefaults, only
+// where the provider is created.
+func propertyMappingPKs(ctx context.Context, c *authentik.Client,
+	s *authentikiov1alpha1.AuthentikOAuthProviderSpec) ([]string, error) {
+	mappings, err := scopeMappingPKs(ctx, c, s.Scopes)
+	if err != nil {
+		return nil, err
+	}
+	mappings = slices.Grow(mappings, len(s.PropertyMappings))
 	for _, ref := range s.PropertyMappings {
 		var (
 			m   *api.PropertyMapping

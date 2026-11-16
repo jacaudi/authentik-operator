@@ -55,9 +55,9 @@ var _ = Describe("AuthentikApplication Controller", func() {
 			Reader:  k8sClient,
 			Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1},
 		}
-		apps = &AuthentikApplicationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		apps = &AuthentikApplicationReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, Recorder: recorder}
-		providers = &AuthentikOAuthProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(),
+		providers = &AuthentikOAuthProviderReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
 			Connections: connections, APIReader: k8sClient}
 	})
 	AfterEach(func() { fake.Close() })
@@ -122,13 +122,20 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		return meta.FindStatusCondition(get(a).Status.Conditions, ConditionReady)
 	}
 
-	It("applies defaults at admission", func() {
+	It("leaves the adoption-sensitive fields unset at admission and applies the defaults when it creates", func() {
 		a := newApp("app-defaults", "")
 		create(a)
 		s := get(a).Spec
-		Expect(s.PolicyEngineMode).To(BeEquivalentTo("any"))
-		Expect(*s.OpenInNewTab).To(BeTrue())
-		Expect(*s.MetaHide).To(BeFalse())
+		Expect(s.PolicyEngineMode).To(BeEmpty())
+		Expect(s.OpenInNewTab).To(BeNil())
+		Expect(s.MetaHide).To(BeNil())
+
+		_, err := apps.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(a)})
+		Expect(err).NotTo(HaveOccurred())
+		got := fake.Application("app-defaults")
+		Expect(got["policy_engine_mode"]).To(Equal("any"))
+		Expect(got["open_in_new_tab"]).To(BeTrue())
+		Expect(got["meta_hide"]).To(BeFalse())
 	})
 
 	It("waits for a missing provider, then a not-yet-Ready one, then creates the application", func() {
@@ -292,7 +299,17 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		uid := get(a).Status.ApplicationUID
 
+		// One spurious 404 is not asked about twice (the slug is immutable), so
+		// the reconcile tries to recreate the application, which Authentik
+		// refuses because the slug exists. That is safe -- no second
+		// application, the uid is kept -- and the next reconcile is clean.
 		fake.FailNext(http.MethodGet, http.StatusNotFound)
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Status).To(Equal(metav1.ConditionFalse))
+		Expect(get(a).Status.ApplicationUID).To(Equal(uid))
+		Expect(fake.ApplicationCount()).To(Equal(1))
+
 		_, err = reconcileApp(a)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
@@ -305,8 +322,9 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(fake.Application("app-404")).To(BeNil())
 	})
 
-	It("recovers a lost create of an application without a provider", func() {
-		a := newApp("app-lost-plain", "")
+	It("recovers a lost create when the application links to the provider this resource created", func() {
+		readyProvider("prov-lost")
+		a := newApp("app-lost-plain", "prov-lost")
 		create(a)
 		fake.LoseNextApplicationCreate()
 
@@ -318,8 +336,24 @@ var _ = Describe("AuthentikApplication Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ready(a).Status).To(Equal(metav1.ConditionTrue))
 		Expect(get(a).Status.PendingCreate).To(BeEmpty())
+		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 		Expect(get(a).Status.ApplicationUID).To(Equal(fake.Application("app-lost-plain")["pk"]))
 		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("Recovered")))
+	})
+
+	It("cannot prove a lost create of an application without a provider, so reports a Conflict", func() {
+		a := newApp("app-lost-bare", "")
+		create(a)
+		fake.LoseNextApplicationCreate()
+
+		_, err := reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+
+		_, err = reconcileApp(a)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ready(a).Reason).To(Equal(reasonConflict))
+		Expect(get(a).Status.Provenance).To(BeEmpty())
+		Expect(drainEvents(recorder)).To(ContainElement(ContainSubstring("outcome is unproven")))
 	})
 
 	It("clears the pending marker when a create is definitively rejected", func() {
