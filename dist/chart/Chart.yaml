@@ -5,8 +5,8 @@ type: application
 
 # Chart version == app version. Both lines are bumped by release-please
 # (generic updater, see release-please-config.json); do not edit by hand.
-version: 0.0.0 # x-release-please-version
-appVersion: "0.0.0" # x-release-please-version
+version: 0.1.0 # x-release-please-version
+appVersion: "0.1.0" # x-release-please-version
 
 home: https://github.com/jacaudi/authentik-operator
 sources:
