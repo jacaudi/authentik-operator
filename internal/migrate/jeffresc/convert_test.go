@@ -324,7 +324,9 @@ func TestReportNamesAdoptionGateSelector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"kubernetes.io/metadata.name in (ns1, ns2)", "adoption.defaultConnectionNamespaceSelector"} {
+	for _, want := range []string{
+		"kubernetes.io/metadata.name in (ns1, ns2)", "adoption.defaultConnectionNamespaceSelector",
+	} {
 		if !strings.Contains(res.Report, want) {
 			t.Errorf("report lacks %q:\n%s", want, res.Report)
 		}

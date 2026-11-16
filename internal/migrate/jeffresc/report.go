@@ -58,11 +58,11 @@ func usesClientSecret(tmpl string) bool { return strings.Contains(tmpl, ".Client
 func (b *builder) report(skipped []string) string {
 	var sb strings.Builder
 	sb.WriteString("convert-jeffresc report\n=======================\n\n")
-	sb.WriteString("Every converted object adopts the provider or application JeffResc created (managementPolicy: Adopt).\n")
-	sb.WriteString("Adoption writes only the fields in the spec: a field JeffResc left unset (it applied its own\n")
-	sb.WriteString("default) is left unset here, so the live value stays. Before turning dryRun off, read each\n")
-	sb.WriteString("object's Ready condition (reason AdoptionDryRun lists `field: old -> new`) and edit the spec\n")
-	sb.WriteString("until the only listed changes are ones you intend.\n")
+	sb.WriteString("Every converted object adopts the provider or application JeffResc created\n")
+	sb.WriteString("(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc\n")
+	sb.WriteString("left unset (it applied its own default) is left unset here, so the live value stays.\n")
+	sb.WriteString("Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists\n")
+	sb.WriteString("`field: old -> new`) and edit the spec until the only listed changes are ones you intend.\n")
 	for _, r := range b.reports {
 		fmt.Fprintf(&sb, "\n%s\n", r.ref)
 		fmt.Fprintf(&sb, "  files: %s\n", strings.Join(r.files, ", "))

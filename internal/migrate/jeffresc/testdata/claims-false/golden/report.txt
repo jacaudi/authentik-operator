@@ -1,11 +1,11 @@
 convert-jeffresc report
 =======================
 
-Every converted object adopts the provider or application JeffResc created (managementPolicy: Adopt).
-Adoption writes only the fields in the spec: a field JeffResc left unset (it applied its own
-default) is left unset here, so the live value stays. Before turning dryRun off, read each
-object's Ready condition (reason AdoptionDryRun lists `field: old -> new`) and edit the spec
-until the only listed changes are ones you intend.
+Every converted object adopts the provider or application JeffResc created
+(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc
+left unset (it applied its own default) is left unset here, so the live value stays.
+Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists
+`field: old -> new`) and edit the spec until the only listed changes are ones you intend.
 
 AuthentikOAuth2Application ns/demo
   files: authentikoauthprovider-demo.yaml, authentikapplication-demo.yaml
