@@ -326,8 +326,8 @@ func findOwnInvitation(ctx context.Context, c *authentik.Client,
 	if err != nil {
 		return nil, err
 	}
-	username, _ := found.FixedData["username"].(string)
-	attributes, _ := found.FixedData["attributes"].(map[string]any)
+	username, _ := found.FixedData[fixedDataUsername].(string)
+	attributes, _ := found.FixedData[fixedDataAttributes].(map[string]any)
 	if username != u.Spec.Username || !found.GetSingleUse() || !authentik.HasOwnerProof(attributes, string(u.UID)) {
 		return nil, condErrf(reasonInvitationAmbiguous, "an invitation named %q exists in Authentik but does not carry "+
 			"this resource's username and ownership proof, so this resource did not issue it; it neither links nor "+

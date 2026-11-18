@@ -208,7 +208,7 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 		foreign := func(u *authentikiov1alpha1.AuthentikUser) string {
 			fake.ConsumeInvitation(attemptOf(u, 1))
 			return fake.SeedInvitation(attemptOf(u, 1), map[string]any{
-				"fixed_data": map[string]any{"username": "mallory"}, "single_use": false,
+				"fixed_data": map[string]any{fixedDataUsername: "mallory"}, "single_use": false,
 			})
 		}
 		linkInSecret := func() string {

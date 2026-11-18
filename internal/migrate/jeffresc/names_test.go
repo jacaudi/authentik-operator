@@ -38,19 +38,24 @@ spec:
     invalidationFlow: b
     redirectUris: ["https://demo.example.com/cb"]
 `
+	const (
+		appName = "demo"
+		slugErr = "does not match"
+		nameErr = "metadata.name"
+	)
 	for _, tc := range []struct {
 		name, metadataName, slug string
 		wantErr                  string
 	}{
-		{name: "plain slug", metadataName: "demo", slug: "my_app-1"},
-		{name: "slug with separators", metadataName: "demo", slug: "/../../escape", wantErr: "slug"},
-		{name: "slug with a dot", metadataName: "demo", slug: "my.app", wantErr: "slug"},
-		{name: "name with a separator", metadataName: "a/b", slug: "ok", wantErr: "metadata.name"},
-		{name: "name that climbs", metadataName: "../x", slug: "ok", wantErr: "metadata.name"},
+		{name: "plain slug", metadataName: appName, slug: "my_app-1"},
+		{name: "slug with separators", metadataName: appName, slug: "/../../escape", wantErr: slugErr},
+		{name: "slug with a dot", metadataName: appName, slug: "my.app", wantErr: slugErr},
+		{name: "name with a separator", metadataName: "a/b", slug: "ok", wantErr: nameErr},
+		{name: "name that climbs", metadataName: "../x", slug: "ok", wantErr: nameErr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := fmt.Sprintf(manifest, tc.metadataName, tc.slug)
-			res, err := Convert([]Input{{Source: "input.yaml", Data: []byte(in)}}, Options{DryRunAdoption: true})
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{DryRunAdoption: true})
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v, want one containing %q", err, tc.wantErr)

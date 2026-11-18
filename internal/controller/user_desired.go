@@ -26,6 +26,13 @@ import (
 	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
 
+// Keys of an invitation's fixed_data that the operator sets and reads back (see
+// findOwnInvitation).
+const (
+	fixedDataUsername   = "username"
+	fixedDataAttributes = "attributes"
+)
+
 // desiredInvitation builds the create request of u's invitation: single use,
 // bound to the enrolment flow, and pinning the username with fixed_data the
 // user-write stage merges into the new account, together with the ownership
@@ -33,8 +40,8 @@ import (
 func desiredInvitation(u *authentikiov1alpha1.AuthentikUser, name, flowPK string,
 	expires time.Time) *api.InvitationRequest {
 	fixed := map[string]any{
-		"username":   u.Spec.Username,
-		"attributes": authentik.OwnerProof(string(u.UID)),
+		fixedDataUsername:   u.Spec.Username,
+		fixedDataAttributes: authentik.OwnerProof(string(u.UID)),
 	}
 	if u.Spec.Name != "" {
 		fixed["name"] = u.Spec.Name
