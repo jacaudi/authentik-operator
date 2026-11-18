@@ -207,12 +207,17 @@ type creds struct{ ClientID, ClientSecret, Issuer, AuthURL, TokenURL, UserInfoUR
 // login performs a full headless OIDC authorization-code login as the
 // bootstrap user with the given credentials against the rendered endpoints.
 func login(ctx context.Context, c creds, redirect string) (*aktest.OIDCResult, error) {
+	return loginAs(ctx, c, redirect, bootstrapUser, bootstrapPassword)
+}
+
+// loginAs is login as another user.
+func loginAs(ctx context.Context, c creds, redirect, username, password string) (*aktest.OIDCResult, error) {
 	return aktest.AuthorizationCodeLogin(ctx, aktest.OIDCParams{
 		Transport: clusterTransport(),
 		Issuer:    c.Issuer, AuthURL: c.AuthURL, TokenURL: c.TokenURL, UserInfoURL: c.UserInfoURL,
 		ClientID: c.ClientID, ClientSecret: c.ClientSecret,
 		RedirectURI: redirect,
-		Username:    bootstrapUser, Password: bootstrapPassword,
+		Username:    username, Password: password,
 	})
 }
 

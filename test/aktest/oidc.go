@@ -65,9 +65,25 @@ type OIDCResult struct {
 
 var flowPath = regexp.MustCompile(`^/if/flow/([^/]+)/?$`)
 
+// ErrPermissionDenied is wrapped by the error AuthorizationCodeLogin returns
+// when a signed-in user is refused the application by one of its policies.
+// Authentik renders that as an HTML page with status 200 (policies/views.py,
+// policies/denied.py), which the walker would otherwise report only as an
+// unexpected page.
+var ErrPermissionDenied = errors.New("aktest: permission denied")
+
 const (
 	maxHops    = 12
 	kComponent = "component"
+	// Flow-executor challenges both walkers answer or stop at.
+	compRedirect = "xak-flow-redirect"
+	compPrompt   = "ak-stage-prompt"
+	compDenied   = "ak-stage-access-denied"
+	// deniedPageText is what Authentik's access-denied page says.
+	deniedPageText = "Permission denied"
+	// pageLimit bounds how much of an unexpected page is read: the denied
+	// page's text may follow a long header.
+	pageLimit = 1 << 16
 )
 
 // AuthorizationCodeLogin drives Authentik's flow executor with a cookie jar:
@@ -76,17 +92,9 @@ const (
 // token endpoint with the client credentials, validate the id_token claims
 // (iss, aud, nonce) and call userinfo with the access token.
 func AuthorizationCodeLogin(ctx context.Context, p OIDCParams) (*OIDCResult, error) {
-	jar, err := cookiejar.New(nil)
+	hc, err := newWalkerClient(p.Transport)
 	if err != nil {
 		return nil, err
-	}
-	hc := &http.Client{
-		Transport: p.Transport,
-		Jar:       jar,
-		Timeout:   30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
 	}
 	scope := p.Scope
 	if scope == "" {
@@ -146,6 +154,32 @@ func AuthorizationCodeLogin(ctx context.Context, p OIDCParams) (*OIDCResult, err
 	return res, nil
 }
 
+// newWalkerClient returns the client both flow walkers use: a cookie jar, and
+// redirects handed back to the caller instead of followed.
+func newWalkerClient(rt http.RoundTripper) (*http.Client, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Transport: rt,
+		Jar:       jar,
+		Timeout:   30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
+}
+
+// answerErrors is the error for a stage that rejected the answer just posted,
+// or nil when the challenge carries no response_errors.
+func answerErrors(slug, comp string, ch map[string]any) error {
+	if errs, ok := ch["response_errors"].(map[string]any); ok && len(errs) > 0 {
+		return fmt.Errorf("flow %s: stage %s rejected the answer: %s", slug, comp, snippet(mustJSON(errs)))
+	}
+	return nil
+}
+
 // checkClaims validates the id_token claims the suite cares about.
 func checkClaims(claims map[string]any, p OIDCParams, nonce string) error {
 	if got := str(claims["iss"]); got != p.Issuer {
@@ -188,9 +222,12 @@ func (l *login) follow(ctx context.Context, u *url.URL) (*url.URL, error) {
 		if err != nil {
 			return nil, err
 		}
-		body, err := readBody(resp, 4096)
+		body, err := readBody(resp, pageLimit)
 		if err != nil {
 			return nil, err
+		}
+		if resp.StatusCode == http.StatusOK && strings.Contains(string(body), deniedPageText) {
+			return nil, fmt.Errorf("GET %s: %w", u.Redacted(), ErrPermissionDenied)
 		}
 		if resp.StatusCode < 300 || resp.StatusCode > 399 {
 			return nil, fmt.Errorf("GET %s: HTTP %d, expected a redirect: %s", u.Redacted(), resp.StatusCode, snippet(body))
@@ -224,7 +261,7 @@ func (l *login) runFlow(ctx context.Context, page *url.URL, slug string) (*url.U
 	for range maxHops {
 		comp := str(ch[kComponent])
 		switch comp {
-		case "xak-flow-redirect":
+		case compRedirect:
 			to, err := url.Parse(str(ch["to"]))
 			if err != nil || str(ch["to"]) == "" {
 				return nil, fmt.Errorf("flow %s: redirect challenge without a usable target", slug)
@@ -242,7 +279,7 @@ func (l *login) runFlow(ctx context.Context, page *url.URL, slug string) (*url.U
 		case "ak-stage-consent":
 			ch, err = l.executor(ctx, http.MethodPost, exec.String(),
 				map[string]any{kComponent: comp, "token": ch["token"]})
-		case "ak-stage-access-denied":
+		case compDenied:
 			return nil, fmt.Errorf("flow %s: access denied: %s", slug, str(ch["error_message"]))
 		default:
 			return nil, fmt.Errorf("flow %s: unsupported stage %q: %s", slug, comp, snippet(mustJSON(ch)))
@@ -250,8 +287,8 @@ func (l *login) runFlow(ctx context.Context, page *url.URL, slug string) (*url.U
 		if err != nil {
 			return nil, err
 		}
-		if errs, ok := ch["response_errors"].(map[string]any); ok && len(errs) > 0 {
-			return nil, fmt.Errorf("flow %s: stage %s rejected the answer: %s", slug, comp, snippet(mustJSON(errs)))
+		if err := answerErrors(slug, comp, ch); err != nil {
+			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("flow %s did not finish within %d challenges", slug, maxHops)
