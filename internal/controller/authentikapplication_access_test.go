@@ -21,6 +21,7 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -536,6 +537,38 @@ var _ = Describe("AuthentikApplication spec.access", func() {
 
 		mustReconcile(a)
 		Expect(boundGroups("pending-write")).To(ConsistOf(groupPK))
+		Expect(cond(a, ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("sets Ready once per reconcile, so a persistent AccessPending leaves the status untouched", func() {
+		fake.SeedGroup(immichGroup, nil)
+		a := newApp("pending-stable", policyCreate, groupsAccess(immichGroup))
+		fake.FailNextOn(http.MethodPost, bindingsPath, http.StatusInternalServerError)
+		_, err := reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+		first := get(a)
+		Expect(cond(first, ConditionReady).Reason).To(Equal(reasonAccessPending))
+
+		// Condition times have second resolution: let a flip show.
+		time.Sleep(1100 * time.Millisecond)
+		fake.FailNextOn(http.MethodPost, bindingsPath, http.StatusInternalServerError)
+		_, err = reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+		second := get(a)
+		Expect(cond(second, ConditionReady).Reason).To(Equal(reasonAccessPending))
+		Expect(cond(second, ConditionReady).LastTransitionTime).To(Equal(cond(first, ConditionReady).LastTransitionTime),
+			"Ready was flipped to True and back to False within the reconcile")
+		Expect(second.ResourceVersion).To(Equal(first.ResourceVersion), "a status patch re-enqueues the object at once")
+	})
+
+	It("keeps AccessInSync absent for an Unmanaged application whose bindings cannot be listed", func() {
+		a := newApp("unmanaged-list-fails", policyCreate, unmanaged)
+		mustReconcile(a)
+
+		fake.FailNextOn(http.MethodGet, bindingsPath, http.StatusInternalServerError)
+		_, err := reconcileApp(a)
+		Expect(err).To(HaveOccurred())
+		Expect(meta.FindStatusCondition(get(a).Status.Conditions, ConditionAccessInSync)).To(BeNil())
 		Expect(cond(a, ConditionReady).Status).To(Equal(metav1.ConditionTrue))
 	})
 

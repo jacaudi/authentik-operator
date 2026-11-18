@@ -141,15 +141,24 @@ func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentiki
 	a.Status.Slug = got.Slug
 	a.Status.ProviderPK = int32OrZero(got.Provider.Get())
 	a.Status.ObservedGeneration = a.Generation
-	if readOnly(a.Spec.ManagementPolicy) {
+	// Ready is set once: syncAccess says when it holds Ready at False
+	// (AccessPending), and setting True first would flip the condition twice in
+	// one reconcile.
+	res, readyHeld, accessErr := r.syncAccess(ctx, a, got, access)
+	observing := readOnly(a.Spec.ManagementPolicy)
+	if !observing {
+		meta.RemoveStatusCondition(&a.Status.Conditions, ConditionDrifted)
+	}
+	switch {
+	case readyHeld:
+	case observing:
 		r.setReady(a, metav1.ConditionTrue, reasonReadOnly,
 			fmt.Sprintf("Application %q found; observed read only", got.Slug))
-	} else {
-		meta.RemoveStatusCondition(&a.Status.Conditions, ConditionDrifted)
+	default:
 		r.setReady(a, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Application %q is in sync", got.Slug))
 	}
-	if res, err := r.syncAccess(ctx, a, got, access); err != nil || !res.IsZero() {
-		return res, err
+	if accessErr != nil || !res.IsZero() {
+		return res, accessErr
 	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
 }

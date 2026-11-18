@@ -40,8 +40,9 @@ import (
 // Conditions and reasons of spec.access.
 const (
 	// ConditionAccessInSync reports whether the application's group bindings in
-	// Authentik match spec.access. It is absent under type Unmanaged. A binding
-	// problem never flips Ready.
+	// Authentik match spec.access. It is absent under type Unmanaged and when a
+	// ReadOnly application has no spec.access. A binding problem never flips
+	// Ready, except AccessPending (see syncAccess).
 	ConditionAccessInSync = "AccessInSync"
 	// ConditionAccessOpen is True when the application has no enabled policy
 	// binding of any kind, so every user may open it unless the instance
@@ -362,15 +363,20 @@ func writeBindings(ctx context.Context, st accessState, appPK string, plan bindi
 
 // syncAccess brings the application's group bindings to spec.access and
 // records the result: the bindings in status, AccessOpen, and AccessInSync.
-// An access problem never flips Ready, except AccessPending on an application
-// that has no binding of its listed groups yet. It returns a result that is
-// not empty when the reconcile has to come back sooner, and an error to back
-// off on.
+// An access problem never flips Ready, except AccessPending: an application
+// created now whose bindings cannot be read, and one that has no binding of its
+// listed groups yet. In those cases Ready is set to False here and readyHeld is
+// true, so the caller does not set Ready to True first: setting a condition to
+// True and back to False within one reconcile stamps a new transition time and
+// makes every reconcile patch the status, which re-enqueues the object at once.
+// It returns a result that is not empty when the reconcile has to come back
+// sooner, and an error to back off on.
 func (r *AuthentikApplicationReconciler) syncAccess(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication, got *api.Application, st accessState) (ctrl.Result, error) {
+	a *authentikiov1alpha1.AuthentikApplication, got *api.Application,
+	st accessState) (res ctrl.Result, readyHeld bool, err error) {
 	live, err := st.client.ListBindings(ctx, got.Pk)
 	if err != nil {
-		return ctrl.Result{}, r.accessReadFailed(a, st, err)
+		return ctrl.Result{}, st.created, r.accessReadFailed(a, st, err)
 	}
 	mode := got.GetPolicyEngineMode()
 	var w accessWrites
@@ -385,13 +391,13 @@ func (r *AuthentikApplicationReconciler) syncAccess(ctx context.Context,
 			// The status and AccessOpen describe what Authentik holds now,
 			// never the list read before the writes.
 			if live, err = st.client.ListBindings(ctx, got.Pk); err != nil {
-				return ctrl.Result{}, errors.Join(w.err, r.accessReadFailed(a, st, err))
+				return ctrl.Result{}, st.created, errors.Join(w.err, r.accessReadFailed(a, st, err))
 			}
 		}
 	}
 	recordBindings(a, live)
 	if !wantsGroups(a) || readOnly(a.Spec.ManagementPolicy) {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, false, nil
 	}
 	return r.finishAccess(a, st, live, mode, w)
 }
@@ -402,10 +408,11 @@ func (r *AuthentikApplicationReconciler) syncAccess(ctx context.Context,
 func (r *AuthentikApplicationReconciler) accessReadFailed(a *authentikiov1alpha1.AuthentikApplication,
 	st accessState, err error) error {
 	err = fmt.Errorf("list policy bindings: %w", err)
-	if st.created {
+	switch {
+	case st.created:
 		r.setReady(a, metav1.ConditionFalse, reasonAccessPending, "the policy bindings of the new application could "+
 			"not be read yet; until they can be, every user may open it unless the instance setting is off")
-	} else {
+	case wantsGroups(a):
 		setAccessCondition(a, ConditionAccessInSync, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 	}
 	return err
@@ -415,23 +422,23 @@ const accessPendingMessage = "waiting for the first binding of spec.access.group
 	"may open the application unless the instance setting is off"
 
 // finishAccess records the outcome of applying the plan to a Groups
-// application that is not ReadOnly.
+// application that is not ReadOnly. readyHeld is true when it set Ready.
 func (r *AuthentikApplicationReconciler) finishAccess(a *authentikiov1alpha1.AuthentikApplication, st accessState,
-	live []api.PolicyBinding, mode api.PolicyEngineMode, w accessWrites) (ctrl.Result, error) {
+	live []api.PolicyBinding, mode api.PolicyEngineMode, w accessWrites) (res ctrl.Result, readyHeld bool, err error) {
 	switch {
 	case (st.created || a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated) &&
 		len(st.groups.pks) > 0 && !holdsManagedBinding(live, st.groups):
 		r.setReady(a, metav1.ConditionFalse, reasonAccessPending, accessPendingMessage)
 		if w.err == nil {
-			return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
+			return ctrl.Result{RequeueAfter: userErrorRecheck}, true, nil
 		}
 		setAccessCondition(a, ConditionAccessInSync, metav1.ConditionFalse, reasonAuthentikError, w.err.Error())
 		r.event(a, corev1.EventTypeWarning, "AccessBindingFailed", "Bind",
 			"Could not bind the groups of spec.access to the application: %v", w.err)
-		return ctrl.Result{}, w.err
+		return ctrl.Result{}, true, w.err
 	case w.err != nil:
 		setAccessCondition(a, ConditionAccessInSync, metav1.ConditionFalse, reasonAuthentikError, w.err.Error())
-		return ctrl.Result{}, w.err
+		return ctrl.Result{}, false, w.err
 	}
 	reason, msg, inSync := accessOutcome(a, st.groups, live, mode)
 	status := metav1.ConditionTrue
@@ -439,7 +446,7 @@ func (r *AuthentikApplicationReconciler) finishAccess(a *authentikiov1alpha1.Aut
 		status = metav1.ConditionFalse
 	}
 	setAccessCondition(a, ConditionAccessInSync, status, reason, msg)
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, false, nil
 }
 
 // accessOutcome is the AccessInSync condition once the writes succeeded: the
