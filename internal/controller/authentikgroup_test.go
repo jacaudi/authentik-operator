@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1000,6 +1001,140 @@ var _ = Describe("AuthentikGroup", func() {
 			Expect(get(g).Status.Members).To(BeEmpty())
 			Expect(writes()).To(HaveLen(before))
 			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}), "removing the field releases the membership untouched")
+		})
+
+		Context("members held by invitations", func() {
+			const otherNamespace = "kube-system"
+			var users *AuthentikUserReconciler
+			BeforeEach(func() {
+				users = &AuthentikUserReconciler{
+					Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(),
+					Connections: &connection.Resolver{Reader: k8sClient, DefaultExternalURL: externalSSO,
+						Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1}},
+					Recorder: recorder, APIReader: k8sClient,
+					AdoptionNamespaceSelector: labels.Everything(), IdentityNamespaceSelector: labels.Everything(),
+				}
+			})
+			// newPerson makes a resource for username in ns; it carries an invitation when the policy may create.
+			newPerson := func(ns, username string, policy authentikiov1alpha1.ManagementPolicy,
+				mutate ...func(*authentikiov1alpha1.AuthentikUserSpec)) *authentikiov1alpha1.AuthentikUser {
+				spec := authentikiov1alpha1.AuthentikUserSpec{
+					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policy}, Username: username,
+				}
+				if policy.MayCreate() {
+					spec.Invitation = &authentikiov1alpha1.InvitationSpec{Flow: fakeauthentik.FlowEnrollmentSlug}
+				}
+				for _, m := range mutate {
+					m(&spec)
+				}
+				u := &authentikiov1alpha1.AuthentikUser{
+					ObjectMeta: metav1.ObjectMeta{Name: username, Namespace: ns}, Spec: spec}
+				Expect(k8sClient.Create(ctx, u)).To(Succeed())
+				cleanup(u)
+				DeferCleanup(func() { // no garbage collector in envtest
+					_ = k8sClient.Delete(ctx, &corev1.Secret{
+						ObjectMeta: metav1.ObjectMeta{Name: username + "-invitation", Namespace: ns}})
+				})
+				return u
+			}
+			reconcileUser := func(u *authentikiov1alpha1.AuthentikUser) {
+				_, err := users.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(u)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			getUser := func(u *authentikiov1alpha1.AuthentikUser) *authentikiov1alpha1.AuthentikUser {
+				var cur authentikiov1alpha1.AuthentikUser
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(u), &cur)).To(Succeed())
+				return &cur
+			}
+			setUserStatus := func(u *authentikiov1alpha1.AuthentikUser,
+				mutate func(*authentikiov1alpha1.AuthentikUserStatus)) {
+				cur := getUser(u)
+				mutate(&cur.Status)
+				Expect(k8sClient.Status().Update(ctx, cur)).To(Succeed())
+			}
+			// inviting leaves a user's status as a reconcile that issued its invitation would, without running one.
+			inviting := func(s *authentikiov1alpha1.AuthentikUserStatus) {
+				s.Invitation = &authentikiov1alpha1.InvitationStatus{Name: "k8s-x-1", Attempt: 1,
+					Expires: metav1.NewTime(time.Now().Add(time.Hour)), SecretName: "x-invitation"}
+			}
+
+			It("holds a username another resource is inviting, then adds it once recognised", func() {
+				dave := newPerson(namespace, usernameDave, policyCreate)
+				reconcileUser(dave)
+				Expect(getUser(dave).Status.Invitation).NotTo(BeNil())
+				g := newGroup("held-team", policyCreate, withMembers(usernameDave))
+
+				res, err := reconcileGroup(g)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(userErrorRecheck), "a held member is checked again soon")
+				Expect(membersInSync(g).Status).To(Equal(metav1.ConditionFalse))
+				Expect(membersInSync(g).Reason).To(Equal(reasonMemberHeld))
+				Expect(membersInSync(g).Message).To(ContainSubstring(`"dave"`))
+				Expect(membershipRequests(false, pathAddUser)).To(BeEmpty())
+				Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+				Expect(get(g).Status.Members).To(BeEmpty(), "a held username is not pinned")
+
+				pk := fake.EnrolFromInvitation(invitationName(getUser(dave).UID, 1), "")
+				Expect(pk).NotTo(BeZero())
+				reconcileUser(dave)
+				Expect(getUser(dave).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
+
+				mustReconcile(g)
+				Expect(fake.GroupMemberPKs(pkOf(g))).To(Equal([]int32{pk}))
+				Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+				Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: usernameDave, PK: pk}}))
+			})
+
+			DescribeTable("does not hold for a resource that is not inviting",
+				func(ns string, policy authentikiov1alpha1.ManagementPolicy,
+					status func(*authentikiov1alpha1.AuthentikUserStatus)) {
+					groups.IdentityNamespaceSelector = labels.SelectorFromSet(labels.Set{"kubernetes.io/metadata.name": namespace})
+					person := newPerson(ns, "held-nobody", policy)
+					if status != nil {
+						setUserStatus(person, status)
+					}
+					g := newGroup("held-none", policyCreate, withMembers("held-nobody"))
+
+					mustReconcile(g)
+					Expect(membersInSync(g).Reason).To(Equal(reasonMemberNotFound))
+				},
+				Entry("an Adopt resource, even with a leftover invitation", namespace, policyAdopt, inviting),
+				Entry("a resource outside the identity selector", otherNamespace, policyCreate, inviting),
+				Entry("a resource whose person already has an account", namespace, policyCreate,
+					func(s *authentikiov1alpha1.AuthentikUserStatus) {
+						inviting(s)
+						s.Provenance = authentikiov1alpha1.ProvenanceCreated
+					}),
+				Entry("a resource that has not issued an invitation yet", namespace, policyCreate, nil),
+			)
+
+			It("does not hold for a resource on another Authentik", func() {
+				person := newPerson(namespace, "held-abroad", policyCreate, func(s *authentikiov1alpha1.AuthentikUserSpec) {
+					s.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: "other-authentik"} // resolves to no instance
+				})
+				setUserStatus(person, inviting)
+				g := newGroup("held-home", policyCreate, withMembers("held-abroad"))
+
+				mustReconcile(g)
+				Expect(membersInSync(g).Reason).To(Equal(reasonMemberNotFound))
+			})
+
+			It("re-enqueues the groups listing a username when that user resource changes", func() {
+				listed := newGroup("held-listed", policyCreate, withMembers(usernameDave, memberBob))
+				newGroup("held-other", policyCreate, withMembers(memberBob))
+				newGroup("held-unlisted", policyCreate, nil)
+				elsewhere := &authentikiov1alpha1.AuthentikGroup{
+					ObjectMeta: metav1.ObjectMeta{Name: "held-elsewhere", Namespace: otherNamespace}}
+				withMembers(usernameDave)(&elsewhere.Spec)
+				Expect(k8sClient.Create(ctx, elsewhere)).To(Succeed())
+				cleanup(elsewhere)
+				dave := newPerson(namespace, usernameDave, policyCreate)
+
+				Expect(groups.groupsForUser(ctx, dave)).To(ConsistOf(
+					reconcile.Request{NamespacedName: client.ObjectKeyFromObject(listed)},
+					reconcile.Request{NamespacedName: client.ObjectKeyFromObject(elsewhere)}))
+				Expect(groups.groupsForUser(ctx, &corev1.Secret{})).To(BeEmpty(), "only AuthentikUsers are mapped")
+			})
 		})
 	})
 })

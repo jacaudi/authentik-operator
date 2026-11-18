@@ -19,8 +19,10 @@ package controller
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,6 +60,22 @@ const (
 	// reasonInvitationExpired marks Ready=False when the invitation expired
 	// before any account carrying the ownership proof appeared.
 	reasonInvitationExpired = "InvitationExpired"
+	// reasonInvitationAmbiguous marks Ready=False when several invitations in
+	// Authentik carry the name this resource issued (names are not unique
+	// there), so it cannot tell which one is its own.
+	reasonInvitationAmbiguous = "InvitationAmbiguous"
+	// reasonMultipleEnrolments marks Ready=False when more than one account
+	// carries this resource's ownership proof.
+	reasonMultipleEnrolments = "MultipleEnrolments"
+	// reasonEnrolledUnderOtherName marks Ready=False when the person enrolled
+	// through the invitation under a username other than spec.username.
+	reasonEnrolledUnderOtherName = "EnrolledUnderOtherName"
+
+	// ConditionAuthenticatorMissing is True on a Created account that has no
+	// authenticator. It does not affect Ready.
+	ConditionAuthenticatorMissing = "AuthenticatorMissing"
+	// reasonNoAuthenticator is the reason of ConditionAuthenticatorMissing.
+	reasonNoAuthenticator = "NoAuthenticator"
 
 	// defaultInvitationExpiry is how long an invitation stays valid when
 	// spec.invitation.expiresAfter is unset.
@@ -113,6 +131,8 @@ func (r *AuthentikUserReconciler) invite(ctx context.Context, resolved *connecti
 	switch inv := u.Status.Invitation; {
 	case inv == nil:
 		return r.issueInvitation(ctx, resolved, u, persist)
+	case invitationAttempt(u) > inv.Attempt:
+		return r.reissueInvitation(ctx, resolved, u, persist)
 	case inv.Pending:
 		return r.confirmInvitation(ctx, resolved, u)
 	}
@@ -130,16 +150,47 @@ func invitationFlow(ctx context.Context, c *authentik.Client, u *authentikiov1al
 	return flow, err
 }
 
-// issueInvitation records the invitation in status (pending, so a response
-// lost in flight is recovered by name), persists it, and only then asks
-// Authentik to create it: Authentik chooses the pk, so the name is all that
-// can find it again.
+// issueInvitation issues the first invitation of a resource that has none.
 func (r *AuthentikUserReconciler) issueInvitation(ctx context.Context, resolved *connection.Resolved,
 	u *authentikiov1alpha1.AuthentikUser, persist func() error) error {
 	flow, err := invitationFlow(ctx, resolved.Client, u)
 	if err != nil {
 		return err
 	}
+	return r.startInvitation(ctx, resolved, u, flow, persist)
+}
+
+// reissueInvitation replaces the invitation of an earlier attempt by one for
+// the attempt the spec now names: the live invitation of the earlier attempt
+// is deleted, and so is its Secret when the new attempt's link goes to a Secret
+// of another name (the same Secret is rewritten). The flow is resolved first,
+// so a mistyped flow does not cost the live link.
+func (r *AuthentikUserReconciler) reissueInvitation(ctx context.Context, resolved *connection.Resolved,
+	u *authentikiov1alpha1.AuthentikUser, persist func() error) error {
+	flow, err := invitationFlow(ctx, resolved.Client, u)
+	if err != nil {
+		return err
+	}
+	previous := u.Status.Invitation
+	if err := deleteInvitation(ctx, resolved.Client, previous.Name); err != nil {
+		return err
+	}
+	if previous.SecretName != invitationSecretName(u) {
+		if err := r.deleteInvitationSecret(ctx, u); err != nil {
+			return err
+		}
+	}
+	logf.FromContext(ctx).Info("Replaced Invitation of an earlier attempt", "name", previous.Name,
+		"attempt", previous.Attempt)
+	return r.startInvitation(ctx, resolved, u, flow, persist)
+}
+
+// startInvitation records the invitation of the current attempt in status
+// (pending, so a response lost in flight is recovered by name), persists it,
+// and only then asks Authentik to create it: Authentik chooses the pk, so the
+// name is all that can find it again.
+func (r *AuthentikUserReconciler) startInvitation(ctx context.Context, resolved *connection.Resolved,
+	u *authentikiov1alpha1.AuthentikUser, flow *api.Flow, persist func() error) error {
 	lifetime := defaultInvitationExpiry
 	if e := u.Spec.Invitation.ExpiresAfter; e != nil {
 		lifetime = e.Duration
@@ -184,7 +235,7 @@ func (r *AuthentikUserReconciler) createInvitation(ctx context.Context, resolved
 func (r *AuthentikUserReconciler) confirmInvitation(ctx context.Context, resolved *connection.Resolved,
 	u *authentikiov1alpha1.AuthentikUser) error {
 	inv := u.Status.Invitation
-	found, err := resolved.Client.FindInvitationByName(ctx, inv.Name)
+	found, err := findInvitation(ctx, resolved.Client, inv.Name)
 	switch {
 	case err == nil:
 		inv.Pending = false
@@ -213,7 +264,7 @@ func (r *AuthentikUserReconciler) checkInvitation(ctx context.Context, resolved 
 	u *authentikiov1alpha1.AuthentikUser) error {
 	inv := u.Status.Invitation
 	expired := !time.Now().Before(inv.Expires.Time)
-	found, err := resolved.Client.FindInvitationByName(ctx, inv.Name)
+	found, err := findInvitation(ctx, resolved.Client, inv.Name)
 	switch {
 	case err == nil && !expired:
 		if err := r.ensureInvitationSecret(ctx, resolved, u, found); err != nil {
@@ -245,10 +296,23 @@ func invitationPending(inv *authentikiov1alpha1.InvitationStatus) error {
 		inv.Name, inv.Expires.UTC().Format(time.RFC3339), inv.SecretName, invitationSecretURL)
 }
 
+// findInvitation is FindInvitationByName with the one answer every caller gives
+// when several invitations carry the name (names are not unique in Authentik):
+// this resource cannot tell which one it issued, so it must neither delete nor
+// trust any of them.
+func findInvitation(ctx context.Context, c *authentik.Client, name string) (*api.Invitation, error) {
+	found, err := c.FindInvitationByName(ctx, name)
+	if errors.Is(err, authentik.ErrAmbiguous) {
+		return nil, condErrf(reasonInvitationAmbiguous, "several invitations in Authentik are named %q; this resource "+
+			"cannot tell which one it issued, so it issues and deletes none. Delete the extra ones in Authentik", name)
+	}
+	return found, err
+}
+
 // deleteInvitation deletes the live invitation named name, if there is one.
 // Errors carry no pk (see authentik.Client.DeleteInvitation).
 func deleteInvitation(ctx context.Context, c *authentik.Client, name string) error {
-	found, err := c.FindInvitationByName(ctx, name)
+	found, err := findInvitation(ctx, c, name)
 	switch {
 	case authentik.IsNotFound(err):
 		return nil
@@ -256,6 +320,84 @@ func deleteInvitation(ctx context.Context, c *authentik.Client, name string) err
 		return err
 	}
 	return c.DeleteInvitation(ctx, found.Pk)
+}
+
+// revokeInvitation deletes the invitation status records, if Authentik still
+// has it, and the Secret that holds its link. The invitation goes first: a
+// failed delete retries with the evidence still in status.
+func (r *AuthentikUserReconciler) revokeInvitation(ctx context.Context, c *authentik.Client,
+	u *authentikiov1alpha1.AuthentikUser) error {
+	if err := deleteInvitation(ctx, c, u.Status.Invitation.Name); err != nil {
+		return err
+	}
+	return r.deleteInvitationSecret(ctx, u)
+}
+
+// withdrawInvitation revokes the invitation of a resource whose
+// managementPolicy no longer creates (it was switched to Adopt or ReadOnly) and
+// forgets it, so the resource is then decided like any other of that policy.
+// The live link must not outlive the policy that issued it.
+func (r *AuthentikUserReconciler) withdrawInvitation(ctx context.Context,
+	u *authentikiov1alpha1.AuthentikUser) error {
+	inv := u.Status.Invitation
+	if inv == nil || u.Spec.ManagementPolicy.MayCreate() {
+		return nil
+	}
+	resolved, err := resolve(ctx, r.Connections, u.Namespace, u.Spec.AuthentikRef)
+	if err != nil {
+		return err
+	}
+	if err := r.revokeInvitation(ctx, resolved.Client, u); err != nil {
+		return err
+	}
+	u.Status.Invitation = nil
+	logf.FromContext(ctx).Info("Withdrew Invitation after the managementPolicy stopped creating", "name", inv.Name,
+		"policy", u.Spec.ManagementPolicy.Resolve())
+	r.event(u, corev1.EventTypeNormal, "InvitationWithdrawn", "Withdraw",
+		"Withdrew invitation %q: managementPolicy %s does not create accounts", inv.Name, u.Spec.ManagementPolicy.Resolve())
+	return nil
+}
+
+// deleteLiveInvitation deletes the invitation of a resource being deleted, so
+// no usable sign-up link outlives it (the Secret goes with its owner
+// reference). A connection whose objects are already gone cannot be reached:
+// the invitation is then left to expire.
+func (r *AuthentikUserReconciler) deleteLiveInvitation(ctx context.Context,
+	u *authentikiov1alpha1.AuthentikUser) error {
+	name := u.Status.Invitation.Name
+	resolved, err := resolveForDeletion(ctx, r.Connections, u.Namespace, u.Spec.AuthentikRef)
+	switch {
+	case connectionGone(err):
+		logf.FromContext(ctx).Info("Could not reach Authentik to delete Invitation; leaving it in place", "name", name,
+			"reason", err.Error())
+		r.event(u, corev1.EventTypeWarning, "Orphaned", "Delete", "Invitation %q left in Authentik: %v", name, err)
+		return nil
+	case err != nil:
+		return err
+	}
+	return deleteInvitation(ctx, resolved.Client, name)
+}
+
+// enrolmentProblem is the failure when the accounts that carry this resource's
+// ownership proof are not exactly the one the invitation pinned to username:
+// nil for none yet, or for exactly one named username.
+func enrolmentProblem(username string, owned []api.User) error {
+	switch {
+	case len(owned) == 0, len(owned) == 1 && owned[0].Username == username:
+		return nil
+	case len(owned) == 1:
+		return condErrf(reasonEnrolledUnderOtherName, "the invitation was used to enrol %q, not %q (the enrolment "+
+			"flow's username prompt is not read-only); fix the blueprint, then delete that account or use a new "+
+			"resource with that username", owned[0].Username, username)
+	}
+	names := make([]string, len(owned))
+	for i := range owned {
+		names[i] = owned[i].Username
+	}
+	slices.Sort(names)
+	return condErrf(reasonMultipleEnrolments, "several accounts carry this resource's ownership proof: %s (earlier "+
+		"invitations were used under other names); none is adopted. Delete the accounts that are not wanted in "+
+		"Authentik", quoted(names))
 }
 
 // ensureInvitationSecret makes the Secret status names hold the sign-up link of

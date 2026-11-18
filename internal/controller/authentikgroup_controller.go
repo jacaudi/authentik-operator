@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,6 +56,15 @@ const (
 	// indexGroupName maps an AuthentikGroup to its name in Authentik, which
 	// spec.access.groups of an application refers to.
 	indexGroupName = ".spec.name"
+
+	// indexUserUsername maps an AuthentikUser to the username it names in
+	// Authentik; the group reconciler lists users by it to find who holds a
+	// listed username back (see heldUsernames).
+	indexUserUsername = ".spec.username"
+
+	// indexGroupMember maps an AuthentikGroup to each username spec.members
+	// lists, so a change of an AuthentikUser re-enqueues the groups listing it.
+	indexGroupMember = ".spec.members"
 )
 
 // policyBindingApp and policyBindingModel identify a policy binding among the
@@ -91,6 +101,7 @@ type AuthentikGroupReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups/finalizers,verbs=update
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch
+// +kubebuilder:rbac:groups=authentik.io,resources=authentikusers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -447,7 +458,7 @@ func (r *AuthentikGroupReconciler) dryRunAdopt(ctx context.Context, c *authentik
 	patch, live := plan.reportView(target)
 	changes := dryRunChanges(fmt.Sprintf("group %q", target.Name), patch, live, plan.changed)
 	if g.Spec.Members != nil {
-		members, _, err := observeMembers(ctx, c, g, target.Pk, g.Status.Members)
+		members, _, err := r.observeMembers(ctx, c, g, target.Pk, g.Status.Members)
 		if err != nil {
 			return err
 		}
@@ -500,7 +511,7 @@ func (r *AuthentikGroupReconciler) syncFields(ctx context.Context, c *authentik.
 	g *authentikiov1alpha1.AuthentikGroup, live *api.Group, want map[string]any) (*api.Group, error) {
 	plan := planGroup(g, want, live, g.Status.ManagedAttributes)
 	if readOnly(g.Spec.ManagementPolicy) {
-		if err := recordGroupDrift(ctx, c, g, live, plan); err != nil {
+		if err := r.recordGroupDrift(ctx, c, g, live, plan); err != nil {
 			return nil, err
 		}
 		return live, nil
@@ -712,12 +723,65 @@ func (r *AuthentikGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		indexGroupName, groupNameIndex); err != nil {
 		return err
 	}
+	if err := registerMemberIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikGroup{}).
 		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.groupsForApplication)).
+		Watches(&authentikiov1alpha1.AuthentikUser{}, handler.EnqueueRequestsFromMapFunc(r.groupsForUser)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikgroup").
 		Complete(r)
+}
+
+// userUsernameIndex indexes users by the username they name in Authentik.
+func userUsernameIndex(o client.Object) []string {
+	u, ok := o.(*authentikiov1alpha1.AuthentikUser)
+	if !ok || u.Spec.Username == "" {
+		return nil
+	}
+	return []string{u.Spec.Username}
+}
+
+// groupMemberIndex indexes groups by each username spec.members lists; a group
+// whose spec.members is absent is not indexed.
+func groupMemberIndex(o client.Object) []string {
+	g, ok := o.(*authentikiov1alpha1.AuthentikGroup)
+	if !ok || g.Spec.Members == nil {
+		return nil
+	}
+	return slices.Clone(*g.Spec.Members)
+}
+
+// registerMemberIndexes registers userUsernameIndex and groupMemberIndex, the
+// two indexes that connect a user resource to the groups listing its username.
+func registerMemberIndexes(ctx context.Context, idx client.FieldIndexer) error {
+	if err := idx.IndexField(ctx, &authentikiov1alpha1.AuthentikUser{}, indexUserUsername, userUsernameIndex); err != nil {
+		return err
+	}
+	return idx.IndexField(ctx, &authentikiov1alpha1.AuthentikGroup{}, indexGroupMember, groupMemberIndex)
+}
+
+// groupsForUser maps a user resource to the groups, in any namespace, whose
+// spec.members lists its username: the group's own reconcile re-checks whether
+// the username is held (the person is being invited) or has an account.
+func (r *AuthentikGroupReconciler) groupsForUser(ctx context.Context, o client.Object) []reconcile.Request {
+	u, ok := o.(*authentikiov1alpha1.AuthentikUser)
+	if !ok {
+		return nil
+	}
+	var list authentikiov1alpha1.AuthentikGroupList
+	if err := r.List(ctx, &list, client.MatchingFields{indexGroupMember: u.Spec.Username}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list AuthentikGroups for user",
+			"user", client.ObjectKeyFromObject(o), "username", u.Spec.Username)
+		return nil
+	}
+	reqs := make([]reconcile.Request, len(list.Items))
+	for i := range list.Items {
+		reqs[i] = reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])}
+	}
+	return reqs
 }
 
 // groupNameIndex indexes groups by their name in Authentik.

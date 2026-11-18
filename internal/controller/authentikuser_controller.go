@@ -121,7 +121,7 @@ func (r *AuthentikUserReconciler) statusPersister(ctx context.Context,
 // Ready is set once: here on success, in failed otherwise.
 func (r *AuthentikUserReconciler) sync(ctx context.Context, u *authentikiov1alpha1.AuthentikUser,
 	persist func() error) (ctrl.Result, error) {
-	got, err := r.syncUser(ctx, u, persist)
+	got, authenticatorsUnknown, err := r.syncUser(ctx, u, persist)
 	if err != nil {
 		return r.failed(u, err)
 	}
@@ -133,40 +133,86 @@ func (r *AuthentikUserReconciler) sync(ctx context.Context, u *authentikiov1alph
 		meta.RemoveStatusCondition(&u.Status.Conditions, ConditionDrifted)
 		r.setReady(u, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("User %q is in sync", got.Username))
 	}
+	if authenticatorsUnknown {
+		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
+	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
 }
 
 // syncUser makes the account in Authentik match the spec and returns it as
-// Authentik now has it. The identity gate runs first, under every
-// managementPolicy, so a denied namespace reads and writes nothing; a spec
-// invalid on its face is refused before any call to Authentik.
+// Authentik now has it, and whether the authenticators of a Created account
+// could not be listed (see syncAuthenticators). The identity gate runs first,
+// under every managementPolicy, so a denied namespace reads and writes
+// nothing; a spec invalid on its face is refused before any call to Authentik.
+// An invitation the policy no longer allows is withdrawn before the adoption
+// gate: the live sign-up link must go whether or not the resource may adopt.
 func (r *AuthentikUserReconciler) syncUser(ctx context.Context, u *authentikiov1alpha1.AuthentikUser,
-	persist func() error) (*api.User, error) {
+	persist func() error) (*api.User, bool, error) {
 	if err := (identityGate{r.APIReader, r.IdentityNamespaceSelector}).check(ctx, u.Namespace,
 		u.Spec.AuthentikRef); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if err := r.withdrawInvitation(ctx, u); err != nil {
+		return nil, false, err
 	}
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, u.Namespace,
 		u.Spec.AuthentikRef, u.Spec.ManagementPolicy); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := reservedAttributes(u.Spec.Attributes, attrGivenName, attrFamilyName); err != nil {
-		return nil, condErr(reasonInvalidSpec, err)
+		return nil, false, condErr(reasonInvalidSpec, err)
 	}
 	want, err := specAttributes(u.Spec.Attributes)
 	if err != nil {
-		return nil, condErr(reasonInvalidSpec, err)
+		return nil, false, condErr(reasonInvalidSpec, err)
 	}
 	resolved, err := resolve(ctx, r.Connections, u.Namespace, u.Spec.AuthentikRef)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	work, err := r.observe(ctx, resolved.Client, u)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	work.want = want
-	return r.act(ctx, resolved, u, work, persist)
+	got, err := r.act(ctx, resolved, u, work, persist)
+	if err != nil {
+		return nil, false, err
+	}
+	return got, r.syncAuthenticators(ctx, resolved.Client, u, got), nil
+}
+
+// syncAuthenticators sets ConditionAuthenticatorMissing on a Created account
+// from the devices Authentik lists for it: the person stopped after the account
+// was written and has no way to sign in, and a new invitation cannot help (the
+// username is taken). It never changes Ready: the account is in sync. When the
+// list cannot be read the condition is left as it is and unknown is true, so
+// the caller looks again soon.
+func (r *AuthentikUserReconciler) syncAuthenticators(ctx context.Context, c *authentik.Client,
+	u *authentikiov1alpha1.AuthentikUser, got *api.User) (unknown bool) {
+	if u.Status.Provenance != authentikiov1alpha1.ProvenanceCreated {
+		meta.RemoveStatusCondition(&u.Status.Conditions, ConditionAuthenticatorMissing)
+		return false
+	}
+	devices, err := c.UserAuthenticators(ctx, got.Pk)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to list authenticators of User", "username", got.Username)
+		return true
+	}
+	if len(devices) > 0 {
+		meta.RemoveStatusCondition(&u.Status.Conditions, ConditionAuthenticatorMissing)
+		return false
+	}
+	const msg = "the account has no authenticator; send the person a recovery link from the Authentik admin " +
+		"interface (a new invitation cannot be used: the username is taken)"
+	if meta.SetStatusCondition(&u.Status.Conditions, metav1.Condition{
+		Type: ConditionAuthenticatorMissing, Status: metav1.ConditionTrue, Reason: reasonNoAuthenticator,
+		Message: msg, ObservedGeneration: u.Generation,
+	}) {
+		r.event(u, corev1.EventTypeWarning, ConditionAuthenticatorMissing, "Sync", "User %q has no authenticator: %s",
+			got.Username, msg)
+	}
+	return false
 }
 
 // Attribute keys that firstName and lastName own on an account.
@@ -191,9 +237,11 @@ type userWork struct {
 }
 
 // observe looks the account up: by status.userPk first (a 404 is Gone, and the
-// pk is kept), then by username unless the tracked account was found. An
-// account found by username that carries this resource's ownership proof while
-// its invitation is pending is the person's own enrolment.
+// pk is kept), then, unless the tracked account was found, the accounts that
+// carry this resource's ownership proof while it is inviting (more than one, or
+// one under another username, is reported before anything is decided), then the
+// one named username. The account named username that carries the proof is the
+// person's own enrolment.
 func (r *AuthentikUserReconciler) observe(ctx context.Context, c *authentik.Client,
 	u *authentikiov1alpha1.AuthentikUser) (userWork, error) {
 	username := u.Spec.Username
@@ -216,20 +264,29 @@ func (r *AuthentikUserReconciler) observe(ctx context.Context, c *authentik.Clie
 			return obs, err
 		}
 	}
+	var owned []api.User
+	if obs.facts.OwnCreatePending {
+		var err error
+		owned, err = c.FindUsersByOwnerUID(ctx, string(u.UID))
+		if err == nil {
+			err = enrolmentProblem(username, owned)
+		}
+		if err != nil {
+			return obs, err
+		}
+	}
 	target, err := c.FindUserByUsername(ctx, username)
 	switch {
 	case err == nil:
-		if isServiceAccount(target.GetType()) {
+		// While inviting, a service account of that name is a squatter like any other account without the proof:
+		// Decide reports the Conflict, and the invitation is withdrawn.
+		if isServiceAccount(target.GetType()) && !obs.facts.OwnCreatePending {
 			return obs, condErrf(reasonConflict, "the account %q is a service account; AuthentikUser manages people only",
 				username)
 		}
 		obs.target, obs.facts.Target = target, adopt.TargetFound
-		if obs.facts.OwnCreatePending {
-			obs.facts.OwnCreateProven, err = r.ownedBy(ctx, c, u, target)
-			if err != nil {
-				return obs, err
-			}
-		}
+		// enrolmentProblem left at most one account holding the proof, under username: the one found, or not.
+		obs.facts.OwnCreateProven = len(owned) == 1 && owned[0].Pk == target.Pk
 	case errors.Is(err, authentik.ErrAmbiguous):
 		obs.facts.Target = adopt.TargetAmbiguous
 	case authentik.IsNotFound(err):
@@ -238,18 +295,6 @@ func (r *AuthentikUserReconciler) observe(ctx context.Context, c *authentik.Clie
 		return obs, err
 	}
 	return obs, nil
-}
-
-// ownedBy reports whether target is the account this resource's invitation
-// created: the only account in Authentik carrying the ownership proof, under
-// the username the invitation pinned.
-func (r *AuthentikUserReconciler) ownedBy(ctx context.Context, c *authentik.Client,
-	u *authentikiov1alpha1.AuthentikUser, target *api.User) (bool, error) {
-	owned, err := c.FindUsersByOwnerUID(ctx, string(u.UID))
-	if err != nil {
-		return false, err
-	}
-	return len(owned) == 1 && owned[0].Pk == target.Pk && owned[0].Username == u.Spec.Username, nil
 }
 
 // act carries out the decision adopt.Decide takes from the observation and
@@ -280,7 +325,7 @@ func (r *AuthentikUserReconciler) act(ctx context.Context, resolved *connection.
 		return nil, condErrf(reasonAdoptionDryRun, "dry run: no user named %q exists; an invitation would be issued; "+
 			"nothing was written", username)
 	case adopt.ActionConflict:
-		return nil, r.conflict(u)
+		return nil, r.conflict(ctx, c, u)
 	case adopt.ActionTargetNotFound, adopt.ActionTrackedGone:
 		return nil, r.missing(u)
 	case adopt.ActionAmbiguous:
@@ -306,10 +351,7 @@ func recordUser(u *authentikiov1alpha1.AuthentikUser, prov authentikiov1alpha1.P
 // still in place.
 func (r *AuthentikUserReconciler) recognise(ctx context.Context, c *authentik.Client,
 	u *authentikiov1alpha1.AuthentikUser, work userWork) (*api.User, error) {
-	if err := deleteInvitation(ctx, c, u.Status.Invitation.Name); err != nil {
-		return nil, err
-	}
-	if err := r.deleteInvitationSecret(ctx, u); err != nil {
+	if err := r.revokeInvitation(ctx, c, u); err != nil {
 		return nil, err
 	}
 	recordUser(u, authentikiov1alpha1.ProvenanceCreated, work.target)
@@ -321,13 +363,21 @@ func (r *AuthentikUserReconciler) recognise(ctx context.Context, c *authentik.Cl
 }
 
 // conflict is the Conflict for an account found by username that this resource
-// may not take.
-func (r *AuthentikUserReconciler) conflict(u *authentikiov1alpha1.AuthentikUser) error {
+// may not take. While inviting, the account is someone else's squatting on the
+// username: the invitation and its Secret are deleted, so the link can no
+// longer create a second account, and status.invitation is kept so that no
+// managementPolicy ever adopts it.
+func (r *AuthentikUserReconciler) conflict(ctx context.Context, c *authentik.Client,
+	u *authentikiov1alpha1.AuthentikUser) error {
 	username := u.Spec.Username
 	if u.Status.Invitation != nil {
+		if err := r.revokeInvitation(ctx, c, u); err != nil {
+			return err
+		}
 		return condErrf(reasonConflict, "an account named %q exists, but it does not carry this resource's ownership "+
-			"proof, so it is not treated as the account of this resource's invitation under any managementPolicy. "+
-			"Remove that account from Authentik, or use another spec.username", username)
+			"proof, so it is not treated as the account of this resource's invitation under any managementPolicy; the "+
+			"invitation and its Secret were deleted. Remove that account from Authentik, or use another "+
+			"spec.username", username)
 	}
 	return condErrf(reasonConflict, "an account named %q already exists in Authentik and was not created by this "+
 		"resource; set spec.managementPolicy to Adopt (and remove spec.invitation), AdoptOrCreate or ReadOnly to take "+
@@ -541,6 +591,13 @@ const retainNote = "AuthentikUser retains accounts unless deletionPolicy is Dele
 // are costly to enrol again.
 func (r *AuthentikUserReconciler) decideDeletion(ctx context.Context,
 	u *authentikiov1alpha1.AuthentikUser) (result ctrl.Result, release bool, err error) {
+	// The invitation is this resource's own, whatever the identity gate says of the namespace: no usable sign-up link
+	// may outlive the resource.
+	if u.Status.Invitation != nil {
+		if err := r.deleteLiveInvitation(ctx, u); err != nil {
+			return r.deletionFailed(u, err)
+		}
+	}
 	if u.Status.UserPK == 0 {
 		return ctrl.Result{}, true, nil
 	}
@@ -628,8 +685,13 @@ func (r *AuthentikUserReconciler) deletionFailed(u *authentikiov1alpha1.Authenti
 // failed records why sync stopped; see classifyFailure.
 func (r *AuthentikUserReconciler) failed(u *authentikiov1alpha1.AuthentikUser, err error) (ctrl.Result, error) {
 	reason, result, retErr, warn := classifyFailure(err)
-	if r.setReady(u, metav1.ConditionFalse, reason, err.Error()) && warn {
-		r.event(u, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the user: %v", err)
+	if r.setReady(u, metav1.ConditionFalse, reason, err.Error()) {
+		switch {
+		case warn:
+			r.event(u, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the user: %v", err)
+		case reason == reasonInvitationAmbiguous:
+			r.event(u, corev1.EventTypeWarning, reasonInvitationAmbiguous, "Sync", "%v", err)
+		}
 	}
 	return result, retErr
 }

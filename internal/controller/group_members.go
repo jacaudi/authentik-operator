@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
@@ -149,8 +150,10 @@ func unlisted(in memberInputs, names []string, keep map[int32]bool) (remove []ap
 // plan, with the operator's own username for the report. A username Authentik
 // does not know is left unresolved; any other failure is returned. The group is
 // read again for its members: the adoption target was found by a lookup that
-// does not carry them.
-func observeMembers(ctx context.Context, c *authentik.Client, g *authentikiov1alpha1.AuthentikGroup, pk string,
+// does not carry them. A username an AuthentikUser is inviting is held out (see
+// heldUsernames).
+func (r *AuthentikGroupReconciler) observeMembers(ctx context.Context, c *authentik.Client,
+	g *authentikiov1alpha1.AuthentikGroup, pk string,
 	pins []authentikiov1alpha1.GroupMemberStatus) (memberPlan, string, error) {
 	spec := *g.Spec.Members
 	resolved := make(map[string]int32, len(spec))
@@ -174,8 +177,59 @@ func observeMembers(ctx context.Context, c *authentik.Client, g *authentikiov1al
 	if err != nil {
 		return memberPlan{}, "", fmt.Errorf("read the operator's own user: %w", err)
 	}
-	return planMembers(memberInputs{Spec: spec, Resolved: resolved, Live: group.UsersObj, Pins: pins,
+	held, err := r.heldUsernames(ctx, g, spec)
+	if err != nil {
+		return memberPlan{}, "", err
+	}
+	return planMembers(memberInputs{Spec: spec, Resolved: resolved, Live: group.UsersObj, Pins: pins, Held: held,
 		TokenUserPK: me.Pk}), me.Username, nil
+}
+
+// heldUsernames is the subset of usernames that an AuthentikUser, in any
+// namespace, is inviting: the person has no account yet, so the group neither
+// adds nor removes the username until the account is recognised. A resource
+// inviting a username holds it only while it is on the same Authentik as g,
+// passes the identity gate for its own namespace and ref, has a policy that
+// creates (Create or AdoptOrCreate), has no provenance yet, and has an
+// invitation in status; an adopted, ReadOnly or gated-out resource holds nobody.
+func (r *AuthentikGroupReconciler) heldUsernames(ctx context.Context, g *authentikiov1alpha1.AuthentikGroup,
+	usernames []string) (map[string]bool, error) {
+	var held map[string]bool
+	for _, name := range usernames {
+		var list authentikiov1alpha1.AuthentikUserList
+		if err := r.List(ctx, &list, client.MatchingFields{indexUserUsername: name}); err != nil {
+			return nil, fmt.Errorf("list AuthentikUsers named %q: %w", name, err)
+		}
+		for i := range list.Items {
+			holds, err := r.holdsUsername(ctx, g, &list.Items[i])
+			if err != nil {
+				return nil, err
+			}
+			if holds {
+				if held == nil {
+					held = map[string]bool{}
+				}
+				held[name] = true
+				break
+			}
+		}
+	}
+	return held, nil
+}
+
+// holdsUsername reports whether u is inviting its username for the benefit of g
+// (see heldUsernames). The cheap checks on u itself come before the ones that
+// read the cluster.
+func (r *AuthentikGroupReconciler) holdsUsername(ctx context.Context, g *authentikiov1alpha1.AuthentikGroup,
+	u *authentikiov1alpha1.AuthentikUser) (bool, error) {
+	if u.Status.Invitation == nil || u.Status.Provenance != "" || !u.Spec.ManagementPolicy.MayCreate() {
+		return false, nil
+	}
+	same, err := sameConnection(ctx, r.Connections, groupClaim(g), userClaim(u))
+	if err != nil || !same {
+		return false, err
+	}
+	return identityGate{r.APIReader, r.IdentityNamespaceSelector}.allowed(ctx, u.Namespace, u.Spec.AuthentikRef)
 }
 
 // syncMembers makes the group's membership match spec.members: every add_user
@@ -195,7 +249,7 @@ func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik
 		meta.RemoveStatusCondition(&g.Status.Conditions, ConditionMembersInSync)
 		return nil
 	}
-	plan, tokenUser, err := observeMembers(ctx, c, g, group.Pk, g.Status.Members)
+	plan, tokenUser, err := r.observeMembers(ctx, c, g, group.Pk, g.Status.Members)
 	if err != nil {
 		return err
 	}
@@ -282,15 +336,15 @@ func quoted(names []string) string {
 // recordGroupDrift sets Drifted for a ReadOnly group from the fields that
 // differ and, when spec.members is present, the members that would change. It
 // reads membership, never writes it.
-func recordGroupDrift(ctx context.Context, c *authentik.Client, g *authentikiov1alpha1.AuthentikGroup,
-	live *api.Group, plan groupChanges) error {
+func (r *AuthentikGroupReconciler) recordGroupDrift(ctx context.Context, c *authentik.Client,
+	g *authentikiov1alpha1.AuthentikGroup, live *api.Group, plan groupChanges) error {
 	var diffs []string
 	if len(plan.changed) > 0 {
 		patch, current := plan.reportView(live)
 		diffs = append(diffs, describeChanges(patch, current))
 	}
 	if g.Spec.Members != nil {
-		members, _, err := observeMembers(ctx, c, g, live.Pk, g.Status.Members)
+		members, _, err := r.observeMembers(ctx, c, g, live.Pk, g.Status.Members)
 		if err != nil {
 			return err
 		}
