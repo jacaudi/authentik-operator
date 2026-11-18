@@ -38,7 +38,7 @@ import (
 
 const tokenSecretKey = "token"
 
-func TestParseAdoptionNamespaceSelector(t *testing.T) {
+func TestParseNamespaceSelector(t *testing.T) {
 	cases := []struct {
 		name      string
 		in        string
@@ -58,7 +58,7 @@ func TestParseAdoptionNamespaceSelector(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sel, err := ParseAdoptionNamespaceSelector(c.in)
+			sel, err := ParseNamespaceSelector(c.in)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("error = %v, wantErr %t", err, c.wantErr)
 			}
@@ -107,7 +107,7 @@ var _ = Describe("Adoption gate on the default connection", func() {
 	}
 
 	selector := func(s string) labels.Selector {
-		sel, err := ParseAdoptionNamespaceSelector(s)
+		sel, err := ParseNamespaceSelector(s)
 		Expect(err).NotTo(HaveOccurred())
 		return sel
 	}

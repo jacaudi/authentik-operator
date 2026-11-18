@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,6 +37,19 @@ type AuthentikUserReconciler struct {
 	Scheme *runtime.Scheme
 	// Connections resolves the Authentik client for spec.authentikRef.
 	Connections *connection.Resolver
+	// Recorder emits Kubernetes events; may be nil in tests.
+	Recorder events.EventRecorder
+	// APIReader reads Namespaces uncached (the operator has get, not
+	// list/watch, on Namespaces); use the manager's API reader.
+	APIReader client.Reader
+	// AdoptionNamespaceSelector picks the namespaces whose resources may
+	// adopt or observe existing objects on the default connection. nil denies
+	// every namespace. See adoptionGate.
+	AdoptionNamespaceSelector labels.Selector
+	// IdentityNamespaceSelector picks the namespaces whose resources the
+	// operator reconciles on the default connection, under every
+	// managementPolicy. nil denies every namespace. See identityGate.
+	IdentityNamespaceSelector labels.Selector
 }
 
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikusers,verbs=get;list;watch;create;update;patch;delete

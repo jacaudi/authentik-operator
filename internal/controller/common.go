@@ -168,21 +168,36 @@ func emit(rec events.EventRecorder, obj runtime.Object, eventType, reason, actio
 	rec.Eventf(obj, nil, eventType, reason, action, "%s", truncateNote(fmt.Sprintf(note, args...), maxEventNoteBytes))
 }
 
-// ParseAdoptionNamespaceSelector parses the value of
-// --default-connection-adoption-namespace-selector. An empty value selects no
-// namespace: adoption on the default connection is denied unless an
-// administrator allows namespaces explicitly.
+// ParseNamespaceSelector parses the value of
+// --default-connection-adoption-namespace-selector or
+// --default-connection-identity-namespace-selector. An empty value selects no
+// namespace: the default connection is denied unless an administrator allows
+// namespaces explicitly.
 //
 //nolint:ireturn // labels.Selector is the Kubernetes selector type the reconcilers match namespaces with.
-func ParseAdoptionNamespaceSelector(s string) (labels.Selector, error) {
+func ParseNamespaceSelector(s string) (labels.Selector, error) {
 	if strings.TrimSpace(s) == "" {
 		return labels.Nothing(), nil
 	}
 	sel, err := labels.Parse(s)
 	if err != nil {
-		return nil, fmt.Errorf("parse adoption namespace selector %q: %w", s, err)
+		return nil, fmt.Errorf("parse namespace selector %q: %w", s, err)
 	}
 	return sel, nil
+}
+
+// selectorMatches reports whether the labels of the named Namespace match sel.
+// A nil selector matches nothing and reads nothing. rd should be uncached: the
+// operator has get, not list or watch, on Namespaces.
+func selectorMatches(ctx context.Context, rd client.Reader, sel labels.Selector, namespace string) (bool, error) {
+	if sel == nil {
+		return false, nil
+	}
+	var ns corev1.Namespace
+	if err := rd.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+		return false, fmt.Errorf("get Namespace %s: %w", namespace, err)
+	}
+	return sel.Matches(labels.Set(ns.Labels)), nil
 }
 
 // adoptionGate decides which namespaces may adopt on the default connection.
@@ -204,14 +219,12 @@ func (g adoptionGate) check(ctx context.Context, namespace string, ref *authenti
 	if ref != nil || !mp.MayAdopt() {
 		return nil
 	}
-	if g.selector != nil {
-		var ns corev1.Namespace
-		if err := g.reader.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
-			return fmt.Errorf("get Namespace %s: %w", namespace, err)
-		}
-		if g.selector.Matches(labels.Set(ns.Labels)) {
-			return nil
-		}
+	ok, err := selectorMatches(ctx, g.reader, g.selector, namespace)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
 	}
 	return condErrf(reasonAdoptionNotAllowed, "managementPolicy %s is not allowed for namespace %q on the "+
 		"operator's default connection; ask an administrator to allow the namespace with "+

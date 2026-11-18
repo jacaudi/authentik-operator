@@ -80,6 +80,21 @@ adoption:
   ## affected. Read at startup; changing it restarts the pod.
   defaultConnectionNamespaceSelector: ""
 
+## AuthentikGroup and AuthentikUser on the default connection, under every
+## managementPolicy. The default connection's token is the operator's own and
+## spans every team, so which namespaces may create, change or delete groups
+## and users with it is an administrator decision.
+identity:
+  ## --default-connection-identity-namespace-selector: a Kubernetes label selector
+  ## matched against the resource's Namespace labels. The recommended value is
+  ##   kubernetes.io/metadata.name in (authentik)
+  ## and others are e.g.
+  ##   kubernetes.io/metadata.name=team-a
+  ## Empty (default) denies every namespace: such resources report
+  ## IdentityNotAllowed. Resources with a same-namespace spec.authentikRef are not
+  ## affected. Read at startup; changing it restarts the pod.
+  defaultConnectionNamespaceSelector: ""
+
 ## Extra command-line flags appended to the manager args (rendered with tpl).
 extraArgs: []
 # - --enable-http2

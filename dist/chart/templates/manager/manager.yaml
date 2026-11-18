@@ -114,6 +114,9 @@ spec:
         {{- with .Values.adoption.defaultConnectionNamespaceSelector }}
         - {{ printf "--default-connection-adoption-namespace-selector=%s" . | quote }}
         {{- end }}
+        {{- with .Values.identity.defaultConnectionNamespaceSelector }}
+        - {{ printf "--default-connection-identity-namespace-selector=%s" . | quote }}
+        {{- end }}
         {{- range .Values.extraArgs }}
         - {{ tpl . $ | quote }}
         {{- end }}

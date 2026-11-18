@@ -52,6 +52,27 @@ commas, so escape each one (`\,`), or put the value in a values file:
   --set-string 'adoption.defaultConnectionNamespaceSelector=kubernetes.io/metadata.name in (team-a\, team-b)'
 ```
 
+### Managing groups and users
+
+An `AuthentikGroup` or `AuthentikUser` acts on Authentik with the operator's own
+token, which spans every team. On the default connection the operator reconciles
+them, under every `spec.managementPolicy`, only in namespaces matching
+`identity.defaultConnectionNamespaceSelector`; the denied resource reports the
+reason `IdentityNotAllowed`. Resources with a same-namespace `spec.authentikRef`
+are not affected.
+
+```bash
+helm upgrade --install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator \
+  --version X.Y.Z -n authentik-operator-system --create-namespace \
+  --set-string identity.defaultConnectionNamespaceSelector="kubernetes.io/metadata.name=authentik"
+```
+
+For several namespaces use a set-based selector, escaping each comma as above:
+
+```bash
+  --set-string 'identity.defaultConnectionNamespaceSelector=kubernetes.io/metadata.name in (authentik\, team-a)'
+```
+
 ### Pinning the image digest
 
 Release images are multi-arch (linux/amd64, linux/arm64) with no attestation
@@ -135,6 +156,7 @@ depending on each object's deletion policy, what it manages in Authentik). Keep
 | `authentik.caBundle.secret.{name,key}` | `""`, `ca.crt` | Same, from a Secret. |
 | `authentik.insecureSkipVerify` | `false` | `--authentik-insecure-skip-verify`. Testing only. |
 | `adoption.defaultConnectionNamespaceSelector` | `""` | `--default-connection-adoption-namespace-selector`: a Kubernetes label selector (for example `kubernetes.io/metadata.name=team-a`, or `kubernetes.io/metadata.name in (team-a, team-b)`) naming the namespaces whose resources may use `spec.managementPolicy` `Adopt`, `AdoptOrCreate` or `ReadOnly` (and `spec.dryRun`) on the default connection. Empty denies every namespace: those resources report `AdoptionNotAllowed`. Resources with a same-namespace `spec.authentikRef` are not affected; that connection's own token bounds what they can reach. Changing it restarts the pod. |
+| `identity.defaultConnectionNamespaceSelector` | `""` | `--default-connection-identity-namespace-selector`: a Kubernetes label selector (for example `kubernetes.io/metadata.name in (authentik)`, the recommended value, or `kubernetes.io/metadata.name=team-a`) naming the namespaces whose `AuthentikGroup` and `AuthentikUser` resources the operator reconciles on the default connection, under every `spec.managementPolicy`. Empty denies every namespace: those resources report `IdentityNotAllowed`. Resources with a same-namespace `spec.authentikRef` are not affected; that connection's own token bounds what they can reach. Changing it restarts the pod. |
 | `extraArgs` | `[]` | Extra flags appended to the manager args (templated with `tpl`). |
 | `extraEnv` | `[]` | Extra container environment variables. |
 | `extraVolumes`, `extraVolumeMounts` | `[]` | |
