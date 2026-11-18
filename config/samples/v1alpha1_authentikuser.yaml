@@ -1,8 +1,57 @@
+# A person. With the default managementPolicy (Create) the operator issues a
+# single-use Authentik invitation that pins the username, and writes the
+# sign-up link to the Secret dave-invitation (keys url and expires); hand the
+# person the link. The account the person enrols is recognised by an ownership
+# proof in its attributes and becomes this resource's account (status.provenance
+# Created). Invitations need a browser-facing URL: set externalUrl in the Helm
+# chart (--authentik-external-url), or spec.connection.externalURL on the
+# AuthentikDeployment, or the resource reports ExternalURLRequired.
+#
+# On the operator's default connection the namespace must be allowed by
+# --default-connection-identity-namespace-selector (IdentityNotAllowed otherwise).
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikUser
 metadata:
   labels:
     app.kubernetes.io/name: authentik-operator
     app.kubernetes.io/managed-by: kustomize
-  name: authentikuser-sample
-spec: {}
+  name: dave
+spec:
+  # Required and immutable. The enrolment flow's username prompt must be
+  # text_read_only so the person cannot type another name; otherwise the
+  # resource reports EnrolledUnderOtherName and adopts nothing.
+  username: dave
+  # name, email, path, type and isActive: unset keeps the live value, even for
+  # an account the person enrolled. firstName and lastName are written to the
+  # given_name and family_name attributes that the OIDC profile scope reads.
+  name: Dave Example
+  email: dave@example.com
+  firstName: Dave
+  lastName: Example
+  invitation:
+    # Slug of the enrolment flow the invitation is bound to.
+    flow: passkey-enrollment
+    # How long the link stays valid; 168h (seven days) when unset.
+    expiresAfter: 168h
+    # The Secret that receives the link; <metadata.name>-invitation when unset.
+    # secretName: dave-invitation
+    # A new link is issued only when this is increased (after the last one was
+    # lost, abandoned or expired). Once the person has an account it does nothing.
+    # attempt: 2
+  #
+  # Offboarding: an unset deletionPolicy is Retain for every AuthentikUser, so
+  # deleting this resource leaves the account. Set isActive: false first to
+  # deactivate it (the operator never deactivates its own token's user).
+  # isActive: false
+  #
+  # Per-key attributes: the operator owns only the keys listed here. Keys
+  # starting goauthentik.io/, and authentik_operator, settings, given_name and
+  # family_name, are reserved (InvalidSpec).
+  # attributes:
+  #   team: photos
+  #
+  # To manage an existing person instead of inviting one, drop invitation and
+  # use managementPolicy Adopt (or ReadOnly); Adopt and ReadOnly on the default
+  # connection also need --default-connection-adoption-namespace-selector.
+  # managementPolicy: Adopt   # Create | Adopt | AdoptOrCreate | ReadOnly
+  # dryRun: true              # only with Adopt or AdoptOrCreate

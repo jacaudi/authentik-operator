@@ -47,6 +47,8 @@ authentik:
   ## --authentik-url (env AUTHENTIK_URL)
   url: ""
   ## --authentik-external-url: browser-facing URL used in rendered credential Secrets
+  ## and in the sign-up links of AuthentikUser invitations (required for them:
+  ## without it an invitation reports ExternalURLRequired)
   externalUrl: ""
   ## API token from an EXISTING Secret, mounted as a file and passed via
   ## --authentik-token-file. The token never appears in values or in the pod spec.

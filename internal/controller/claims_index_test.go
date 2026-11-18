@@ -41,6 +41,7 @@ var testIndexes = map[string]client.IndexerFunc{
 	indexGroupPK:        groupPKIndex,
 	indexAccessGroup:    accessGroupIndex,
 	indexGroupName:      groupNameIndex,
+	indexUserPK:         userPKIndex,
 }
 
 // indexedClient serves List with client.MatchingFields the way the manager's
@@ -116,6 +117,14 @@ func TestIndexFuncs(t *testing.T) {
 	g.Status.GroupPK = "pk-1"
 	if got := groupPKIndex(g); len(got) != 1 || got[0] != "pk-1" {
 		t.Errorf("groupPKIndex = %v, want [pk-1]", got)
+	}
+	u := &authentikiov1alpha1.AuthentikUser{}
+	if got := userPKIndex(u); got != nil {
+		t.Errorf("a user that tracks nothing must not be indexed, got %v", got)
+	}
+	u.Status.UserPK = 7
+	if got := userPKIndex(u); len(got) != 1 || got[0] != "7" {
+		t.Errorf("userPKIndex = %v, want [7]", got)
 	}
 }
 

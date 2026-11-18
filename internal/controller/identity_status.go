@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
@@ -91,4 +92,28 @@ func recheckClaim(persist func() error, self claim, holders func() ([]claim, err
 	release()
 	return condErrf(reasonConflict, "%s is also claimed by %s, which takes precedence; this resource released it",
 		subject, winner)
+}
+
+// syncThenPersist runs sync, handing it persist so it can record status before
+// a request whose outcome could be lost, and then persists the outcome. A
+// failed persist is joined to sync's error, and the result is dropped: the
+// status the result describes was not written.
+func syncThenPersist(persist func() error,
+	sync func(persist func() error) (ctrl.Result, error)) (ctrl.Result, error) {
+	result, syncErr := sync(persist)
+	if err := persist(); err != nil {
+		return ctrl.Result{}, errors.Join(syncErr, err)
+	}
+	return result, syncErr
+}
+
+// addFinalizer adds FinalizerName to obj and writes it with a merge patch
+// against base (obj before the finalizer was added), unless it is already
+// there. The finalizer is in place before the resource first touches Authentik,
+// so a delete can never skip the cleanup.
+func addFinalizer(ctx context.Context, c client.Client, obj, base client.Object) error {
+	if !controllerutil.AddFinalizer(obj, FinalizerName) {
+		return nil
+	}
+	return c.Patch(ctx, obj, client.MergeFrom(base))
 }

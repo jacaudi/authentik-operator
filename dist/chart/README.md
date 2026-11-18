@@ -149,7 +149,7 @@ depending on each object's deletion policy, what it manages in Authentik). Keep
 | `logging.devel` | `false` | `--zap-devel`. |
 | `logging.encoder` | `json` | `--zap-encoder` (`json` or `console`). |
 | `authentik.url` | `""` | `--authentik-url`: default connection for objects without `spec.authentikRef`. Empty disables it; `externalUrl`, `tokenSecret` and `caBundle` require it (the render fails otherwise). The token may instead come from `extraEnv` (`AUTHENTIK_TOKEN`). Set the URL here, not as `extraEnv` `AUTHENTIK_URL`: the render check only sees this value. |
-| `authentik.externalUrl` | `""` | `--authentik-external-url`: browser-facing URL used in rendered credential Secrets. |
+| `authentik.externalUrl` | `""` | `--authentik-external-url`: browser-facing URL used in rendered credential Secrets and in the sign-up links of `AuthentikUser` invitations. Required for invitations: without it an `AuthentikUser` that invites reports `ExternalURLRequired` and creates nothing. |
 | `authentik.tokenSecret.name` | `""` | Existing Secret holding the API token. Mounted at `/var/run/secrets/authentik/token/token`, passed as `--authentik-token-file`. Read once at startup; restart the pod to rotate. |
 | `authentik.tokenSecret.key` | `token` | Key within that Secret. |
 | `authentik.caBundle.configMap.{name,key}` | `""`, `ca.crt` | Existing ConfigMap with a PEM CA bundle (set this OR `secret`); passed as `--authentik-ca-file`. |

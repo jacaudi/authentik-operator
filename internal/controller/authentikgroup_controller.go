@@ -110,26 +110,26 @@ func (r *AuthentikGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if !g.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, &g)
 	}
-	base := g.DeepCopy()
-	if controllerutil.AddFinalizer(&g, FinalizerName) {
-		if err := r.Patch(ctx, &g, client.MergeFrom(base)); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := addFinalizer(ctx, r.Client, &g, g.DeepCopy()); err != nil {
+		return ctrl.Result{}, err
 	}
+	return syncThenPersist(r.statusPersister(ctx, &g), func(persist func() error) (ctrl.Result, error) {
+		return r.sync(ctx, &g, persist)
+	})
+}
 
+// statusPersister returns the function that writes the resource's status now, and from then on
+// measures changes against what it wrote.
+func (r *AuthentikGroupReconciler) statusPersister(ctx context.Context,
+	g *authentikiov1alpha1.AuthentikGroup) func() error {
 	orig := g.Status.DeepCopy()
-	persist := func() error {
-		if err := r.patchStatus(ctx, &g, orig); err != nil {
+	return func() error {
+		if err := r.patchStatus(ctx, g, orig); err != nil {
 			return err
 		}
 		orig = g.Status.DeepCopy()
 		return nil
 	}
-	result, syncErr := r.sync(ctx, &g, persist)
-	if err := persist(); err != nil {
-		return ctrl.Result{}, errors.Join(syncErr, err)
-	}
-	return result, syncErr
 }
 
 // sync does the work and records the outcome in g.Status. persist writes the
