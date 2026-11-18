@@ -17,12 +17,16 @@ limitations under the License.
 package authentik
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	api "goauthentik.io/api/v3"
 )
 
 // The generated client tracks Authentik 2026.8 and rejects a response that
@@ -52,6 +56,30 @@ func serveRecorded(t *testing.T) *Client {
 			file = "application.json"
 		case strings.HasSuffix(r.URL.Path, "/core/applications/"):
 			file = "applications_list.json"
+		case strings.HasSuffix(r.URL.Path, "/policies/bindings/") && r.Method == http.MethodPost:
+			file = "binding.json"
+		case strings.HasSuffix(r.URL.Path, "/policies/bindings/"):
+			file = "bindings_list.json"
+		case strings.Contains(r.URL.Path, "/core/groups/") && strings.HasSuffix(r.URL.Path, "/used_by/"):
+			file = "group_used_by.json"
+		case strings.HasSuffix(r.URL.Path, "/core/groups/"):
+			file = "groups_list.json"
+		case strings.Contains(r.URL.Path, "/core/groups/"):
+			file = "group.json"
+		case strings.HasSuffix(r.URL.Path, "/core/users/me/"):
+			file = "users_me.json"
+		case strings.HasSuffix(r.URL.Path, "/core/users/") && r.URL.Query().Has("attributes"):
+			file = "users_owner_list.json"
+		case strings.HasSuffix(r.URL.Path, "/core/users/"):
+			file = "users_list.json"
+		case strings.Contains(r.URL.Path, "/core/users/"):
+			file = "user.json"
+		case strings.HasSuffix(r.URL.Path, "/stages/invitation/invitations/") && r.Method == http.MethodPost:
+			file = "invitation.json"
+		case strings.HasSuffix(r.URL.Path, "/stages/invitation/invitations/"):
+			file = "invitations_list.json"
+		case strings.HasSuffix(r.URL.Path, "/authenticators/admin/all/"):
+			file = "authenticators.json"
 		default:
 			http.NotFound(w, r)
 			return
@@ -207,5 +235,216 @@ func TestCompatSkipsRewriteWhenKeyPresent(t *testing.T) {
 	_, got := roundTrip(t, appPath, 200, "application/json", io.NopCloser(strings.NewReader(in)))
 	if string(got) != in {
 		t.Fatalf("rewritten: %s", got)
+	}
+}
+
+// recordedFirst returns results[0] of a recorded page. Keys that the tests
+// need from a recording (a target, a pk) are read from it, never hard-coded.
+func recordedFirst(t *testing.T, name string) map[string]any {
+	t.Helper()
+	var page struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(recorded(t, name), &page); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if len(page.Results) == 0 {
+		t.Fatalf("%s has no results", name)
+	}
+	return page.Results[0]
+}
+
+// recordedObject returns the top-level object of a recording.
+func recordedObject(t *testing.T, name string) map[string]any {
+	t.Helper()
+	var o map[string]any
+	if err := json.Unmarshal(recorded(t, name), &o); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return o
+}
+
+func TestDecodesAuthentik20262Bindings(t *testing.T) {
+	target, _ := recordedFirst(t, "bindings_list.json")["target"].(string)
+	got, err := serveRecorded(t).ListBindings(t.Context(), target)
+	if err != nil {
+		t.Fatalf("ListBindings: %v", err)
+	}
+	if len(got) != 1 || got[0].Expiring || got[0].GroupObj.Get() == nil {
+		t.Fatalf("unexpected bindings: %+v", got)
+	}
+}
+
+func TestDecodesAuthentik20262BindingCreate(t *testing.T) {
+	got, err := serveRecorded(t).CreateBinding(t.Context(), *api.NewPolicyBindingRequest("ignored", 0))
+	if err != nil {
+		t.Fatalf("CreateBinding: %v", err)
+	}
+	if got.Order != 0 {
+		t.Fatalf("Order = %d, want 0", got.Order)
+	}
+}
+
+func TestDecodesAuthentik20262Group(t *testing.T) {
+	pk, _ := recordedObject(t, "group.json")["pk"].(string)
+	got, err := serveRecorded(t).GetGroup(t.Context(), pk)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if got.Name != "rec-group" || !HasOwnerProof(got.Attributes, "rec-uid") || len(got.UsersObj) != 1 {
+		t.Fatalf("unexpected group: %+v", got)
+	}
+}
+
+func TestDecodesAuthentik20262GroupByName(t *testing.T) {
+	if _, err := serveRecorded(t).FindGroupByName(t.Context(), "rec-group"); err != nil {
+		t.Fatalf("FindGroupByName: %v", err)
+	}
+}
+
+func TestDecodesAuthentik20262GroupUsedBy(t *testing.T) {
+	pk, _ := recordedObject(t, "group.json")["pk"].(string)
+	got, err := serveRecorded(t).GroupUsedBy(t.Context(), pk)
+	if err != nil {
+		t.Fatalf("GroupUsedBy: %v", err)
+	}
+	if !slices.ContainsFunc(got, func(u api.UsedBy) bool {
+		return u.App == "authentik_policies" && u.ModelName == "policybinding"
+	}) {
+		t.Fatalf("no policy binding in %+v", got)
+	}
+}
+
+// userPK reads the recorded user's integer pk.
+func userPK(t *testing.T) int32 {
+	t.Helper()
+	pk, ok := recordedObject(t, "user.json")["pk"].(float64)
+	if !ok {
+		t.Fatal("user.json has no numeric pk")
+	}
+	return int32(pk)
+}
+
+func TestDecodesAuthentik20262User(t *testing.T) {
+	got, err := serveRecorded(t).GetUser(t.Context(), userPK(t))
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if got.Username != "rec-user" {
+		t.Fatalf("Username = %q, want rec-user", got.Username)
+	}
+}
+
+func TestDecodesAuthentik20262UserByUsername(t *testing.T) {
+	if _, err := serveRecorded(t).FindUserByUsername(t.Context(), "rec-user"); err != nil {
+		t.Fatalf("FindUserByUsername: %v", err)
+	}
+}
+
+func TestDecodesAuthentik20262UsersByOwnerUID(t *testing.T) {
+	got, err := serveRecorded(t).FindUsersByOwnerUID(t.Context(), "rec-uid")
+	if err != nil {
+		t.Fatalf("FindUsersByOwnerUID: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d users, want 1", len(got))
+	}
+}
+
+func TestDecodesAuthentik20262Me(t *testing.T) {
+	got, err := serveRecorded(t).Me(t.Context())
+	if err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	if !got.IsSuperuser || got.Username != tokenUsername {
+		t.Fatalf("unexpected token owner: %+v", got)
+	}
+}
+
+// Ping shares the endpoint: the AuthentikDeployment reconciler reports
+// Connected from it.
+func TestPingDecodesAuthentik20262(t *testing.T) {
+	got, err := serveRecorded(t).Ping(t.Context())
+	if err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if got != tokenUsername {
+		t.Fatalf("Ping = %q, want %q", got, tokenUsername)
+	}
+}
+
+func TestDecodesAuthentik20262InvitationCreate(t *testing.T) {
+	got, err := serveRecorded(t).CreateInvitation(t.Context(), api.InvitationRequest{Name: "rec-invitation"})
+	if err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	if _, ok := got.FixedData["attributes"]; got.Name != "rec-invitation" || !ok {
+		t.Fatalf("unexpected invitation: %+v", got)
+	}
+}
+
+func TestDecodesAuthentik20262InvitationByName(t *testing.T) {
+	if _, err := serveRecorded(t).FindInvitationByName(t.Context(), "rec-invitation"); err != nil {
+		t.Fatalf("FindInvitationByName: %v", err)
+	}
+}
+
+func TestDecodesAuthentik20262Authenticators(t *testing.T) {
+	got, err := serveRecorded(t).UserAuthenticators(t.Context(), userPK(t))
+	if err != nil {
+		t.Fatalf("UserAuthenticators: %v", err)
+	}
+	if len(got) != 1 || got[0].Name == "" || got[0].Type == "" {
+		t.Fatalf("want exactly one named, typed device, got %+v", got)
+	}
+}
+
+// A binding that already carries expires and expiring (2026.8) is not changed.
+func TestCompatBindingRuleLeavesPresentValues(t *testing.T) {
+	rule := compatRule("/api/v3/policies/bindings/")
+	got, ok := patchJSON([]byte(`{"target":"x","expires":"2026-01-01T00:00:00Z","expiring":true}`), rule.fill)
+	if !ok || !strings.Contains(string(got), `"expires":"2026-01-01T00:00:00Z"`) ||
+		!strings.Contains(string(got), `"expiring":true`) {
+		t.Fatalf("present values changed: %s", got)
+	}
+}
+
+// /core/users/me/ on 2026.2.3 sends only "user": the rule adds the top-level
+// "users" array (holding that same user) and user.is_current, which 2026.8
+// sends and the pinned client requires.
+func TestCompatMeRuleAddsUsersAndIsCurrent(t *testing.T) {
+	rule := compatRule("/api/v3/core/users/me/")
+	got, ok := patchJSON([]byte(`{"user":{"pk":4,"username":"akadmin"}}`), rule.fill)
+	if !ok {
+		t.Fatal("not patched")
+	}
+	var doc struct {
+		User  map[string]any   `json:"user"`
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.User["is_current"] != true || len(doc.Users) != 1 ||
+		doc.Users[0]["is_current"] != true || doc.Users[0]["username"] != tokenUsername {
+		t.Fatalf("unexpected body: %s", got)
+	}
+}
+
+func TestCompatMeRuleLeavesPresentValues(t *testing.T) {
+	rule := compatRule("/api/v3/core/users/me/")
+	got, ok := patchJSON([]byte(`{"users":[{"username":"a"}],"user":{"username":"a","is_current":false}}`), rule.fill)
+	if !ok {
+		t.Fatal("not patched")
+	}
+	var doc struct {
+		User  map[string]any   `json:"user"`
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := doc.Users[0]["is_current"]; has || len(doc.Users) != 1 || doc.User["is_current"] != false {
+		t.Fatalf("present values changed: %s", got)
 	}
 }

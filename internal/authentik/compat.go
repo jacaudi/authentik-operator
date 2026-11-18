@@ -34,10 +34,16 @@ const maxCompatBody = 16 << 20
 // responses from an older supported release. A property that release does
 // not send yet is added as null (a no-op for the non-pointer string PbmUuid, a null for the
 // NullableString DcrRegistration); nothing
-// present is ever changed. Found by the end-to-end suite against 2026.2.3:
+// present is ever changed. The first two were found by the end-to-end suite
+// against 2026.2.3, the last two by decoding recorded 2026.2.3 responses
+// (record_test.go):
 //
 //   - Application.pbm_uuid (new after 2026.2; the operator does not use it)
 //   - OAuth2ProviderSetupURLs.dcr_registration (new after 2026.2; unused)
+//   - PolicyBinding.expires and expiring (added as null, which decodes to the zero value; the operator reads neither)
+//   - /core/users/me/ top-level users (an array holding the same user) and
+//     user.is_current (true: the token's own user is the current one); the
+//     operator needs both to decode the token owner (Ping, Me)
 //
 // Add a rule here only for a property the pinned client requires and an older
 // supported release lacks, with a recorded response in testdata/ proving it.
@@ -108,8 +114,28 @@ func compatRule(path string) *compat {
 	case strings.HasSuffix(path, "/setup_urls/"):
 		return &compat{keys: []string{"dcr_registration"},
 			fill: func(o map[string]any) { addMissing(o, "issuer", "dcr_registration") }}
+	case strings.Contains(path, "/policies/bindings/"):
+		return &compat{keys: []string{"expires", "expiring"},
+			fill: func(o map[string]any) { addMissing(o, "target", "expires"); addMissing(o, "target", "expiring") }}
+	case strings.HasSuffix(path, "/core/users/me/"):
+		return &compat{keys: []string{"users", "is_current"}, fill: fillMe}
 	}
 	return nil
+}
+
+// fillMe adds what 2026.8 sends and 2026.2.3 does not to a /core/users/me/ body: user.is_current (true) and the
+// top-level users array, which holds the very same user map so users[0] carries is_current too.
+func fillMe(doc map[string]any) {
+	user, ok := doc["user"].(map[string]any)
+	if !ok {
+		return
+	}
+	if _, ok := user["is_current"]; !ok {
+		user["is_current"] = true
+	}
+	if _, ok := doc["users"]; !ok {
+		doc["users"] = []any{user}
+	}
 }
 
 // addMissing sets o[prop] to null when o looks like the object type (it has
