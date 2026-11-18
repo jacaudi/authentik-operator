@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	api "goauthentik.io/api/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -145,7 +146,16 @@ func (r *AuthentikGroupReconciler) sync(ctx context.Context, g *authentikiov1alp
 		meta.RemoveStatusCondition(&g.Status.Conditions, ConditionDrifted)
 		r.setReady(g, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Group %q is in sync", got.Name))
 	}
-	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
+	return ctrl.Result{RequeueAfter: recheckAfter(g)}, nil
+}
+
+// recheckAfter is when to look at g again: soon while a member problem (MembersInSync False) may be
+// fixed in Authentik, else the drift-detection interval.
+func recheckAfter(g *authentikiov1alpha1.AuthentikGroup) time.Duration {
+	if meta.IsStatusConditionFalse(g.Status.Conditions, ConditionMembersInSync) {
+		return userErrorRecheck
+	}
+	return syncedRecheck
 }
 
 // syncGroup makes the group in Authentik match the spec and returns it as

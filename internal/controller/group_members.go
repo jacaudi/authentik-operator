@@ -80,7 +80,9 @@ type memberPlan struct {
 // applied when it resolved, is not held, and still resolves to the user it was
 // pinned to; one that fails a check is reported and left as it is (a held or
 // identity-changed username's users stay members, so a removal never rides on
-// a lookup that went wrong). The operator's own user is never removed.
+// a lookup that went wrong; the pinned account of an identity-changed username
+// stays too, held or not). A held username that does not resolve is Held, not
+// NotFound. The operator's own user is never removed.
 func planMembers(in memberInputs) memberPlan {
 	var plan memberPlan
 	pins := make(map[string]int32, len(in.Pins))
@@ -96,17 +98,21 @@ func planMembers(in memberInputs) memberPlan {
 	for _, name := range names {
 		pk, resolved := in.Resolved[name]
 		pinned, hasPin := pins[name]
-		if in.Held[name] {
+		held := in.Held[name]
+		if held {
 			plan.Held = append(plan.Held, name)
 		}
 		switch {
-		case !resolved:
-			plan.NotFound = append(plan.NotFound, name)
-		case in.Held[name]:
-			keep[pk] = true
-		case hasPin && pinned != pk:
+		case resolved && hasPin && pinned != pk:
 			plan.IdentityChanged = append(plan.IdentityChanged, name)
 			keep[pk], keep[pinned] = true, true
+		case held:
+			// A held username with no account yet is reported as held, not as missing.
+			if resolved {
+				keep[pk] = true
+			}
+		case !resolved:
+			plan.NotFound = append(plan.NotFound, name)
 		default:
 			keep[pk] = true
 			if !live[pk] {
@@ -175,13 +181,18 @@ func observeMembers(ctx context.Context, c *authentik.Client, g *authentikiov1al
 // syncMembers makes the group's membership match spec.members: every add_user
 // before any remove_user, never a users list in a create or PATCH. It reports
 // the outcome in MembersInSync and pins the usernames in status.members. An
-// absent spec.members (or ReadOnly, which never writes) is neither read nor
-// written, and leaves no condition or pin behind.
+// absent spec.members is neither read nor written and leaves no condition or
+// pin behind; under ReadOnly, which never writes, only the pins remain.
 func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik.Client,
 	g *authentikiov1alpha1.AuthentikGroup, group *api.Group) error {
-	if g.Spec.Members == nil || readOnly(g.Spec.ManagementPolicy) {
+	if g.Spec.Members == nil {
 		meta.RemoveStatusCondition(&g.Status.Conditions, ConditionMembersInSync)
 		g.Status.Members = nil
+		return nil
+	}
+	if readOnly(g.Spec.ManagementPolicy) {
+		// ReadOnly reports drift instead. The pins stay: they record which account a username meant.
+		meta.RemoveStatusCondition(&g.Status.Conditions, ConditionMembersInSync)
 		return nil
 	}
 	plan, tokenUser, err := observeMembers(ctx, c, g, group.Pk, g.Status.Members)
@@ -279,8 +290,7 @@ func recordGroupDrift(ctx context.Context, c *authentik.Client, g *authentikiov1
 		diffs = append(diffs, describeChanges(patch, current))
 	}
 	if g.Spec.Members != nil {
-		// Nothing is pinned under ReadOnly: no username has an earlier identity to differ from.
-		members, _, err := observeMembers(ctx, c, g, live.Pk, nil)
+		members, _, err := observeMembers(ctx, c, g, live.Pk, g.Status.Members)
 		if err != nil {
 			return err
 		}

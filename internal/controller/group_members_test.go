@@ -90,6 +90,19 @@ func TestPlanMembers(t *testing.T) {
 			want: memberPlan{Held: []string{memberDave}},
 		},
 		{
+			name: "keeps the pinned account of a held username whose pin differs from what it resolves to",
+			in: memberInputs{Spec: []string{memberCarol}, Resolved: map[string]int32{memberCarol: 11},
+				Held: map[string]bool{memberCarol: true}, Pins: []authentikiov1alpha1.GroupMemberStatus{pin(memberCarol, 10)},
+				Live: []api.PartialUser{user(10, memberCarol)}, TokenUserPK: tokenPK},
+			want: memberPlan{IdentityChanged: []string{memberCarol}, Held: []string{memberCarol},
+				Pins: []authentikiov1alpha1.GroupMemberStatus{pin(memberCarol, 10)}},
+		},
+		{
+			name: "reports a held username with no account under Held only",
+			in:   memberInputs{Spec: []string{memberDave}, Held: map[string]bool{memberDave: true}, TokenUserPK: tokenPK},
+			want: memberPlan{Held: []string{memberDave}},
+		},
+		{
 			name: "does not add a held username that is not yet a member",
 			in: memberInputs{Spec: []string{memberDave}, Resolved: map[string]int32{memberDave: 5},
 				Held:        map[string]bool{memberDave: true},

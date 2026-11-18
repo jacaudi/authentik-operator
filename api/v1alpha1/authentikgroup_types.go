@@ -80,8 +80,8 @@ type GroupMemberStatus struct {
 	// username is the member's Authentik username, as listed in spec.members.
 	Username string `json:"username"`
 
-	// pk is the Authentik user the username resolved to when it was first
-	// added. The operator holds the username out if it later resolves to
+	// pk is the Authentik user the username resolved to when the username was
+	// first resolved. The operator holds the username out if it later resolves to
 	// another user.
 	PK int32 `json:"pk"`
 }
@@ -123,7 +123,7 @@ type AuthentikGroupStatus struct {
 	ManagedAttributes []string `json:"managedAttributes,omitempty"`
 
 	// members pins each username in spec.members to the Authentik user it
-	// resolved to the first time it was added. A username that later resolves
+	// resolved to the first time it was resolved. A username that later resolves
 	// to another user is held out (MemberIdentityChanged) until its entry is
 	// removed from this list.
 	// +listType=map

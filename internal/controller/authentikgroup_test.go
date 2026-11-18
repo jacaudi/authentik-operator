@@ -842,7 +842,9 @@ var _ = Describe("AuthentikGroup", func() {
 			bob := fake.SeedUser(memberBob, nil)
 			g := newGroup("m-notfound", policyAdopt, withMembers(memberBob, "ghost"))
 
-			mustReconcile(g)
+			res, err := reconcileGroup(g)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(userErrorRecheck), "a member problem is checked again soon")
 			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}))
 			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionFalse))
 			Expect(membersInSync(g).Reason).To(Equal(reasonMemberNotFound))
@@ -961,9 +963,27 @@ var _ = Describe("AuthentikGroup", func() {
 			mustReconcile(g)
 			n := len(writes())
 
-			mustReconcile(g)
+			res, err := reconcileGroup(g)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(syncedRecheck))
 			Expect(writes()).To(HaveLen(n))
 			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("keeps the pins and drops only the condition when the group is switched to ReadOnly", func() {
+			pk := fake.SeedGroup("m-switch", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			g := newGroup("m-switch", policyAdopt, withMembers(memberBob))
+			mustReconcile(g)
+			pins := []authentikiov1alpha1.GroupMemberStatus{{Username: memberBob, PK: bob}}
+			Expect(get(g).Status.Members).To(Equal(pins))
+			Expect(membersInSync(g)).NotTo(BeNil())
+
+			setSpec(g, func(s *authentikiov1alpha1.AuthentikGroupSpec) { s.ManagementPolicy = policyReadOnly })
+			mustReconcile(g)
+			Expect(membersInSync(g)).To(BeNil())
+			Expect(get(g).Status.Members).To(Equal(pins), "a pin is a fact about the account, not about the policy")
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}))
 		})
 
 		It("forgets the members, their pins and the condition when members is removed", func() {
