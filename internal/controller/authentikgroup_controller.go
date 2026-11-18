@@ -182,7 +182,14 @@ func (r *AuthentikGroupReconciler) syncGroup(ctx context.Context, g *authentikio
 		return nil, err
 	}
 	work.want = want
-	return r.act(ctx, resolved.Client, g, work, persist)
+	got, err := r.act(ctx, resolved.Client, g, work, persist)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.syncMembers(ctx, resolved.Client, g, got); err != nil {
+		return nil, err
+	}
+	return got, nil
 }
 
 // groupWork is what one sync works from: what Authentik says about the group
@@ -259,7 +266,7 @@ func (r *AuthentikGroupReconciler) act(ctx context.Context, c *authentik.Client,
 		}
 		return r.syncFields(ctx, c, g, work.target, work.want)
 	case adopt.ActionDryRunAdopt:
-		return nil, r.dryRunAdopt(ctx, g, work.target, work.want)
+		return nil, r.dryRunAdopt(ctx, c, g, work.target, work.want)
 	case adopt.ActionDryRunCreate:
 		return nil, condErrf(reasonAdoptionDryRun, "dry run: no existing group named %q; a new one would be "+
 			"created; nothing was written", name)
@@ -425,15 +432,24 @@ func (r *AuthentikGroupReconciler) refuseHeld(ctx context.Context, g *authentiki
 }
 
 // dryRunAdopt reports what adopting target would change and writes nothing.
-func (r *AuthentikGroupReconciler) dryRunAdopt(ctx context.Context, g *authentikiov1alpha1.AuthentikGroup,
-	target *api.Group, want map[string]any) error {
+func (r *AuthentikGroupReconciler) dryRunAdopt(ctx context.Context, c *authentik.Client,
+	g *authentikiov1alpha1.AuthentikGroup, target *api.Group, want map[string]any) error {
 	if err := r.refuseHeld(ctx, g, target); err != nil {
 		return err
 	}
 	// Adoption keeps every live key, so nothing is owned yet, whatever an earlier claim left in status.
 	plan := planGroup(g, want, target, nil)
 	patch, live := plan.reportView(target)
-	msg, announce := dryRunReport(g.Status.Conditions, fmt.Sprintf("group %q", target.Name), patch, live, plan.changed)
+	changes := dryRunChanges(fmt.Sprintf("group %q", target.Name), patch, live, plan.changed)
+	if g.Spec.Members != nil {
+		members, _, err := observeMembers(ctx, c, g, target.Pk, g.Status.Members)
+		if err != nil {
+			return err
+		}
+		changes += "; members: " + membersReport(members)
+	}
+	// announce is judged against the whole message, members included.
+	msg, announce := dryRunMessage(g.Status.Conditions, changes)
 	if announce {
 		r.event(g, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 	}
@@ -479,8 +495,9 @@ func (r *AuthentikGroupReconciler) syncFields(ctx context.Context, c *authentik.
 	g *authentikiov1alpha1.AuthentikGroup, live *api.Group, want map[string]any) (*api.Group, error) {
 	plan := planGroup(g, want, live, g.Status.ManagedAttributes)
 	if readOnly(g.Spec.ManagementPolicy) {
-		patch, current := plan.reportView(live)
-		recordDrift(&g.Status.Conditions, g.Generation, patch, current, plan.changed)
+		if err := recordGroupDrift(ctx, c, g, live, plan); err != nil {
+			return nil, err
+		}
 		return live, nil
 	}
 	got := live

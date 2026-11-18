@@ -138,6 +138,18 @@ spec:
                 - AdoptOrCreate
                 - ReadOnly
                 type: string
+              members:
+                description: |-
+                  members are Authentik usernames. Absent: membership is never read or
+                  written. Present, including []: exactly these members (the operator
+                  token's own user is never removed).
+                items:
+                  maxLength: 150
+                  minLength: 1
+                  type: string
+                maxItems: 1000
+                type: array
+                x-kubernetes-list-type: set
               name:
                 description: |-
                   name is the group's name in Authentik; defaults to metadata.name. It
@@ -236,6 +248,36 @@ spec:
                 items:
                   type: string
                 type: array
+              members:
+                description: |-
+                  members pins each username in spec.members to the Authentik user it
+                  resolved to the first time it was added. A username that later resolves
+                  to another user is held out (MemberIdentityChanged) until its entry is
+                  removed from this list.
+                items:
+                  description: |-
+                    GroupMemberStatus pins a member username to the Authentik user it first
+                    resolved to.
+                  properties:
+                    pk:
+                      description: |-
+                        pk is the Authentik user the username resolved to when it was first
+                        added. The operator holds the username out if it later resolves to
+                        another user.
+                      format: int32
+                      type: integer
+                    username:
+                      description: username is the member's Authentik username, as
+                        listed in spec.members.
+                      type: string
+                  required:
+                  - pk
+                  - username
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - username
+                x-kubernetes-list-type: map
               name:
                 description: |-
                   name is the group's name in Authentik when it was created or adopted.

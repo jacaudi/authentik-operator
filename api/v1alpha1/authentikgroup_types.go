@@ -28,7 +28,8 @@ type AuthentikGroupSpec struct {
 	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
 	// An existing group is matched by name. Adoption patches the fields the
 	// spec sets and leaves the others (isSuperuser when unset, every attribute
-	// key the spec does not list, parents, roles, members) as they are.
+	// key the spec does not list, parents, roles, and members when absent) as
+	// they are.
 	APIManagementSpec `json:",inline"`
 
 	// authentikRef names the AuthentikDeployment (same namespace) whose
@@ -61,6 +62,28 @@ type AuthentikGroupSpec struct {
 	// +kubebuilder:validation:MaxProperties=64
 	// +optional
 	Attributes map[string]apiextensionsv1.JSON `json:"attributes,omitzero"`
+
+	// members are Authentik usernames. Absent: membership is never read or
+	// written. Present, including []: exactly these members (the operator
+	// token's own user is never removed).
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=1000
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=150
+	// +optional
+	Members *[]string `json:"members,omitempty"`
+}
+
+// GroupMemberStatus pins a member username to the Authentik user it first
+// resolved to.
+type GroupMemberStatus struct {
+	// username is the member's Authentik username, as listed in spec.members.
+	Username string `json:"username"`
+
+	// pk is the Authentik user the username resolved to when it was first
+	// added. The operator holds the username out if it later resolves to
+	// another user.
+	PK int32 `json:"pk"`
 }
 
 // AuthentikGroupStatus defines the observed state of AuthentikGroup.
@@ -98,6 +121,15 @@ type AuthentikGroupStatus struct {
 	// listing it.
 	// +optional
 	ManagedAttributes []string `json:"managedAttributes,omitempty"`
+
+	// members pins each username in spec.members to the Authentik user it
+	// resolved to the first time it was added. A username that later resolves
+	// to another user is held out (MemberIdentityChanged) until its entry is
+	// removed from this list.
+	// +listType=map
+	// +listMapKey=username
+	// +optional
+	Members []GroupMemberStatus `json:"members,omitempty"`
 
 	// observedGeneration is the spec generation last synced to Authentik.
 	// +optional

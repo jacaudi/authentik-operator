@@ -745,4 +745,241 @@ var _ = Describe("AuthentikGroup", func() {
 				ContainSubstring("--default-connection-identity-namespace-selector"))))
 		})
 	})
+
+	Context("members", func() {
+		const (
+			pathAddUser    = "add_user"
+			pathRemoveUser = "remove_user"
+		)
+		// withMembers sets spec.members to exactly these usernames; none gives a present, empty list.
+		withMembers := func(usernames ...string) func(*authentikiov1alpha1.AuthentikGroupSpec) {
+			list := make([]string, len(usernames))
+			copy(list, usernames)
+			return func(s *authentikiov1alpha1.AuthentikGroupSpec) { s.Members = &list }
+		}
+		membersInSync := func(g *authentikiov1alpha1.AuthentikGroup) *metav1.Condition {
+			return meta.FindStatusCondition(get(g).Status.Conditions, ConditionMembersInSync)
+		}
+		// membershipRequests are the recorded calls whose path contains one of the actions.
+		membershipRequests := func(reads bool, actions ...string) []fakeauthentik.Request {
+			var out []fakeauthentik.Request
+			for _, r := range fake.Requests(!reads) {
+				for _, a := range actions {
+					if strings.Contains(r.Path, a) {
+						out = append(out, r)
+					}
+				}
+			}
+			return out
+		}
+		eventsNamed := func(reason string) int {
+			n := 0
+			for _, e := range drain() {
+				if strings.Contains(e, reason) {
+					n++
+				}
+			}
+			return n
+		}
+
+		It("never reads or writes membership when members is absent", func() {
+			g := newGroup("m-absent", policyCreate, nil)
+			mustReconcile(g)
+			bob := fake.SeedUser(memberBob, nil)
+			fake.AddGroupMember(pkOf(g), bob)
+
+			mustReconcile(g)
+			mustReconcile(g)
+			Expect(membershipRequests(true, pathAddUser, pathRemoveUser, "/core/users/")).To(BeEmpty())
+			Expect(fake.GroupMemberPKs(pkOf(g))).To(Equal([]int32{bob}))
+			Expect(membersInSync(g)).To(BeNil())
+			Expect(get(g).Status.Members).To(BeEmpty())
+		})
+
+		It("removes everyone except the operator's own user for members: []", func() {
+			pk := fake.SeedGroup("m-empty", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			fake.AddGroupMember(pk, fakeauthentik.TokenUserPK)
+			fake.AddGroupMember(pk, bob)
+			g := newGroup("m-empty", policyAdopt, withMembers())
+			Expect(get(g).Spec.Members).NotTo(BeNil(), "the CRD must keep an explicit empty list distinct from an absent one")
+
+			mustReconcile(g)
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{fakeauthentik.TokenUserPK}))
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(membersInSync(g).Reason).To(Equal(reasonInSync))
+			Expect(membersInSync(g).Message).To(ContainSubstring(`"akadmin"`))
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(g).Status.Members).To(BeEmpty())
+		})
+
+		It("writes per member through add_user and remove_user, never a users list", func() {
+			pk := fake.SeedGroup("m-writes", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			eve := fake.SeedUser("eve", nil)
+			fake.AddGroupMember(pk, eve)
+			g := newGroup("m-writes", policyAdopt, withMembers(memberBob))
+
+			mustReconcile(g)
+			add, remove := -1, -1
+			for i, w := range writes() {
+				Expect(w.Body).NotTo(HaveKey("users"), "%s %s", w.Method, w.Path)
+				switch {
+				case strings.HasSuffix(w.Path, "/add_user/"):
+					add = i
+				case strings.HasSuffix(w.Path, "/remove_user/"):
+					remove = i
+				}
+			}
+			Expect(add).To(BeNumerically(">=", 0))
+			Expect(remove).To(BeNumerically(">", add), "every add_user precedes any remove_user")
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}))
+			Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: memberBob, PK: bob}}))
+		})
+
+		It("reports MemberNotFound naming unknown usernames and still applies the rest", func() {
+			pk := fake.SeedGroup("m-notfound", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			g := newGroup("m-notfound", policyAdopt, withMembers(memberBob, "ghost"))
+
+			mustReconcile(g)
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}))
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionFalse))
+			Expect(membersInSync(g).Reason).To(Equal(reasonMemberNotFound))
+			Expect(membersInSync(g).Message).To(ContainSubstring(`"ghost"`))
+			Expect(membersInSync(g).Message).NotTo(ContainSubstring(`"bob"`))
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: memberBob, PK: bob}}))
+		})
+
+		It("holds out a username whose pk changed until the pin is cleared", func() {
+			pk := fake.SeedGroup("m-identity", nil)
+			old := fake.SeedUser(memberCarol, nil)
+			g := newGroup("m-identity", policyAdopt, withMembers(memberCarol))
+			mustReconcile(g)
+			Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: memberCarol, PK: old}}))
+
+			fake.DeleteUser(old)
+			successor := fake.SeedUser(memberCarol, nil)
+			mustReconcile(g)
+			Expect(fake.GroupMemberPKs(pk)).To(BeEmpty(), "the new account is not added")
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionFalse))
+			Expect(membersInSync(g).Reason).To(Equal(reasonMemberIdentityChanged))
+			Expect(membersInSync(g).Message).To(ContainSubstring(`"carol"`))
+			Expect(membersInSync(g).Message).To(ContainSubstring("status.members"))
+			Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: memberCarol, PK: old}}))
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+
+			setStatus(g, func(s *authentikiov1alpha1.AuthentikGroupStatus) { s.Members = nil })
+			mustReconcile(g)
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{successor}))
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(g).Status.Members).To(Equal(
+				[]authentikiov1alpha1.GroupMemberStatus{{Username: memberCarol, PK: successor}}))
+		})
+
+		It("lists in a dry run the usernames adoption would add and remove", func() {
+			pk := fake.SeedGroup("m-dry", nil)
+			fake.SeedUser(memberBob, nil)
+			eve := fake.SeedUser("eve", nil)
+			fake.AddGroupMember(pk, eve)
+			g := newGroup("m-dry", policyAdopt, func(s *authentikiov1alpha1.AuthentikGroupSpec) {
+				withMembers(memberBob)(s)
+				s.DryRun = true
+			})
+
+			mustReconcile(g)
+			Expect(ready(g).Reason).To(Equal(reasonAdoptionDryRun))
+			Expect(ready(g).Message).To(ContainSubstring(
+				`; members: would add ["bob"], would remove ["eve"]; nothing was written`))
+			Expect(writes()).To(BeEmpty())
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{eve}))
+			Expect(eventsNamed(reasonAdoptionDryRun)).To(Equal(1))
+
+			mustReconcile(g)
+			Expect(eventsNamed(reasonAdoptionDryRun)).To(BeZero(), "an unchanged dry run is announced once")
+		})
+
+		It("emits an event naming added and removed usernames", func() {
+			pk := fake.SeedGroup("m-event", nil)
+			fake.SeedUser(memberBob, nil)
+			eve := fake.SeedUser("eve", nil)
+			fake.AddGroupMember(pk, eve)
+			g := newGroup("m-event", policyAdopt, withMembers(memberBob))
+
+			mustReconcile(g)
+			Expect(drain()).To(ContainElement(And(ContainSubstring("Normal MembersUpdated"),
+				ContainSubstring("added [bob]"), ContainSubstring("removed [eve]"))))
+		})
+
+		It("reports member drift under ReadOnly and writes nothing", func() {
+			pk := fake.SeedGroup("ro-m", nil)
+			fake.SeedUser(memberBob, nil)
+			eve := fake.SeedUser("eve", nil)
+			fake.AddGroupMember(pk, eve)
+			g := newGroup("ro-m", policyReadOnly, withMembers(memberBob))
+
+			mustReconcile(g)
+			Expect(drifted(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(drifted(g).Reason).To(Equal(reasonDriftDetected))
+			Expect(drifted(g).Message).To(Equal(
+				`the object in Authentik differs from the spec: members: would add ["bob"], would remove ["eve"]`))
+			Expect(membersInSync(g)).To(BeNil())
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready(g).Reason).To(Equal(reasonReadOnly))
+			Expect(membershipRequests(false, pathAddUser, pathRemoveUser)).To(BeEmpty())
+			Expect(writes()).To(BeEmpty())
+		})
+
+		It("reports fields and members together under ReadOnly", func() {
+			pk := fake.SeedGroup("ro-both", map[string]any{fieldIsSuperuser: true})
+			bob := fake.SeedUser(memberBob, nil)
+			fake.AddGroupMember(pk, bob)
+			g := newGroup("ro-both", policyReadOnly, func(s *authentikiov1alpha1.AuthentikGroupSpec) {
+				s.IsSuperuser = new(false)
+				withMembers()(s)
+			})
+
+			mustReconcile(g)
+			Expect(drifted(g).Message).To(And(
+				HavePrefix("the object in Authentik differs from the spec: is_superuser: true -> false; "),
+				HaveSuffix(`; members: would add [], would remove ["bob"]`)))
+		})
+
+		It("rejects duplicate usernames at admission", func() {
+			g := &authentikiov1alpha1.AuthentikGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "m-duplicates", Namespace: namespace},
+			}
+			withMembers(memberBob, memberBob)(&g.Spec)
+			err := k8sClient.Create(ctx, g)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "got %v", err)
+		})
+
+		It("sends no writes on a second reconcile with members", func() {
+			fake.SeedUser(memberBob, nil)
+			g := newGroup("m-steady", policyCreate, withMembers(memberBob))
+			mustReconcile(g)
+			n := len(writes())
+
+			mustReconcile(g)
+			Expect(writes()).To(HaveLen(n))
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("forgets the members, their pins and the condition when members is removed", func() {
+			pk := fake.SeedGroup("m-forget", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			g := newGroup("m-forget", policyAdopt, withMembers(memberBob))
+			mustReconcile(g)
+			Expect(get(g).Status.Members).NotTo(BeEmpty())
+			before := len(writes())
+
+			setSpec(g, func(s *authentikiov1alpha1.AuthentikGroupSpec) { s.Members = nil })
+			mustReconcile(g)
+			Expect(membersInSync(g)).To(BeNil())
+			Expect(get(g).Status.Members).To(BeEmpty())
+			Expect(writes()).To(HaveLen(before))
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}), "removing the field releases the membership untouched")
+		})
+	})
 })

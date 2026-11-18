@@ -11,6 +11,12 @@ metadata:
 spec:
   # name defaults to metadata.name and cannot change once the group exists.
   name: immich-users
+  # Authentik usernames. Absent: membership is never read or written. Present,
+  # including []: exactly these members, so everyone else is removed (the
+  # operator token's own user never is). A username that does not exist, or that
+  # now belongs to another account than the first time, is reported in the
+  # MembersInSync condition; the other members are still applied.
+  members: [alice, bob]
   # Attributes are inherited by members in claims. The operator owns only the
   # keys listed here and keeps every other key. Values are strings, numbers,
   # booleans or lists. goauthentik.io/*, authentik_operator and settings are

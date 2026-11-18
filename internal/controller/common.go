@@ -253,13 +253,24 @@ func adoptVerb(mp authentikiov1alpha1.ManagementPolicy) string {
 // event is emitted once per change rather than on every retry.
 func dryRunReport(conds []metav1.Condition, subject string, patch, live any,
 	changed []string) (msg string, announce bool) {
-	msg = fmt.Sprintf("dry run: would adopt %s; ", subject)
+	return dryRunMessage(conds, dryRunChanges(subject, patch, live, changed))
+}
+
+// dryRunChanges is the AdoptionDryRun message up to what adopting subject would
+// change; a kind with more to report appends it before dryRunMessage closes
+// the message.
+func dryRunChanges(subject string, patch, live any, changed []string) string {
+	msg := fmt.Sprintf("dry run: would adopt %s; ", subject)
 	if len(changed) == 0 {
-		msg += "would change no fields"
-	} else {
-		msg += "would change " + describeChanges(patch, live)
+		return msg + "would change no fields"
 	}
-	msg += "; nothing was written. Set spec.dryRun to false to adopt"
+	return msg + "would change " + describeChanges(patch, live)
+}
+
+// dryRunMessage closes changes into the whole AdoptionDryRun message.
+// announce is true when the Ready condition does not already carry exactly it.
+func dryRunMessage(conds []metav1.Condition, changes string) (msg string, announce bool) {
+	msg = changes + "; nothing was written. Set spec.dryRun to false to adopt"
 	cond := meta.FindStatusCondition(conds, ConditionReady)
 	return msg, cond == nil || cond.Reason != reasonAdoptionDryRun || cond.Message != msg
 }
@@ -268,13 +279,23 @@ func dryRunReport(conds []metav1.Condition, subject string, patch, live any,
 // would apply: True with the differing fields (as "field: live -> spec"), or
 // False when there is none.
 func recordDrift(conds *[]metav1.Condition, generation int64, patch, live any, changed []string) {
+	var diffs []string
+	if len(changed) > 0 {
+		diffs = append(diffs, describeChanges(patch, live))
+	}
+	setDrift(conds, generation, diffs...)
+}
+
+// setDrift sets the Drifted condition: True naming every difference, or False
+// when diffs is empty.
+func setDrift(conds *[]metav1.Condition, generation int64, diffs ...string) {
 	cond := metav1.Condition{
 		Type: ConditionDrifted, Status: metav1.ConditionFalse, Reason: reasonInSync,
 		Message: "the object in Authentik matches the spec", ObservedGeneration: generation,
 	}
-	if len(changed) > 0 {
+	if len(diffs) > 0 {
 		cond.Status, cond.Reason = metav1.ConditionTrue, reasonDriftDetected
-		cond.Message = "the object in Authentik differs from the spec: " + describeChanges(patch, live)
+		cond.Message = "the object in Authentik differs from the spec: " + strings.Join(diffs, "; ")
 	}
 	meta.SetStatusCondition(conds, cond)
 }
