@@ -19,6 +19,7 @@ package controller
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -234,7 +235,8 @@ func (r *AuthentikGroupReconciler) holdsUsername(ctx context.Context, g *authent
 
 // syncMembers makes the group's membership match spec.members: every add_user
 // before any remove_user, never a users list in a create or PATCH. It reports
-// the outcome in MembersInSync and pins the usernames in status.members. An
+// the outcome in MembersInSync (a failed write as AuthentikError, without
+// stopping the other writes) and pins the usernames in status.members. An
 // absent spec.members is neither read nor written and leaves no condition or
 // pin behind; under ReadOnly, which never writes, only the pins remain.
 func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik.Client,
@@ -253,20 +255,27 @@ func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik
 	if err != nil {
 		return err
 	}
+	// A failed write never stops the others: a person removed in Git must lose membership although
+	// an unrelated add_user keeps failing. The failures are reported in MembersInSync.
+	var added, removed []string
+	var failed error
 	for _, u := range plan.Add {
 		if err := c.AddUserToGroup(ctx, group.Pk, u.Pk); err != nil {
-			return fmt.Errorf("add user %q to group %q: %w", u.Username, group.Name, err)
+			failed = errors.Join(failed, fmt.Errorf("add user %q to group %q: %w", u.Username, group.Name, err))
+			continue
 		}
+		added = append(added, u.Username)
 	}
 	for _, u := range plan.Remove {
 		if err := c.RemoveUserFromGroup(ctx, group.Pk, u.Pk); err != nil {
-			return fmt.Errorf("remove user %q from group %q: %w", u.Username, group.Name, err)
+			failed = errors.Join(failed, fmt.Errorf("remove user %q from group %q: %w", u.Username, group.Name, err))
+			continue
 		}
+		removed = append(removed, u.Username)
 	}
 	g.Status.Members = plan.Pins
-	meta.SetStatusCondition(&g.Status.Conditions, membersCondition(g.Generation, plan, tokenUser))
-	if len(plan.Add)+len(plan.Remove) > 0 {
-		added, removed := usernames(plan.Add), usernames(plan.Remove)
+	meta.SetStatusCondition(&g.Status.Conditions, membersCondition(g.Generation, plan, tokenUser, failed))
+	if len(added)+len(removed) > 0 {
 		logf.FromContext(ctx).Info("Updated Group members", "name", group.Name, "pk", group.Pk,
 			"added", added, "removed", removed)
 		r.event(g, corev1.EventTypeNormal, "MembersUpdated", "Update",
@@ -278,8 +287,10 @@ func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik
 
 // membersCondition is MembersInSync after plan's adds and removes were applied:
 // True when nothing is held back, else False under the highest-priority reason
-// with a message listing every category that has a name.
-func membersCondition(generation int64, plan memberPlan, tokenUser string) metav1.Condition {
+// with a message listing every category that has a name. A write that failed
+// (failed, non-nil) outranks them all, as AuthentikError, and its message
+// comes first.
+func membersCondition(generation int64, plan memberPlan, tokenUser string, failed error) metav1.Condition {
 	cond := metav1.Condition{Type: ConditionMembersInSync, Status: metav1.ConditionTrue, Reason: reasonInSync,
 		Message: "members match spec.members", ObservedGeneration: generation}
 	if plan.TokenUserKept {
@@ -302,6 +313,10 @@ func membersCondition(generation int64, plan memberPlan, tokenUser string) metav
 			cond.Status, cond.Reason = metav1.ConditionFalse, problem.reason
 		}
 		parts = append(parts, fmt.Sprintf("%s: [%s]", problem.what, quoted(problem.names)))
+	}
+	if failed != nil {
+		cond.Status, cond.Reason = metav1.ConditionFalse, reasonAuthentikError
+		parts = append([]string{strings.ReplaceAll(failed.Error(), "\n", "; ")}, parts...)
 	}
 	if len(parts) > 0 {
 		cond.Message = strings.Join(parts, "; ")

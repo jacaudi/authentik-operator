@@ -855,6 +855,29 @@ var _ = Describe("AuthentikGroup", func() {
 			Expect(get(g).Status.Members).To(Equal([]authentikiov1alpha1.GroupMemberStatus{{Username: memberBob, PK: bob}}))
 		})
 
+		It("still applies a listed removal when an add_user fails, and reports it without failing Ready", func() {
+			pk := fake.SeedGroup("m-add-fails", nil)
+			bob := fake.SeedUser(memberBob, nil)
+			eve := fake.SeedUser("eve", nil)
+			fake.AddGroupMember(pk, eve)
+			g := newGroup("m-add-fails", policyAdopt, withMembers(memberBob))
+			fake.FailNextOn(http.MethodPost, pathAddUser, http.StatusForbidden)
+
+			res, err := reconcileGroup(g)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(userErrorRecheck))
+			Expect(fake.GroupMemberPKs(pk)).To(BeEmpty(), "eve is removed although bob could not be added")
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionFalse))
+			Expect(membersInSync(g).Reason).To(Equal(reasonAuthentikError))
+			Expect(membersInSync(g).Message).To(ContainSubstring(`add user "bob"`))
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(g).Status.GroupPK).NotTo(BeEmpty())
+
+			mustReconcile(g)
+			Expect(fake.GroupMemberPKs(pk)).To(Equal([]int32{bob}), "the next reconcile adds bob")
+			Expect(membersInSync(g).Status).To(Equal(metav1.ConditionTrue))
+		})
+
 		It("holds out a username whose pk changed until the pin is cleared", func() {
 			pk := fake.SeedGroup("m-identity", nil)
 			old := fake.SeedUser(memberCarol, nil)
