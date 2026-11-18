@@ -46,9 +46,10 @@ import (
 
 // Paths the invitation specs make the fake fail on.
 const (
-	pathInvitations   = "/stages/invitation/invitations/"
-	pathAuthenticator = "/authenticators/admin/all/"
-	usernameDavid     = "david"
+	pathInvitations    = "/stages/invitation/invitations/"
+	typeServiceAccount = "service_account"
+	pathAuthenticator  = "/authenticators/admin/all/"
+	usernameDavid      = "david"
 )
 
 // The lost-response recovery specs of Task 10 behaviour 2 ("recovers an invitation whose create response was lost
@@ -282,11 +283,14 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 	})
 
 	DescribeTable("reports a Conflict and withdraws the invitation when someone else takes the username",
-		func(taken map[string]any) {
+		func(taken map[string]any, carriesProof bool) {
 			u := newUser(usernameDave, policyAdoptOrCreate, nil)
 			mustReconcile(u)
 			Expect(fake.Invitations()).To(HaveLen(1))
-			fake.SeedUser(usernameDave, taken) // no ownership proof
+			if carriesProof { // a service account is never a person, proof or not
+				taken = map[string]any{fieldType: typeServiceAccount, fieldAttributes: proof(u)}
+			}
+			fake.SeedUser(usernameDave, taken)
 
 			for range 2 { // the second reconcile finds nothing left to delete and still never adopts
 				mustReconcile(u)
@@ -302,8 +306,9 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 				Expect(w.Method).NotTo(Equal(http.MethodPatch), "nothing is written to the squatter: %s", w.Path)
 			}
 		},
-		Entry("an ordinary account", map[string]any(nil)),
-		Entry("a service account", map[string]any{fieldType: "service_account"}),
+		Entry("an ordinary account", map[string]any(nil), false),
+		Entry("a service account", map[string]any{fieldType: typeServiceAccount}, false),
+		Entry("a service account carrying the ownership proof", nil, true),
 	)
 
 	It("reports EnrolledUnderOtherName and adopts nothing", func() {

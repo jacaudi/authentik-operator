@@ -322,7 +322,7 @@ func deleteInvitation(ctx context.Context, c *authentik.Client, name string) err
 	return c.DeleteInvitation(ctx, found.Pk)
 }
 
-// revokeInvitation deletes the invitation status records, if Authentik still
+// revokeInvitation deletes the invitation that status records, if Authentik still
 // has it, and the Secret that holds its link. The invitation goes first: a
 // failed delete retries with the evidence still in status.
 func (r *AuthentikUserReconciler) revokeInvitation(ctx context.Context, c *authentik.Client,
@@ -471,4 +471,20 @@ func (r *AuthentikUserReconciler) deleteInvitationSecret(ctx context.Context,
 		return fmt.Errorf("delete Secret %s/%s: %w", u.Namespace, name, err)
 	}
 	return nil
+}
+
+// enrolled lists the accounts that carry this resource's ownership proof while
+// it is inviting, and fails when they are not exactly the one account the
+// invitation pinned (see enrolmentProblem). Outside the inviting phase there is
+// nothing to look for.
+func enrolled(ctx context.Context, c *authentik.Client, u *authentikiov1alpha1.AuthentikUser,
+	inviting bool) ([]api.User, error) {
+	if !inviting {
+		return nil, nil
+	}
+	owned, err := c.FindUsersByOwnerUID(ctx, string(u.UID))
+	if err != nil {
+		return nil, err
+	}
+	return owned, enrolmentProblem(u.Spec.Username, owned)
 }

@@ -264,16 +264,9 @@ func (r *AuthentikUserReconciler) observe(ctx context.Context, c *authentik.Clie
 			return obs, err
 		}
 	}
-	var owned []api.User
-	if obs.facts.OwnCreatePending {
-		var err error
-		owned, err = c.FindUsersByOwnerUID(ctx, string(u.UID))
-		if err == nil {
-			err = enrolmentProblem(username, owned)
-		}
-		if err != nil {
-			return obs, err
-		}
+	owned, err := enrolled(ctx, c, u, obs.facts.OwnCreatePending)
+	if err != nil {
+		return obs, err
 	}
 	target, err := c.FindUserByUsername(ctx, username)
 	switch {
@@ -285,8 +278,9 @@ func (r *AuthentikUserReconciler) observe(ctx context.Context, c *authentik.Clie
 				username)
 		}
 		obs.target, obs.facts.Target = target, adopt.TargetFound
-		// enrolmentProblem left at most one account holding the proof, under username: the one found, or not.
-		obs.facts.OwnCreateProven = len(owned) == 1 && owned[0].Pk == target.Pk
+		// enrolmentProblem left at most one account holding the proof, under username: the one found, or not. A service
+		// account is never recognised as a person, proof or not: it is a Conflict, and the invitation is withdrawn.
+		obs.facts.OwnCreateProven = len(owned) == 1 && owned[0].Pk == target.Pk && !isServiceAccount(target.GetType())
 	case errors.Is(err, authentik.ErrAmbiguous):
 		obs.facts.Target = adopt.TargetAmbiguous
 	case authentik.IsNotFound(err):
@@ -365,8 +359,8 @@ func (r *AuthentikUserReconciler) recognise(ctx context.Context, c *authentik.Cl
 // conflict is the Conflict for an account found by username that this resource
 // may not take. While inviting, the account is someone else's squatting on the
 // username: the invitation and its Secret are deleted, so the link can no
-// longer create a second account, and status.invitation is kept so that no
-// managementPolicy ever adopts it.
+// longer create a second account, and status.invitation is kept so AdoptOrCreate
+// never adopts it.
 func (r *AuthentikUserReconciler) conflict(ctx context.Context, c *authentik.Client,
 	u *authentikiov1alpha1.AuthentikUser) error {
 	username := u.Spec.Username

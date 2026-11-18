@@ -343,7 +343,7 @@ var _ = Describe("AuthentikUser", func() {
 	})
 
 	It("refuses to adopt a service account", func() {
-		fake.SeedUser("svc", map[string]any{fieldType: "service_account"})
+		fake.SeedUser("svc", map[string]any{fieldType: typeServiceAccount})
 		u := newUser("svc", policyAdopt, nil)
 		mustReconcile(u)
 		Expect(ready(u).Reason).To(Equal(reasonConflict))
