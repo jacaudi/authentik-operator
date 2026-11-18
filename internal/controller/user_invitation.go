@@ -94,7 +94,7 @@ func invitationName(uid types.UID, attempt int32) string {
 }
 
 // invitationNamePrefix starts the name of every invitation the resource with
-// this uid issues; one that does not is not this resource's to delete.
+// this uid issues, and so of every invitation it deletes.
 func invitationNamePrefix(uid types.UID) string {
 	return fmt.Sprintf("k8s-%s-", uid)
 }
@@ -316,10 +316,9 @@ func findInvitation(ctx context.Context, c *authentik.Client, name string) (*api
 }
 
 // findOwnInvitation is findInvitation for the invitation status records, and
-// refuses one that does not carry what desiredInvitation wrote into it: the
-// username, the ownership proof and single use. A name is not proof that this
-// resource issued the invitation, and its link is only ever written to the
-// Secret when it did.
+// answers only with an invitation carrying what desiredInvitation sets: the
+// username, the ownership proof and single use. Any other invitation of that
+// name is not this resource's: its link is never written to the Secret.
 func findOwnInvitation(ctx context.Context, c *authentik.Client,
 	u *authentikiov1alpha1.AuthentikUser) (*api.Invitation, error) {
 	name := u.Status.Invitation.Name

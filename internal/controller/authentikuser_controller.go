@@ -656,7 +656,7 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 		return r.deletionFailed(u, err)
 	}
 	c := resolved.Client
-	// An account this resource created carries its ownership proof; status alone is not enough to delete by.
+	// An account this resource created carries its ownership proof, and is deleted only while it does.
 	if u.Status.Provenance == authentikiov1alpha1.ProvenanceCreated {
 		live, err := c.GetUser(ctx, pk)
 		switch {

@@ -617,7 +617,7 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 		return r.deletionFailed(g, err)
 	}
 	c := resolved.Client
-	// A group this resource created carries its ownership proof; status alone is not enough to delete by.
+	// A group this resource created carries its ownership proof, and is deleted only while it does.
 	if g.Status.Provenance == authentikiov1alpha1.ProvenanceCreated {
 		live, err := c.GetGroup(ctx, pk)
 		switch {
