@@ -45,7 +45,7 @@ Non-goals (this design)
   (owner: "I don't have a service/machine to machine in mind").
 - `AuthentikSAMLProvider` and `AuthentikDeployment` Managed mode: separate
   designs (they share no machinery with groups and users).
-- Group `parents`, `roles`, `attributes`; user `attributes`, `roles`,
+- Group `parents`, `roles`; user `roles`,
   passwords, passkeys.
 - Migrating the provider and application controllers onto the new library
   (follow-up after v0.1.0, section 10).
@@ -135,10 +135,12 @@ Spec (all optional unless stated; `APIManagementSpec` inline: `managementPolicy`
 |---|---|
 | `name` | Authentik group name; default `metadata.name`. Immutable once the group is tracked, enforced by the controller (CEL cannot see status): a changed name is `InvalidSpec` (renaming would change every app's bindings by name). |
 | `isSuperuser` | `*bool`. On a group this resource **created**, unset is held to `false` (#18: Created objects are held to create-time defaults), so a UI flip to superuser is reverted. On an adopted group, unset keeps live. |
+| `attributes` | Per-key owned map (5.3a). Group attributes are inherited by members in claims (`user.group_attributes()`), so this is where a role claim lives. |
 | `members` | `*[]string` of Authentik usernames. **Absent: membership never read or written** (any provenance; an explicit exception to "Created objects are held to create-time defaults"). **Present (incl. `[]`): exactly this list.** |
 
 No `match` field: group names are unique, so the target is the group named
-`name`. No `parents`, `roles` or `attributes` (unmanaged, live values kept).
+`name`. No `parents` or `roles` (unmanaged, live values kept). `attributes`
+as in 5.3a.
 
 Status: `conditions`, `groupPk` (UUID string), `provenance`, `pendingCreate`,
 `observedGeneration`, `members` (list of `{username, pk}` pinned on first
@@ -156,7 +158,7 @@ Behaviour
   a group found by that name is proven ours only if it carries the attribute
   `authentik_operator.owner_uid: <metadata.uid>` (a nested key: Authentik splits
   attribute paths on dots) written in the create request (the
-  operator's one write to `attributes`, added on create only).
+  operator's own key in `attributes`, written on create only and reserved).
 - Members (authoritative when present):
   - resolve each username to a pk; unknown -> condition `MemberNotFound`
     naming it; all other adds **and every removal** still apply;
@@ -214,7 +216,9 @@ Spec:
 |---|---|
 | `username` | Required, immutable (CEL `self == oldSelf`). |
 | `name`, `email`, `path`, `type` (`internal` / `external`) | Optional; unset keeps live. |
+| `firstName`, `lastName` | Optional strings; unset keeps live. Written to Authentik's `given_name` and `family_name` attribute keys, which the OIDC `profile` scope reads (`blueprints/system/providers-oauth2.yaml:33-50`), so apps receive them as `given_name` / `family_name`. The owner chose these names over the claim names. |
 | `isActive` | `*bool`; unset keeps live. `false` is offboarding. |
+| `attributes` | Per-key owned map (5.3a). |
 | `invitation` | Required when the policy may create (`Create`, `AdoptOrCreate`); forbidden under `Adopt` / `ReadOnly` (CEL). `{flow: <enrolment flow slug>, expiresAfter: <duration>, secretName?: <name>, attempt?: <int>}`. Bumping `attempt` is the only way to get a new link (see "Reissue"). |
 
 Status: `conditions` (`Ready`, `Drifted` under ReadOnly), `userPk` (int32),
@@ -343,6 +347,32 @@ Other behaviour
   `EffectiveDeletionPolicy` (section 8, call 4).
 - Gates as 5.2.
 
+### 5.3a Attributes: per-key, owned keys only (owner decision)
+
+Authentik replaces the whole `attributes` dict on every API write
+(`core/api/utils.py:69-97`) and writes its own keys there (`settings`,
+`goauthentik.io/user/...`, sync data), so the operator owns only the keys it
+lists, the model kaniop uses for SSH keys:
+
+- `spec.attributes` is `map[string]apiextensionsv1.JSON` (values: string,
+  number, bool, list), top-level keys only; a listed key's value is owned
+  whole.
+- `status.managedAttributes` records the keys the operator owns. Each sync
+  reads the live dict, sets the listed keys, deletes keys it owned and no
+  longer lists, keeps every other key, and PATCHes only when something
+  differs (narrowing the lost-write window: Authentik has no
+  compare-and-set; stated, accepted).
+- Absent `spec.attributes`: nothing read or written (previously owned keys
+  are released, not deleted). `{}`: removes the owned keys.
+- Reserved, refused by CEL: keys starting `goauthentik.io/`,
+  `authentik_operator` (ownership proof), `settings` (the user's own
+  settings), and on users `given_name` and `family_name` (owned by
+  `firstName` / `lastName`, one writer per key).
+- Adoption keeps every live key; the dry run lists keys it would set or
+  remove. ReadOnly reports differing owned keys in `Drifted`.
+- An Authentik 2026.8 attribute schema (`ObjectAttribute`) can reject a
+  value: reported as `InvalidSpec` with Authentik's 400 message.
+
 ### 5.4 AuthentikApplication.spec.access (decision 2)
 
 ```yaml
@@ -439,7 +469,8 @@ access:
   `--accept-unmanaged-group-bindings` is removed.
 - JeffResc `AuthentikGroup` -> `AuthentikGroup` with `managementPolicy: Adopt`,
   `deletionPolicy: Retain`, `name`, `isSuperuser` if set; `members` absent
-  (JeffResc never managed membership). `parents`, `roles`, `attributes` are
+  (JeffResc never managed membership). JeffResc `attributes` convert to
+  `attributes` (owned per key, minus reserved keys, reported). `parents`, `roles` are
   not converted (they stay live, unmanaged); the report lists them.
 - Golden fixtures updated; runbook gains a step for groups.
 - `spec.access` becomes required, so `config/samples`, the e2e manifests
@@ -460,6 +491,8 @@ access:
 ### 5.8 Test plan
 
 - Unit: `adopt.Decide` table test (row per `scope.md` line); member diffing;
+  attribute merging (owned keys set and removed, foreign keys kept, no write
+  when equal, reserved keys refused by CEL);
   binding diffing (enabled/negate/duplicates/ordering).
 - envtest + `fakeauthentik`: extend the fake with groups (incl. `add_user` /
   `remove_user`, attributes), users (incl. type, is_active), policy bindings,
@@ -519,10 +552,10 @@ then.
 
 ## 8. Calls I made (owner: please check)
 
-1. Group fields limited to `name`, `isSuperuser`, `members`; `parents`,
-   `roles`, `attributes` unmanaged.
+1. Group fields `name`, `isSuperuser`, `members`, `attributes` (per key, owner
+   decision); `parents`, `roles` unmanaged.
 2. Group lost-create proof via an `authentik_operator.owner_uid` attribute written
-   on create (the only `attributes` write).
+   on create (a reserved key).
 3. Group `name` immutable once tracked.
 4. `AuthentikUser` deletion default `Retain` regardless of provenance (an
    exception to `EffectiveDeletionPolicy`).
