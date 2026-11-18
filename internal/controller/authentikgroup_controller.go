@@ -294,6 +294,8 @@ func recordGroup(g *authentikiov1alpha1.AuthentikGroup, prov authentikiov1alpha1
 	g.Status.GroupPK = group.Pk
 	g.Status.Name = group.Name
 	g.Status.PendingCreate = ""
+	// A new claim owns no attribute key yet: adoption keeps every live key, and a create sets its own.
+	g.Status.ManagedAttributes = nil
 }
 
 // conflict is the Conflict for a group found by name that this resource may
@@ -375,7 +377,7 @@ func (r *AuthentikGroupReconciler) yieldIfOutranked(ctx context.Context, rd clie
 		return nil
 	}
 	name := g.Status.Name
-	g.Status.Provenance, g.Status.GroupPK, g.Status.Name = "", "", ""
+	g.Status.Provenance, g.Status.GroupPK, g.Status.Name, g.Status.ManagedAttributes = "", "", "", nil
 	return condErrf(reasonConflict, "group %q is also claimed by %s, which takes precedence; "+
 		"this resource released it", name, winner)
 }
@@ -428,9 +430,10 @@ func (r *AuthentikGroupReconciler) dryRunAdopt(ctx context.Context, g *authentik
 	if err := r.refuseHeld(ctx, g, target); err != nil {
 		return err
 	}
-	plan := planGroup(g, want, target)
-	msg, announce := dryRunReport(g.Status.Conditions, fmt.Sprintf("group %q", target.Name), plan.patch, target,
-		plan.changed)
+	// Adoption keeps every live key, so nothing is owned yet, whatever an earlier claim left in status.
+	plan := planGroup(g, want, target, nil)
+	patch, live := plan.reportView(target)
+	msg, announce := dryRunReport(g.Status.Conditions, fmt.Sprintf("group %q", target.Name), patch, live, plan.changed)
 	if announce {
 		r.event(g, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 	}
@@ -474,9 +477,10 @@ func ownedKeys(g *authentikiov1alpha1.AuthentikGroup, want map[string]any) []str
 // Authentik now has it.
 func (r *AuthentikGroupReconciler) syncFields(ctx context.Context, c *authentik.Client,
 	g *authentikiov1alpha1.AuthentikGroup, live *api.Group, want map[string]any) (*api.Group, error) {
-	plan := planGroup(g, want, live)
+	plan := planGroup(g, want, live, g.Status.ManagedAttributes)
 	if readOnly(g.Spec.ManagementPolicy) {
-		recordDrift(&g.Status.Conditions, g.Generation, plan.patch, live, plan.changed)
+		patch, current := plan.reportView(live)
+		recordDrift(&g.Status.Conditions, g.Generation, patch, current, plan.changed)
 		return live, nil
 	}
 	got := live

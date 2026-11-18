@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
 
 // specAttributes decodes spec.attributes. nil stays nil (the field is absent:
@@ -100,7 +102,7 @@ func mergeAttributes(live, want map[string]any, owned []string) attributeMerge {
 // reservedAttributes does it in the reconciler.
 const (
 	reservedAttributePrefix = "goauthentik.io/"
-	reservedOwnerKey        = "authentik_operator"
+	reservedOwnerKey        = authentik.OwnerAttribute
 	reservedSettingsKey     = "settings"
 )
 

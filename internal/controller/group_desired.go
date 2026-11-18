@@ -18,6 +18,7 @@ package controller
 
 import (
 	"cmp"
+	"encoding/json"
 	"maps"
 	"slices"
 
@@ -57,13 +58,17 @@ type groupChanges struct {
 	// owned is the new status.managedAttributes, meaningful when the spec
 	// lists attributes.
 	owned []string
+	// set and removed are the attribute keys the patch adds or changes, and
+	// deletes, sorted.
+	set, removed []string
 }
 
 // planGroup compares the spec with live. name is always compared;
 // isSuperuser is the spec value when set, else false on a group this resource
 // created and untouched on any other; attributes only when the spec lists
-// them (even an empty map), by owned key.
-func planGroup(g *authentikiov1alpha1.AuthentikGroup, want map[string]any, live *api.Group) groupChanges {
+// them (even an empty map), by key: owned is the keys the operator set before.
+func planGroup(g *authentikiov1alpha1.AuthentikGroup, want map[string]any, live *api.Group,
+	owned []string) groupChanges {
 	var plan groupChanges
 	fields := []managedField{diff("name", groupName(g), live.Name, plan.patch.SetName)}
 	switch {
@@ -76,8 +81,8 @@ func planGroup(g *authentikiov1alpha1.AuthentikGroup, want map[string]any, live 
 	if want == nil {
 		return plan
 	}
-	merge := mergeAttributes(live.Attributes, want, g.Status.ManagedAttributes)
-	plan.owned = merge.Owned
+	merge := mergeAttributes(live.Attributes, want, owned)
+	plan.owned, plan.set, plan.removed = merge.Owned, merge.Set, merge.Removed
 	if keys := slices.Sorted(slices.Values(slices.Concat(merge.Set, merge.Removed))); len(keys) > 0 {
 		plan.patch.SetAttributes(merge.Merged)
 		for _, key := range keys {
@@ -85,4 +90,39 @@ func planGroup(g *authentikiov1alpha1.AuthentikGroup, want map[string]any, live 
 		}
 	}
 	return plan
+}
+
+// reportView is the patch and the live group as a dry-run or drift message
+// renders them. The attributes entry holds only the keys the patch sets or
+// removes (a removed key as null): the merged dict is the whole live dict, so
+// rendering it would cut the changed keys off behind the keys that sort first,
+// and would print the values of keys the operator does not own.
+func (p groupChanges) reportView(live *api.Group) (patch, current map[string]any) {
+	patch, current = jsonObject(p.patch), jsonObject(live)
+	if len(p.set)+len(p.removed) == 0 {
+		return patch, current
+	}
+	want, have := map[string]any{}, map[string]any{}
+	for _, key := range p.set {
+		want[key] = p.patch.Attributes[key]
+		if v, ok := live.Attributes[key]; ok {
+			have[key] = v
+		}
+	}
+	for _, key := range p.removed {
+		want[key], have[key] = nil, live.Attributes[key]
+	}
+	patch["attributes"], current["attributes"] = want, have
+	return patch, current
+}
+
+// jsonObject is v as a generic JSON object; an empty one if v cannot be.
+func jsonObject(v any) map[string]any {
+	out := map[string]any{}
+	if raw, err := json.Marshal(v); err == nil {
+		if json.Unmarshal(raw, &out) != nil {
+			return map[string]any{}
+		}
+	}
+	return out
 }

@@ -48,6 +48,7 @@ const (
 	attrRole         = "role"
 	attrAdmin        = "admin"
 	rawAdmin         = `"admin"`
+	earlierKey       = "earlier-key"
 )
 
 var _ = Describe("AuthentikGroup", func() {
@@ -167,7 +168,7 @@ var _ = Describe("AuthentikGroup", func() {
 		live := fake.GroupByName("team-a")
 		Expect(live).NotTo(BeNil())
 		Expect(live[fieldAttributes]).To(Equal(map[string]any{
-			reservedOwnerKey: map[string]any{"owner_uid": string(get(g).UID)}}))
+			authentik.OwnerAttribute: map[string]any{authentik.OwnerUIDKey: string(get(g).UID)}}))
 		Expect(live[fieldIsSuperuser]).To(BeFalse())
 		cur := get(g)
 		Expect(cur.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
@@ -291,6 +292,67 @@ var _ = Describe("AuthentikGroup", func() {
 		Expect(fake.GroupCount()).To(BeZero())
 	})
 
+	// longAttributes seeds a group whose live attributes run past the 100 characters a rendered value is cut at,
+	// with a value that belongs to nobody the operator knows.
+	longAttributes := func() map[string]any {
+		live := map[string]any{}
+		for _, k := range []string{"a00", "a01", "a02", "a03", "a04", "a05", "a06", "a07", "a08", "a09"} {
+			live[k] = "foreign-value-of-" + k
+		}
+		return live
+	}
+	const lastKey = "zz-last"
+
+	It("names the attribute keys a dry run would set, however long the live attributes are, and hides foreign values",
+		func() {
+			fake.SeedGroup("dry-long", map[string]any{fieldAttributes: longAttributes()})
+			g := newGroup("dry-long", policyAdopt, func(s *authentikiov1alpha1.AuthentikGroupSpec) {
+				withAttributes(map[string]string{lastKey: rawAdmin})(s)
+				s.DryRun = true
+			})
+			mustReconcile(g)
+			Expect(ready(g).Reason).To(Equal(reasonAdoptionDryRun))
+			Expect(ready(g).Message).To(ContainSubstring(lastKey))
+			Expect(ready(g).Message).NotTo(ContainSubstring("foreign-value-of-"))
+			Expect(writes()).To(BeEmpty())
+		})
+
+	It("does not report a key from an earlier claim as removed in a dry run", func() {
+		fake.SeedGroup("dry-stale", map[string]any{fieldAttributes: map[string]any{"stale-key": "x"}})
+		g := newGroup("dry-stale", policyAdopt, func(s *authentikiov1alpha1.AuthentikGroupSpec) {
+			withAttributes(map[string]string{attrRole: rawAdmin})(s)
+			s.DryRun = true
+		})
+		setStatus(g, func(s *authentikiov1alpha1.AuthentikGroupStatus) { s.ManagedAttributes = []string{"stale-key"} })
+
+		mustReconcile(g)
+		Expect(ready(g).Reason).To(Equal(reasonAdoptionDryRun))
+		Expect(ready(g).Message).To(ContainSubstring(attrRole))
+		Expect(ready(g).Message).NotTo(ContainSubstring("stale-key"), "adoption keeps every live key")
+	})
+
+	It("names the attribute keys that drift under ReadOnly, however long the live attributes are", func() {
+		fake.SeedGroup("ro-long", map[string]any{fieldAttributes: longAttributes()})
+		g := newGroup("ro-long", policyReadOnly, withAttributes(map[string]string{lastKey: rawAdmin}))
+		mustReconcile(g)
+		Expect(drifted(g).Status).To(Equal(metav1.ConditionTrue))
+		Expect(drifted(g).Message).To(ContainSubstring(lastKey))
+		Expect(drifted(g).Message).NotTo(ContainSubstring("foreign-value-of-"))
+		Expect(writes()).To(BeEmpty())
+	})
+
+	It("keeps every live key on adoption although status still lists keys from an earlier claim", func() {
+		fake.SeedGroup("stale-owned", map[string]any{fieldAttributes: map[string]any{earlierKey: "x", "other": "y"}})
+		g := newGroup("stale-owned", policyAdopt, withAttributes(map[string]string{attrRole: rawAdmin}))
+		setStatus(g, func(s *authentikiov1alpha1.AuthentikGroupStatus) { s.ManagedAttributes = []string{earlierKey} })
+
+		mustReconcile(g)
+		Expect(get(g).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+		Expect(fake.GroupByName("stale-owned")[fieldAttributes]).To(Equal(
+			map[string]any{earlierKey: "x", "other": "y", attrRole: attrAdmin}))
+		Expect(get(g).Status.ManagedAttributes).To(Equal([]string{attrRole}))
+	})
+
 	It("observes under ReadOnly, reports drift in Drifted and never writes", func() {
 		fake.SeedGroup("ro", map[string]any{fieldIsSuperuser: true})
 		g := newGroup("ro", policyReadOnly, func(s *authentikiov1alpha1.AuthentikGroupSpec) { s.IsSuperuser = new(false) })
@@ -408,6 +470,7 @@ var _ = Describe("AuthentikGroup", func() {
 		pk := pkOf(a)
 		b := newGroup("holder-b", policyAdopt, named("holder-a"))
 		claimStatus(b, pk, authentikiov1alpha1.ProvenanceAdopted)
+		setStatus(b, func(s *authentikiov1alpha1.AuthentikGroupStatus) { s.ManagedAttributes = []string{"stale"} })
 
 		mustReconcile(b)
 		Expect(ready(b).Reason).To(Equal(reasonConflict))
@@ -415,6 +478,7 @@ var _ = Describe("AuthentikGroup", func() {
 		Expect(ready(b).Message).To(ContainSubstring("takes precedence"))
 		Expect(get(b).Status.GroupPK).To(BeEmpty())
 		Expect(get(b).Status.Provenance).To(BeEmpty())
+		Expect(get(b).Status.ManagedAttributes).To(BeEmpty(), "a released claim forgets the keys it owned")
 		Expect(pkOf(a)).To(Equal(pk))
 		Expect(get(a).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 
