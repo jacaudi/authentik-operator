@@ -32,7 +32,7 @@
 - New dependencies: only with a present requirement, pinned, named in the task report.
 - Boundaries: 8 hours wall clock; dispatch cap 6 x tasks + 12; pause after 2 hours without a task completing.
 - Worktree after merge: not applicable (option b); keep it.
-- Commit signing: SSH via 1Password; if signing fails, PLAN: PAUSED — signing; never --no-gpg-sign.
+- Commit signing (owner instruction, 2026-11-17, after 1Password signing failed): every commit during the run is UNSIGNED (`git commit --no-gpg-sign`). Right before the push (Phase 5) the controller re-signs every branch commit since `main` with `git rebase --gpg-sign "$(git merge-base main HEAD)"`, then checks that `git log --format=%H main..HEAD | while read c; do git cat-file commit "$c" | grep -q '^gpgsig' || echo "$c"; done` prints nothing. A signing failure at that point is `PLAN: PAUSED — signing`.
 - Commits: Conventional Commits subjects, ASCII-only bodies, each ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
 ## Global Constraints
@@ -46,11 +46,11 @@ Every task's requirements include this section. `$WT` is `/Users/acaudill/Projec
 - Never run `make`, `go`, `task`, `helm` or `kind` on the host: `bin/` is shared with the container and must hold linux binaries. Git (including signed commits) runs on the host.
 - Long commands: `dx task test`, `dx task ci`, `dx task e2e` (about 15-50 minutes), the Task 4 recording stack, and any `envtest` run of the whole controller package are started with the Bash tool's `run_in_background: true`; wait for the completion notification, then read the output. Never run them in the foreground with a timeout above 10 minutes. Their `Expected:` lines apply to the finished output.
 - envtest and unit suites talk to `fakeauthentik` through `&authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1}` (no rate limit, no retries), so an injected 5xx reaches the code under test exactly once.
-- Commit template (every task's last step; the task gives subject and body): `git add <paths> && git commit -m "<subject>" -m "<body>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"`, on the host. Check: `git cat-file commit HEAD | grep -c '^gpgsig'` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+- Commit template (every task's last step; the task gives subject and body): `git add <paths> && git commit --no-gpg-sign -m "<subject>" -m "<body>" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"`, on the host. (Unsigned until the pre-push re-sign; see Run contract.)
 
 **Kubebuilder and generated files (AGENTS.md):**
 - Never hand-edit `config/crd/bases/*.yaml`, `config/rbac/role.yaml`, `**/zz_generated.*.go`, `PROJECT`. After editing `api/**/*_types.go` or any `+kubebuilder` marker: `dx make manifests generate`, then `dx make chart-regen`, and commit the regenerated files (`config/crd/bases`, `api/v1alpha1/zz_generated.deepcopy.go`, `config/rbac/role.yaml`, `dist/chart/templates/crd`, `dist/chart/templates/rbac`).
-- RBAC (documented divergence from design 5.7, accepted): besides Secrets, the new watches add read-only RBAC markers on the operator's own kinds: the group reconciler `authentikapplications` and `authentikusers` get;list;watch (Tasks 8, 11), the application reconciler `authentikgroups` get;list;watch (Task 8), the group and user reconcilers `authentikdeployments` get, `namespaces` get and `events.k8s.io` events create;patch. These verbs already exist in `config/rbac/role.yaml` for other reconcilers, so the generated role is expected not to grow; if it does, the diff is committed and named in the report.
+- RBAC (documented divergence from design 5.7, accepted): besides Secrets, the new watches add read-only RBAC markers on the operator's own kinds: the group reconciler `authentikapplications` and `authentikusers` get;list;watch (Tasks 8, 10), the application reconciler `authentikgroups` get;list;watch (Task 8), the group and user reconcilers `authentikdeployments` get, `namespaces` get and `events.k8s.io` events create;patch. These verbs already exist in `config/rbac/role.yaml` for other reconcilers, so the generated role is expected not to grow; if it does, the diff is committed and named in the report.
 - Never remove `// +kubebuilder:scaffold:*` markers. Do not move files. The kinds already exist in `PROJECT`; do not run `kubebuilder create`.
 - Chart: plugin-owned templates change only through `make chart-regen`; hand-owned files (`values.yaml`, `templates/manager/manager.yaml`, `tests/`, `README.md`, `ci/`) are edited directly, helm-unittest test first. Never edit `version:`/`appVersion:` in `Chart.yaml`.
 - `go mod tidy` after adding an import: `k8s.io/apiextensions-apiserver` moves from indirect to direct at the existing `v0.37.0` (Task 6). No other new module dependency is expected; any other one is a stop-and-report.
@@ -59,7 +59,7 @@ Every task's requirements include this section. `$WT` is `/Users/acaudill/Projec
 - `managementPolicy`, `dryRun`, `deletionPolicy` via the inline `APIManagementSpec`; `status.provenance`; claims and tie-break through `internal/controller/claims.go` unchanged (`holders`, `outrankedBy`, `sameConnection`); adoption gate `adoptionGate` unchanged for Adopt/AdoptOrCreate/ReadOnly on the default connection.
 - No CRD `+kubebuilder:default` on adoption-sensitive fields (group `isSuperuser`, `attributes`, `members`; every user field; application `access`, `policyEngineMode`). Create-time defaults are applied in the controller; an adopted object keeps live values for unset fields.
 - Stated departures (spec): group `members` absent = never read or written, any provenance; user `name`, `email`, `path`, `type`, `isActive` unset keep live even when `Created`; `AuthentikUser` unset `deletionPolicy` = `Retain` for every provenance; a target found while the own create is pending but unproven is `Conflict` under every policy.
-- The provider and application controllers are NOT migrated onto `internal/adopt`; `authentikapplication_controller.go` changes only for `spec.access` (Tasks 8).
+- The provider and application controllers are NOT migrated onto `internal/adopt`; `authentikapplication_controller.go` changes only for `spec.access` (Task 8).
 
 **Authentik writes:**
 - PATCH only, never PUT. Never send `users` in a group create or PATCH (membership only through `add_user` / `remove_user`). Never send `groups` or `roles` in a user PATCH. Never send `parents` or `roles` for a group.
@@ -86,9 +86,9 @@ Uncovered input classes most likely to bite a person; each has its test added to
 
 1. An explicit `spec.attributes: {}` (as opposed to absent) must survive the typed Go client and the CRD, remove every owned key, and reach Authentik as `"attributes": {}` rather than an omitted field. Test: Task 6, `It("removes every owned key with attributes: {} and sends an explicit empty object")`.
 2. Authentik answering 503 to the deletion guard's `used_by` must leave the group in Authentik, keep the finalizer and report the error, never fall through to a delete. Test: Task 6, `It("keeps the resource terminating and deletes nothing when used_by fails")`.
-3. Every manifest in `config/samples` must still pass admission after `spec.access` becomes required and the stub samples are replaced (people copy samples). Test: Task 8, `samples_test.go` `It("accepts every manifest in config/samples")`. It is part of every later `dx task test`; Task 10, which replaces the user sample, also runs it explicitly (`envtest "AuthentikUser|Samples"`).
-4. An `externalURL` with a path prefix and a trailing slash must give `https://sso.example.com/auth/if/flow/enrol/?itoken=<pk>` (no `//`). Test: Task 10, `TestInvitationLink`.
-5. `spec.invitation.expiresAfter` of `0s` or a negative duration must be refused at admission, not produce an instantly expired invitation. Test: Task 10, `It("rejects a zero or negative expiresAfter at admission")`.
+3. Every manifest in `config/samples` must still pass admission after `spec.access` becomes required and the stub samples are replaced (people copy samples). Test: Task 8, `samples_test.go` `It("accepts every manifest in config/samples")`. It is part of every later `dx task test`; Task 9, which replaces the user sample, also runs it explicitly (`envtest "AuthentikUser|Samples"`).
+4. An `externalURL` with a path prefix and a trailing slash must give `https://sso.example.com/auth/if/flow/enrol/?itoken=<pk>` (no `//`). Test: Task 9, `TestInvitationLink`.
+5. `spec.invitation.expiresAfter` of `0s` or a negative duration must be refused at admission, not produce an instantly expired invitation. Test: Task 9, `It("rejects a zero or negative expiresAfter at admission")`.
 
 ## File Structure
 
@@ -101,11 +101,11 @@ Uncovered input classes most likely to bite a person; each has its test added to
 | `internal/authentik/compat.go`, `testdata/2026.2.3/*`, `record_test.go` | 2026.2.3 decode compatibility | 4 |
 | `internal/controller/identity_gate.go` | identity gate | 5 |
 | `internal/controller/identity_status.go`, `attributes.go` | shared group/user failure classification and per-key attributes | 6 |
-| `internal/controller/authentikgroup_controller.go`, `group_desired.go`, `group_members.go` | group reconciler | 6, 7, 11 |
+| `internal/controller/authentikgroup_controller.go`, `group_desired.go`, `group_members.go` | group reconciler | 6, 7, 8, 10 |
 | `internal/controller/application_access.go` | `spec.access` bindings | 8 |
-| `internal/controller/authentikuser_controller.go`, `user_desired.go`, `user_invitation.go` | user reconciler | 10, 11 |
-| `internal/migrate/jeffresc/*` | converter: groupBindings, AuthentikGroup | 9, 12 |
-| `test/e2e/identity_test.go`, `test/aktest/enrol.go` | real-Authentik e2e | 13 |
+| `internal/controller/authentikuser_controller.go`, `user_desired.go`, `user_invitation.go` | user reconciler | 9, 10 |
+| `internal/migrate/jeffresc/*` | converter: groupBindings, AuthentikGroup | 8, 11 |
+| `test/e2e/identity_test.go`, `test/aktest/enrol.go` | real-Authentik e2e | 12 |
 
 ---
 
@@ -119,7 +119,7 @@ Kind: rewrite
 - Consumes: nothing.
 - Produces: a devcontainer whose PATH has `task` v3.54.0, `helm` v4.3.1 with the `unittest` plugin v1.2.1, `yq` v4.54.1, `golangci-lint` 2.15.0, `govulncheck` v1.9.0, `hadolint` v2.15.1, `yamllint` (Debian package), and git `safe.directory '*'`; the `dx` / `envtest` shorthands of Global Constraints work; the `baseline-failures:` list (test names, or `none`).
 
-TDD exemption (test-driven-development's configuration exception): this task changes a provisioning script with no unit-testable behaviour; its test is the container build (Step 2), the tool versions (Step 3), the docker-in-docker probe (Step 4) and a green `task test` inside it (Step 5).
+TDD exemption: this task is configuration with no observable behavior to test first (test-driven-development's configuration exception); there is no RED step. Its verification is the container build (Step 2), the tool versions (Step 3), the docker-in-docker probe (Step 4) and a green `task test` inside it (Step 5).
 
 - [ ] **Step 1: Add the pinned tools block to `.devcontainer/post-install.sh`**
 
@@ -131,7 +131,7 @@ Insert a section `Installing pinned tools...` after the kubectl completion block
 | helm | `HELM_VERSION=v4.3.1` | `curl -sSfL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \| tar xz --strip-components=1 -C /usr/local/bin "linux-${ARCH}/helm"` |
 | helm-unittest | `HELM_UNITTEST_VERSION=v1.2.1` (must equal `.taskfiles/chart.yml`) | `helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" --verify=false` |
 | yq | `YQ_VERSION=v4.54.1` | `curl -sSfLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}" && chmod +x /usr/local/bin/yq` |
-| golangci-lint | `GOLANGCI_LINT_VERSION=2.15.0` (equals Makefile `GOLANGCI_LINT_VERSION`) | `curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}.tar.gz" \| tar xz --strip-components=1 -C /usr/local/bin "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}/golangci-lint"` |
+| golangci-lint | `GOLANGCI_LINT_VERSION=2.15.0` (the same release as the Makefile's `GOLANGCI_LINT_VERSION ?= v2.15.0`; this variable has no leading `v` because the asset names lack it, and the URL adds it) | `curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}.tar.gz" \| tar xz --strip-components=1 -C /usr/local/bin "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}/golangci-lint"` |
 | govulncheck | `GOVULNCHECK_VERSION=v1.9.0` | `GOBIN=/usr/local/bin go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"` |
 | hadolint | `HADOLINT_VERSION=v2.15.1` | asset `hadolint-linux-x86_64` when `ARCH=amd64`, `hadolint-linux-arm64` when `ARCH=arm64`: `curl -sSfLo /usr/local/bin/hadolint "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/<asset>" && chmod +x /usr/local/bin/hadolint` |
 | yamllint | Debian package | `apt-get update && apt-get install -y --no-install-recommends yamllint` |
@@ -163,13 +163,13 @@ Expected: exit 0. If anything fails, record each failing test name as `baseline-
 
 ```bash
 git add .devcontainer/post-install.sh
-git commit -m "build(devcontainer): pin go-task, helm, helm-unittest and the task ci tools" \
+git commit --no-gpg-sign -m "build(devcontainer): pin go-task, helm, helm-unittest and the task ci tools" \
   -m "The sanctioned environment runs task test and task ci; the image lacked task, helm, the unittest plugin, yq, golangci-lint, govulncheck, hadolint and yamllint." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -305,13 +305,13 @@ Expected: exit 0 both.
 
 ```bash
 git add internal/adopt
-git commit -m "feat(adopt): pure management-policy and deletion decisions for groups and users" \
+git commit --no-gpg-sign -m "feat(adopt): pure management-policy and deletion decisions for groups and users" \
   -m "Decide and Finalize translate the scope.md adoption tables with eight facts; a target found during an unproven pending create is a Conflict under every policy." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -437,13 +437,13 @@ Expected: exit 0 both (existing controller suites still pass on the extended fak
 
 ```bash
 git add internal/authentik
-git commit -m "feat(authentik): group, user, policy binding and invitation calls" \
+git commit --no-gpg-sign -m "feat(authentik): group, user, policy binding and invitation calls" \
   -m "Bindings are never listed without a target and deletes re-check it; the owner proof lookup re-checks every result; invitation errors redact the pk. fakeauthentik models the same endpoints." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -523,9 +523,9 @@ func TestDecodesAuthentik20262Authenticators(t *testing.T) // UserAuthenticators
 Run: `dx go test ./internal/authentik/ -count=1 -run TestDecodesAuthentik20262 -v`
 Expected: one of the outcomes below, each with its action:
 - `TestDecodesAuthentik20262Bindings` and `...BindingCreate` FAIL with `no value given for required property expires` (or `expiring`): add the rule in Step 7. If they PASS, do not add the binding rule and say so in the report.
-- `TestDecodesAuthentik20262Me` and `TestPingDecodesAuthentik20262` FAIL (expected from the 2026.8.5 source: `core/api/users.py` returns only `user` and `original` from `/core/users/me/` and its `UserSelf` serializer has no `is_current`, while the client requires top-level `users` (`model_session_user.go`) and `user.is_current` (`model_user_self.go`)): add the `/core/users/me/` rule of Step 7. If they PASS, add no me rule and say so in the report.
-- Any other test FAILING with `no value given for required property <p>`: add a rule for that path with `keys: []string{<p>...}` and a sentinel key the object always has (`num_pk` for groups, `username` for users, `single_use` for invitations, `meta_model_name` for devices, `model_name` for used_by).
-- Any test FAILING for another reason (type mismatch, a value the client rejects): STOP.
+- `TestDecodesAuthentik20262Me` and `TestPingDecodesAuthentik20262` FAIL (expected from the 2026.2.3 source as read at the plan gate: there `/core/users/me/` returns only `user` and `original` and the user serializer has no `is_current`; 2026.8.5 sends both, `core/api/users.py`, which is why the pinned client requires top-level `users` (`model_session_user.go`) and `user.is_current` (`model_user_self.go`)): add the `/core/users/me/` rule of Step 7. If they PASS, add no me rule and say so in the report.
+- Any other test FAILING with `no value given for required property <p>`: add a rule for that path with `keys: []string{<p>...}` and a sentinel key the object always has (`num_pk` for groups, `username` for users, `single_use` for invitations). This covers JSON objects and paginated `results` only: `patchJSON` cannot fill a top-level JSON array, so the two array responses (`/authenticators/admin/all/` devices and `/core/groups/<pk>/used_by/`) are covered by their recordings and decode tests only.
+- `TestDecodesAuthentik20262Authenticators` or `TestDecodesAuthentik20262GroupUsedBy` FAILING (a top-level array the shim cannot patch), or any test FAILING for another reason (type mismatch, a value the client rejects): STOP.
 
 - [ ] **Step 7: Add the rules to `compatRule` in `compat.go`**
 
@@ -534,7 +534,7 @@ case strings.Contains(path, "/policies/bindings/"):
 	return &compat{keys: []string{"expires", "expiring"},
 		fill: func(o map[string]any) { addMissing(o, "target", "expires"); addMissing(o, "target", "expiring") }}
 ```
-The `/core/users/me/` rule (two fills, one function), matched with `strings.HasSuffix(path, "/core/users/me/")` and placed before any `/core/users/` case: `keys: []string{"users", "is_current"}`; fill on the top-level document: (1) top level, sentinel `user`: when `users` is absent set `doc["users"] = []any{doc["user"]}` (an array holding the `user` object, not null); (2) inside `doc["user"]` (a map): when `is_current` is absent set it to `true` (the token's own user is the current one). Nothing present is changed. Add `TestCompatMeRuleLeavesPresentValues`: a body that already has `users: [{...}]` and `user.is_current: false` is unchanged.
+The `/core/users/me/` rule (two fills, one function), matched with `strings.HasSuffix(path, "/core/users/me/")` and placed before any `/core/users/` case: `keys: []string{"users", "is_current"}`; fill on the top-level document: (1) top level, sentinel `user`: when `users` is absent set `doc["users"] = []any{doc["user"]}` (an array holding the `user` object, not null); (2) inside `doc["user"]` (a map): when `is_current` is absent set it to `true` (the token's own user is the current one). Apply (2) before (1) and put the same map value in `users[0]` as in `user` (not a copy), so `users[0]` also carries `is_current`; the test asserts `users[0].is_current == true` after the fill. Nothing present is changed. Add `TestCompatMeRuleLeavesPresentValues`: a body that already has `users: [{...}]` and `user.is_current: false` is unchanged.
 
 plus any rule Step 6 required, placed before broader cases. Extend the type doc comment's list ("Found by ... 2026.2.3") with each property added. Add `TestCompatBindingRuleLeavesPresentValues`: `patchJSON([]byte(`{"target":"x","expires":"2026-01-01T00:00:00Z","expiring":true}`), rule.fill)` keeps both values.
 
@@ -554,13 +554,13 @@ Expected: exit 0 both.
 
 ```bash
 git add internal/authentik/record_test.go internal/authentik/testdata/2026.2.3 internal/authentik/compat.go internal/authentik/compat_test.go
-git commit -m "fix(authentik): decode 2026.2.3 policy bindings and record the new endpoints" \
+git commit --no-gpg-sign -m "fix(authentik): decode 2026.2.3 policy bindings and record the new endpoints" \
   -m "Responses recorded from a throwaway Authentik 2026.2.3 (record_test.go, build tag record). Policy bindings there lack expires and expiring, which the pinned client requires." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -651,13 +651,13 @@ Expected: exit 0 all.
 
 ```bash
 git add internal/controller/identity_gate.go internal/controller/identity_gate_test.go internal/controller/common.go internal/controller/adoption_gate_test.go internal/controller/authentikgroup_controller.go internal/controller/authentikuser_controller.go cmd/main.go dist/chart
-git commit -m "feat(controller): identity gate for groups and users on the default connection" \
+git commit --no-gpg-sign -m "feat(controller): identity gate for groups and users on the default connection" \
   -m "--default-connection-identity-namespace-selector (chart value identity.defaultConnectionNamespaceSelector) names the namespaces whose groups and users the shared token acts on; empty denies." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -728,7 +728,7 @@ func TestMergeAttributes(t *testing.T) {
 
 - [ ] **Step 2: Write the failing envtest suite `authentikgroup_test.go`**
 
-Setup as `authentikapplication_adoption_test.go`: `fake := fakeauthentik.New(testAPIToken)`, `recorder := events.NewFakeRecorder(100)`, `groups := &AuthentikGroupReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(), Connections: &connection.Resolver{Reader: k8sClient, Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1}}, Recorder: recorder, APIReader: k8sClient, AdoptionNamespaceSelector: labels.Everything(), IdentityNamespaceSelector: labels.Everything()}`; helpers `newGroup(name, policy, mutate)`, `reconcileGroup`, `get`, `ready`, `writes := func() []fakeauthentik.Request { return fake.Requests(true) }`. Add `indexGroupPK: groupPKIndex` to `testIndexes` in `claims_index_test.go`, and in the same file `type staleCache struct{ client.Client }` whose `List` returns the list emptied (`meta.SetList(list, nil)`) for any call with field selectors and delegates otherwise: it models an informer cache that has not seen another holder's claim yet (Tasks 6 and 10 use it).
+Setup as `authentikapplication_adoption_test.go`: `fake := fakeauthentik.New(testAPIToken)`, `recorder := events.NewFakeRecorder(100)`, `groups := &AuthentikGroupReconciler{Client: indexedClient{k8sClient}, Scheme: k8sClient.Scheme(), Connections: &connection.Resolver{Reader: k8sClient, Default: &authentik.Config{URL: fake.URL, Token: testAPIToken, RPS: -1, MaxRetries: -1}}, Recorder: recorder, APIReader: k8sClient, AdoptionNamespaceSelector: labels.Everything(), IdentityNamespaceSelector: labels.Everything()}`; helpers `newGroup(name, policy, mutate)`, `reconcileGroup`, `get`, `ready`, `writes := func() []fakeauthentik.Request { return fake.Requests(true) }`. Add `indexGroupPK: groupPKIndex` to `testIndexes` in `claims_index_test.go`. The stale-cache specs reuse the existing `staleListClient` (`internal/controller/claims_test.go`), whose `List` returns nothing, as `authentikoauthprovider_adoption_test.go` does; no new wrapper type.
 
 ```go
 var _ = Describe("AuthentikGroup", func() {
@@ -748,13 +748,19 @@ var _ = Describe("AuthentikGroup", func() {
 	It("holds isSuperuser to false on a group it created when the spec leaves it unset", func() {
 		// create; fake.SetGroupField(pk, "is_superuser", true); reconcile -> live false; recorder has a Normal "Updated" event
 	})
-	It("reports AdoptionTargetNotFound under Adopt when nothing matches and writes nothing", func() {})
-	It("creates under AdoptOrCreate when nothing matches, with a NothingToAdopt event", func() {})
+	It("reports AdoptionTargetNotFound under Adopt when nothing matches and writes nothing", func() {
+		// Adopt "nobody" with no such group -> Ready False reason "AdoptionTargetNotFound", message contains `"nobody"` and "AdoptOrCreate"; writes() empty; GroupPK ""
+	})
+	It("creates under AdoptOrCreate when nothing matches, with a NothingToAdopt event", func() {
+		// AdoptOrCreate "fresh" -> a Normal "NothingToAdopt" event; fake.GroupByName("fresh") carries the owner proof; Provenance Created
+	})
 	It("reports in a dry run the fields and attribute keys adoption would change and writes nothing", func() {
 		// SeedGroup("dry", {"is_superuser": true}); Adopt, dryRun, isSuperuser false, attributes {"role": "admin"}
 		// Ready reason "AdoptionDryRun"; message contains "is_superuser: true -> false" and "role"; writes() empty; Provenance ""
 	})
-	It("reports a would-create in a dry run with nothing to adopt under AdoptOrCreate", func() {})
+	It("reports a would-create in a dry run with nothing to adopt under AdoptOrCreate", func() {
+		// AdoptOrCreate, dryRun, no group -> Ready False reason "AdoptionDryRun", message contains "would be created" and "nothing was written"; writes() empty; GroupCount() == 0
+	})
 	It("observes under ReadOnly, reports drift in Drifted and never writes", func() {
 		// SeedGroup("ro", {"is_superuser": true}); ReadOnly, isSuperuser false
 		// Ready True reason "ReadOnly"; Drifted True message contains "is_superuser"; writes() empty
@@ -788,10 +794,11 @@ var _ = Describe("AuthentikGroup", func() {
 		// two Adopted holders of one pk (statuses set the same way): reconcile the one with the higher metadata.uid -> it releases; the lower keeps it
 	})
 	It("re-checks a fresh claim through the API reader when the cache missed the other holder", func() {
-		// holder A already tracks the seeded group (status set); adopter B uses Client: staleCache{indexedClient{k8sClient}}
-		// (a test wrapper whose List returns an empty list), APIReader: k8sClient
-		// reconcile B -> its pre-check passes, Provenance Adopted is persisted, then the API-reader re-check yields:
-		// final reason "Conflict", B's GroupPK cleared, and no PATCH reached Authentik (writes() empty)
+		// SeedGroup("raced"); holder A (Adopt) gets its status set to {GroupPK: pk, Name: "raced", Provenance: Created}
+		// (as authentikoauthprovider_adoption_test.go's "settles a race the cache missed" does with claimStatus)
+		// adopter B (Adopt, same name); groups.Client = staleListClient{k8sClient} (the cache has not seen A's claim); APIReader: k8sClient
+		// reconcile B -> its pre-check passes, Provenance Adopted is persisted, then the API-reader re-check yields to Created A:
+		// final reason "Conflict", B's GroupPK cleared, and no write reached Authentik (writes() empty)
 	})
 	It("rejects reserved attribute keys at admission", func() {
 		// for each of "settings", "authentik_operator", "goauthentik.io/x": k8sClient.Create -> error containing "reserved"
@@ -811,7 +818,9 @@ var _ = Describe("AuthentikGroup", func() {
 		// fake.FailNextWith("PATCH", 400, {"attributes": ["value does not match schema"]})
 		// reason "InvalidSpec", message contains "value does not match schema"; a Warning "InvalidSpec" event
 	})
-	It("sends no writes on a second reconcile", func() {})
+	It("sends no writes on a second reconcile", func() {
+		// create; n := len(writes()); reconcile again -> len(writes()) == n; Ready True
+	})
 	It("refuses every policy outside the identity selector and reads nothing", func() {
 		// groups.IdentityNamespaceSelector = labels.Nothing(); each of the four policies -> reason "IdentityNotAllowed"; fake.Requests(false) empty
 	})
@@ -874,13 +883,13 @@ Expected: exit 0; `git status` shows the regenerated CRD, deepcopy, RBAC and cha
 
 ```bash
 git add api config dist go.mod go.sum internal/controller
-git commit -m "feat(group): AuthentikGroup creates, adopts and deletes Authentik groups" \
+git commit --no-gpg-sign -m "feat(group): AuthentikGroup creates, adopts and deletes Authentik groups" \
   -m "Policy flow from internal/adopt; owner-proof lost-create recovery; per-key attributes; deletion blocked while a policy binding uses the group and retained when the token cannot see every binding." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -901,7 +910,7 @@ Kind: rewrite
 
 Rules (`planMembers`): `want` = listed usernames that resolved, are not held, and whose pin (if any) equals the resolved pk. `Add` = want not live. `keep` = want + token user + resolved pks of held and identity-changed usernames + pinned pks of identity-changed usernames; `Remove` = live not in keep. `NotFound` = listed, unresolved. `IdentityChanged` = listed, resolved, pinned to another pk. `Held` = listed and `Held[u]`. `Pins` = existing pins for usernames still listed, plus a new pin for each username in `want` without one; sorted by username. `TokenUserKept` = token user is live and not listed. All name lists sorted.
 
-Controller (after the update step, not under ReadOnly): `members == nil` -> remove `MembersInSync`, `status.members = nil`, no member reads. Otherwise resolve each username (`FindUserByUsername`; NotFound -> unresolved; other errors returned), read `GetGroup(pk)` (the adoption target came from a lookup without members), `Me()` for the token pk, `planMembers` with `Held: nil` (Task 11 fills it), then every `AddUserToGroup` before any `RemoveUserFromGroup`, then `status.members = Pins`. Event and log when anything changed: Normal `MembersUpdated`, note `Updated members of group %q: added [%s], removed [%s]` (usernames, comma-separated). `MembersInSync`: True reason `InSync` message `members match spec.members` plus, when `TokenUserKept`, `; the operator's own user %q is a member and is never removed`; False with reason by priority `MemberIdentityChanged` > `MemberNotFound` > `MemberHeld` and a message listing every non-empty category: `not found: [%s]`, `identity changed (pk differs from status.members; remove the entry from status.members to accept the new account): [%s]`, `held while an AuthentikUser invitation is pending: [%s]` (quoted names, `; ` between categories). `Ready` is unaffected. Dry-run adoption: when members are present, the message gets `; members: would add [%s], would remove [%s]` inserted before `; nothing was written` (no writes); `announce` is recomputed against this FINAL message (the Ready condition's current message differs from it), not taken from `dryRunReport`, so an unchanged dry run emits its event once. ReadOnly: a member difference sets `Drifted=True`; its message ends with `members: would add [..], would remove [..]`.
+Controller (after the update step, not under ReadOnly): `members == nil` -> remove `MembersInSync`, `status.members = nil`, no member reads. Otherwise resolve each username (`FindUserByUsername`; NotFound -> unresolved; other errors returned), read `GetGroup(pk)` (the adoption target came from a lookup without members), `Me()` for the token pk, `planMembers` with `Held: nil` (Task 10 fills it), then every `AddUserToGroup` before any `RemoveUserFromGroup`, then `status.members = Pins`. Event and log when anything changed: Normal `MembersUpdated`, note `Updated members of group %q: added [%s], removed [%s]` (usernames, comma-separated). `MembersInSync`: True reason `InSync` message `members match spec.members` plus, when `TokenUserKept`, `; the operator's own user %q is a member and is never removed`; False with reason by priority `MemberIdentityChanged` > `MemberNotFound` > `MemberHeld` and a message listing every non-empty category: `not found: [%s]`, `identity changed (pk differs from status.members; remove the entry from status.members to accept the new account): [%s]`, `held while an AuthentikUser invitation is pending: [%s]` (quoted names, `; ` between categories). `Ready` is unaffected. Dry-run adoption: when members are present, the message gets `; members: would add [%s], would remove [%s]` inserted before `; nothing was written` (no writes); `announce` is recomputed against this FINAL message (the Ready condition's current message differs from it), not taken from `dryRunReport`, so an unchanged dry run emits its event once. ReadOnly: a member difference sets `Drifted=True` reason `DriftDetected`; the message is `the object in Authentik differs from the spec: ` followed by the field part (from `describeChanges`) and `; ` when fields differ, then `members: would add [%s], would remove [%s]` (quoted names); `MembersInSync` is not set under ReadOnly.
 
 - [ ] **Step 1: Write the failing unit tests `group_members_test.go`**
 
@@ -943,9 +952,16 @@ It("lists in a dry run the usernames adoption would add and remove", func() {
 It("emits an event naming added and removed usernames", func() {
 	// event "MembersUpdated" containing "added [bob]" and "removed [eve]"
 })
-It("reports member drift under ReadOnly and writes nothing", func() {})
+It("reports member drift under ReadOnly and writes nothing", func() {
+	// SeedGroup("ro-m") with member eve, matching every other field; ReadOnly, members [bob]
+	// Drifted True reason "DriftDetected", message starts with "the object in Authentik differs from the spec: " and is exactly that prefix
+	//   followed by `members: would add ["bob"], would remove ["eve"]` (no field part, since only members differ)
+	// MembersInSync absent under ReadOnly; Ready True reason "ReadOnly"; no add_user or remove_user request
+})
 It("rejects duplicate usernames at admission", func() { /* members [bob, bob] -> Create error */ })
-It("sends no writes on a second reconcile with members", func() {})
+It("sends no writes on a second reconcile with members", func() {
+	// members [bob] applied; n := len(writes()); reconcile -> len(writes()) == n
+})
 ```
 
 - [ ] **Step 3: Run to see them fail**
@@ -969,23 +985,29 @@ Expected: exit 0.
 
 ```bash
 git add api config dist internal/controller
-git commit -m "feat(group): authoritative spec.members through add_user and remove_user" \
+git commit --no-gpg-sign -m "feat(group): authoritative spec.members through add_user and remove_user" \
   -m "Absent members are never touched; unknown usernames, changed identities and the token user are reported in MembersInSync without flipping Ready." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
-### Task 8: AuthentikApplication.spec.access
+### Task 8: AuthentikApplication.spec.access, with the converter's groupBindings mapping
 Kind: rewrite
+
+Design section 6 item 4 puts the converter's `groupBindings` mapping in the same change as `spec.access`: `make test` runs `TestOutputAdmittedByAPIServer` (`internal/migrate/jeffresc/validate_test.go`) against the regenerated CRDs, so the converter must emit `access` in the task that makes it required.
 
 **Files:**
 - Create: `internal/controller/application_access.go`, `internal/controller/application_access_test.go`, `internal/controller/authentikapplication_access_test.go`, `internal/controller/samples_test.go`
 - Modify: `api/v1alpha1/authentikapplication_types.go`, `internal/controller/authentikapplication_controller.go`, `internal/controller/authentikgroup_controller.go`, `internal/controller/claims_index_test.go`, `internal/controller/authentikapplication_controller_test.go`, `internal/controller/authentikapplication_adoption_test.go`, `internal/controller/adoption_gate_test.go`, `internal/controller/oauthprovider_secret_test.go`, `config/samples/v1alpha1_authentikapplication.yaml`, `config/samples/v1alpha1_authentikuser.yaml`, `test/e2e/helpers_test.go`
+- Modify (converter): `internal/migrate/jeffresc/build.go`, `internal/migrate/jeffresc/convert.go`, `internal/migrate/jeffresc/convert_test.go`, `internal/migrate/jeffresc/golden_test.go`, `hack/convert-jeffresc/main.go`, `hack/convert-jeffresc/main_test.go`, `docs/migration-from-jeffresc.md`
 - Modify (regenerated): `config/crd/bases/authentik.io_authentikapplications.yaml`, `api/v1alpha1/zz_generated.deepcopy.go`, `config/rbac/role.yaml`, `dist/chart/templates/crd/authentikapplications.authentik.io.yaml`, `dist/chart/templates/rbac/manager-role.yaml`
+- Modify (regenerated by `go test -run TestGolden -update`): every file under `internal/migrate/jeffresc/testdata/<case>/golden/`
+- Delete: `internal/migrate/jeffresc/testdata/err-group-bindings/` (now converts)
+- Rename: `internal/migrate/jeffresc/testdata/group-bindings-accepted/` -> `internal/migrate/jeffresc/testdata/group-bindings/`
 
 **Interfaces:**
 - Consumes: Task 3 (`ListBindings`, `CreateBinding`, `PatchBinding`, `DeleteBinding`, `FindGroupByName`, `ErrNoTarget`), Task 6 (`groupName`, group reconciler).
@@ -993,23 +1015,25 @@ Kind: rewrite
   - API: `type AccessType string` (`+kubebuilder:validation:Enum=Groups;Unmanaged`; `AccessTypeGroups`, `AccessTypeUnmanaged`); `type ApplicationAccess struct { Type AccessType json:"type" (+required, +unionDiscriminator); Groups []string json:"groups,omitempty" (+listType=set, MaxItems=64, items MinLength=1, items MaxLength=255) }` with `+kubebuilder:validation:XValidation:rule="self.type == 'Groups' ? (has(self.groups) && size(self.groups) > 0) : !has(self.groups)",message="groups is required when type is Groups and not allowed when type is Unmanaged"`; spec field `Access *ApplicationAccess json:"access,omitempty"` (doc: who may open the application; not the library section label `spec.group`); spec rules `+kubebuilder:validation:XValidation:rule="has(self.access) || (has(self.managementPolicy) && self.managementPolicy == 'ReadOnly')",message="spec.access is required unless managementPolicy is ReadOnly"` and `+kubebuilder:validation:XValidation:rule="!(has(self.policyEngineMode) && self.policyEngineMode == 'all' && has(self.access) && self.access.type == 'Groups' && size(self.access.groups) > 1)",message="policyEngineMode all with more than one access group would require membership of every group; use any"`; status `Access *ApplicationAccessStatus json:"access,omitempty"` with `Bindings []string json:"bindings,omitempty"` (every live binding described by `describeBinding`).
   - Conditions/reasons: `ConditionAccessInSync = "AccessInSync"`, `ConditionAccessOpen = "AccessOpen"`; `reasonGroupNotFound = "GroupNotFound"`, `reasonAccessNarrowed = "AccessNarrowed"`, `reasonWaitingForGroups = "WaitingForGroups"`, `reasonAccessPending = "AccessPending"`, `reasonNoBindings = "NoBindings"`, `reasonBound = "Bound"`.
   - `type accessGroups struct { pks map[string]string; missing []string }`; `type accessState struct { client *authentik.Client; groups accessGroups; created bool }`; `func describeBinding(b api.PolicyBinding) string` (`group <name>`, `user <username>`, `policy <name>`, suffixes ` (negated)`, ` (expiring)`, ` (disabled)` in that order); `type bindingPlan struct { Add []string; Enable []api.PolicyBinding; Remove []api.PolicyBinding; NextOrder int32 }`; `func planBindings(live []api.PolicyBinding, groups accessGroups, mode api.PolicyEngineMode) bindingPlan` (`mode` = the application's live `policy_engine_mode`).
-  - Indexes: `const indexAccessGroup = ".spec.access.groups"` (`accessGroupIndex`, registered by the application reconciler), `const indexGroupName = ".spec.name"` (`groupNameIndex` = `groupName(g)`, registered by the group reconciler). Map functions `func (r *AuthentikApplicationReconciler) applicationsForGroup(ctx context.Context, o client.Object) []reconcile.Request` (all namespaces), `func (r *AuthentikGroupReconciler) groupsForApplication(ctx context.Context, o client.Object) []reconcile.Request` (all namespaces; one lookup per listed name).
+  - Indexes: `const indexAccessGroup = ".spec.access.groups"` (`accessGroupIndex`, registered by the application reconciler), `const indexGroupName = ".spec.name"` (`groupNameIndex(o) = []string{groupName(g)}`, so a group whose `spec.name` differs from `metadata.name` is found by its Authentik name; registered by the group reconciler). Map functions `func (r *AuthentikApplicationReconciler) applicationsForGroup(ctx context.Context, o client.Object) []reconcile.Request` (lists applications in all namespaces with `client.MatchingFields{indexAccessGroup: groupName(g)}`, never `metadata.name`), `func (r *AuthentikGroupReconciler) groupsForApplication(ctx context.Context, o client.Object) []reconcile.Request` (all namespaces; one `indexGroupName` lookup per listed name).
+  - Converter: `Options.AcceptUnmanagedGroupBindings` and the `--accept-unmanaged-group-bindings` flag removed; `applicationObject` sets `Spec.Access`; the header comment for Unmanaged is exactly `# spec.access is Unmanaged: this application's live bindings are unknown offline; the adoption dry run lists them.`
 
 Rules (`planBindings`): a binding is managed when it has a group, `negate` false and `expiring` false. For each listed group that resolved: if no managed binding exists -> `Add` (orders `NextOrder`, `NextOrder+1`, ... with `NextOrder` = highest live order + 1, 0 when none); if several -> keep the one with the lowest order (ties: lowest pk), `Remove` the rest; the kept one with `enabled` false -> `Enable`. Managed bindings for unlisted groups -> `Remove`. Negated group bindings depend on `mode`: under `any` a negated binding on group G passes for every user **outside** G (it widens access), so every negated group binding, listed or not, goes to `Remove`; under `all` it excludes G, so negated bindings are never in any list. When `groups.missing` is non-empty, `Remove` is empty. Expiring, user and policy bindings are never in any list.
 
 Controller changes (only these; the provider link and lost-create flows stay unchanged):
-1. `syncApplication` returns named results `(got *api.Application, access accessState, err error)`; `accessState` also carries `created bool`, true when this reconcile created or recreated the application. Right after `resolve`, when `Access.Type == Groups` and the policy is not ReadOnly, resolve each listed name with `FindGroupByName` (NotFound -> missing; other errors returned).
-2. WaitingForGroups guards every write that could leave an application open, at the two write entry points: `createApplication` (every create, including the recreate of a vanished `Created` application) and `adoptApplication` before it records `Adopted` (not in its dry-run branch). When `Access.Type == Groups` and no listed group resolved, each returns `condErrf(reasonWaitingForGroups, "none of the groups in spec.access.groups exist in Authentik yet (%s); the application is not created or taken over until one does, so it is never open to every user", quotedNames)` before persisting `pendingCreate` or provenance. Both take `want desiredApp` (`createApplication` and `adoptApplication` previously took `*api.ApplicationRequest`; parameter counts stay at 5). `desiredApp` gains `access *accessState`.
-3. `adoptApplication`'s dry-run branch appends, before `; nothing was written`, `; access: would bind groups [%s]; would remove group bindings [%s]; also grants access: %s` (`%s` = the described unmanaged bindings joined `, `, or `none` when there are none), or `; access: groups not found [%s], nothing would be removed`; it computes `announce` against this final message (not `dryRunReport`'s).
+1. `syncApplication` returns named results `(got *api.Application, access accessState, err error)`; `accessState` also carries `created bool`, true when this reconcile created or recreated the application. Right after `resolve`, when `Access.Type == Groups`, under every policy including ReadOnly (read-only GETs), resolve each listed name with `FindGroupByName` (NotFound -> missing; other errors returned).
+2. WaitingForGroups guards every write that could leave an application open, at the two write entry points: `createApplication` (every create, including the recreate of a vanished `Created` application; the guard runs first, before the `ApplicationMissing` Warning event and log line `recreating`, and before `pendingCreate` is persisted) and `adoptApplication` before it records `Adopted`, only when the policy is not ReadOnly (ReadOnly observation also goes through `adoptApplication`, since `MayAdopt` includes ReadOnly, and it writes nothing; it is never gated) and not in its dry-run branch. When `Access.Type == Groups` and no listed group resolved, each returns `condErrf(reasonWaitingForGroups, "none of the groups in spec.access.groups exist in Authentik yet (%s); the application is not created or taken over until one does, so it is never open to every user", quotedNames)`. Both take `want desiredApp` (`createApplication` and `adoptApplication` previously took `*api.ApplicationRequest`; parameter counts stay at 5). `desiredApp` gains `access *accessState`.
+3. `adoptApplication`'s dry-run branch inserts, before `; nothing was written`: for `Groups`, `; access: would bind groups [%s]; would remove group bindings [%s]; also grants access: %s` (`%s` = the described unmanaged bindings joined `, `, or `none`), or `; access: groups not found [%s], nothing would be removed; also grants access: %s`; for `Unmanaged`, `; access: unmanaged; also grants access: %s` (every live binding described, or `none`). It computes `announce` against this final message (not `dryRunReport`'s).
 4. `sync`, after the existing status and Ready handling, calls `r.syncAccess(ctx, a, got, access) (ctrl.Result, error)` and returns its result when non-empty or an error. `syncAccess`, in this order:
    a. `ListBindings(got.Pk)`. On error (`ErrNoTarget` included): if `access.created` -> `Ready=False` reason `AccessPending`; else `AccessInSync=False` reason `AuthentikError`; return the error (backoff).
-   b. `Unmanaged` or no access: no writes. ReadOnly with Groups: `AccessInSync=False` reason `DriftDetected` when the plan is non-empty, no writes. Groups otherwise: `planBindings(live, groups, mode)` then apply `Add` (`CreateBinding` group, target, order, enabled true, negate false), then `Enable` (`PatchBinding` enabled true), then `Remove` (`DeleteBinding(b, got.Pk)`), stopping at the first failed write; Normal event `AccessUpdated` naming bound and unbound group names when any write happened.
+   b. `Unmanaged` or no access: no writes. ReadOnly with `Groups`: `planBindings` from the resolved groups, no writes, then `AccessInSync`: when `groups.missing` is non-empty -> False reason `GroupNotFound`, message `groups not found: [%s]` followed, when the plan has `Add` or `Enable` entries for resolved groups, by `; would bind groups [%s]` (no removal is claimed, the picture being incomplete); else when the plan is non-empty -> False reason `DriftDetected`, message `the bindings in Authentik differ from spec.access: would bind groups [%s]; would remove group bindings [%s]`; else True reason `InSync`. `Groups` otherwise: `planBindings(live, groups, mode)` then apply `Add` (`CreateBinding` group, target, order, enabled true, negate false), then `Enable` (`PatchBinding` enabled true), then `Remove` (`DeleteBinding(b, got.Pk)`), stopping at the first failed write; Normal event `AccessUpdated` naming bound and unbound group names when any write happened.
    c. When any write was attempted, re-list with `ListBindings(got.Pk)` (an error here is handled as in a.). `status.access.bindings` (described, sorted) and `AccessOpen` are computed from this final list, never from the pre-write one: `AccessOpen` True reason `NoBindings` message `the application has no enabled policy binding, so every user may open it unless the instance setting "Applications with no policies bound can be accessed by any user" is off` when no binding is enabled (nil `enabled` counts as enabled), else False reason `Bound`.
-   d. AccessPending (Groups, not ReadOnly): when the application is newly created or recreated (`access.created`), or its provenance is `Created`, at least one listed group resolved, and the final list holds no managed binding of a listed group -> `Ready=False` reason `AccessPending` (`waiting for the first binding of spec.access.groups; until it exists every user may open the application unless the instance setting is off`); with a failed write also a Warning event `AccessBindingFailed` and the error is returned (backoff); without one, requeue after `userErrorRecheck`.
-   e. Otherwise a failed write -> `AccessInSync=False` reason `AuthentikError`, return the error. After success `AccessInSync`: False `GroupNotFound` naming the missing names; else False `AccessNarrowed` when the live `policy_engine_mode` is `all` and more than one group is listed; else True `InSync`; `Unmanaged` or no access removes `AccessInSync`.
+   d. AccessPending (`Groups`, not ReadOnly): when the application is newly created or recreated (`access.created`), or its provenance is `Created`, at least one listed group resolved, and the final list holds no managed binding of a listed group -> `Ready=False` reason `AccessPending` (`waiting for the first binding of spec.access.groups; until it exists every user may open the application unless the instance setting is off`); with a failed write also a Warning event `AccessBindingFailed` and the error is returned (backoff); without one, requeue after `userErrorRecheck`.
+   e. Otherwise (not ReadOnly) a failed write -> `AccessInSync=False` reason `AuthentikError`, return the error. After success `AccessInSync`: False `GroupNotFound` naming the missing names; else False `AccessNarrowed` when the live `policy_engine_mode` is `all` and more than one group is listed; else True `InSync`; `Unmanaged` or no access removes `AccessInSync`.
 5. Watches: the application reconciler registers `indexAccessGroup` and `Watches(&AuthentikGroup{}, applicationsForGroup)`; the group reconciler registers `indexGroupName` and `Watches(&AuthentikApplication{}, groupsForApplication)`. RBAC markers: application reconciler `authentikgroups` get;list;watch; group reconciler `authentikapplications` get;list;watch.
 6. Existing tests: every `AuthentikApplicationSpec{...}` literal in the four listed controller test files and `test/e2e/helpers_test.go` `newApplication` gains `Access: &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged}` (no assertion changes). `testIndexes` gains `indexAccessGroup` and `indexGroupName`.
-7. Samples: `v1alpha1_authentikapplication.yaml` gets `access: {type: Groups, groups: [immich-users]}` with a comment (Unmanaged alternative; turn off the instance setting); `v1alpha1_authentikuser.yaml` gets `spec: {}` (stub, replaced in Task 10).
+7. Samples: `v1alpha1_authentikapplication.yaml` gets `access: {type: Groups, groups: [immich-users]}` with a comment (Unmanaged alternative; turn off the instance setting); `v1alpha1_authentikuser.yaml` gets `spec: {}` (stub, replaced in Task 9).
+8. Converter: non-empty JeffResc `groupBindings` -> `access: {type: Groups, groups: [...]}` in input order with duplicates dropped (each drop reported as a note `groupBindings lists %q more than once; kept once`); empty or absent -> `access: {type: Unmanaged}` plus the exact header line above. `bindingsNotice`, the `validateSource` groupBindings error, the "accepted with" note, `Options.AcceptUnmanagedGroupBindings` and the CLI flag are removed. `docs/migration-from-jeffresc.md`: replace "groupBindings fail open after migration" with how `groupBindings` map to `spec.access` (Unmanaged when absent, with the dry-run listing), remove the flag row and the flag from the refusals paragraph, and update the field-map row `spec.groupBindings` -> `AuthentikApplication.spec.access.groups`.
 
 - [ ] **Step 1: Write the failing unit tests `application_access_test.go`**
 
@@ -1045,8 +1069,12 @@ If a sample other than the application, group and user sample is rejected, fix t
 `authentikapplication_access_test.go` (setup and helpers as `authentikapplication_adoption_test.go`, plus `writes := func() []fakeauthentik.Request { return fake.Requests(true) }`; groups seeded with `fake.SeedGroup`; every application literal sets `Access`):
 ```go
 It("rejects an application without spec.access unless ReadOnly", func() { /* error contains "spec.access is required"; ReadOnly without access is accepted */ })
-It("rejects type Groups without groups and Unmanaged with groups", func() {})
-It("rejects policyEngineMode all with more than one group", func() {})
+It("rejects type Groups without groups and Unmanaged with groups", func() {
+	// {Groups, nil} and {Unmanaged, [a]} -> each Create error contains "groups is required when type is Groups and not allowed when type is Unmanaged"
+})
+It("rejects policyEngineMode all with more than one group", func() {
+	// policyEngineMode all, Groups [a, b] -> error contains "policyEngineMode all with more than one access group"; with Groups [a] accepted
+})
 It("binds the listed groups right after creating the application", func() {
 	// SeedGroup("immich-users"); Groups [immich-users]; reconcile
 	// fake.Bindings(appPK) has one binding: group == group pk, enabled true, negate false, order 0
@@ -1061,7 +1089,7 @@ It("does not adopt-write an existing application until a listed group exists", f
 })
 It("does not recreate a vanished Created application while no listed group exists", func() {
 	// create and bind (group "immich-users"); fake.DeleteApplication(slug) (cascades its bindings); fake.DeleteGroup(groupPK)
-	// reconcile -> Ready False "WaitingForGroups"; fake.ApplicationCount() == 0; status.pendingCreate == ""
+	// reconcile -> Ready False "WaitingForGroups"; fake.ApplicationCount() == 0; status.pendingCreate == ""; no "ApplicationMissing" event
 	// SeedGroup("immich-users"); reconcile -> recreated and bound in the same reconcile
 })
 It("adds missing bindings before removing unlisted and duplicate ones, one past the highest order", func() {
@@ -1079,7 +1107,10 @@ It("removes negated group bindings under policyEngineMode any", func() {
 It("leaves negated bindings under mode all, and expiring, user and policy bindings always, and lists them", func() {
 	// live mode all: status.access.bindings contains "group x (negated)", "group y (expiring)", "user bob", "policy p"; no write touches them
 })
-It("reports a live policyEngineMode all with several groups as AccessNarrowed and leaves it", func() {})
+It("reports a live policyEngineMode all with several groups as AccessNarrowed and leaves it", func() {
+	// adopted app, spec policyEngineMode unset, live "all", Groups [a, b] -> AccessInSync False reason "AccessNarrowed";
+	// no PATCH to "/core/applications/" carries "policy_engine_mode"; Ready True
+})
 It("never writes bindings under Unmanaged and reports AccessOpen when there are none", func() {
 	// AccessOpen True reason "NoBindings", message contains "unless the instance setting"; AccessInSync absent; no binding writes
 })
@@ -1087,6 +1118,11 @@ It("lists bindings in the adoption dry run", func() {
 	// message contains `would bind groups ["new"]`, `would remove group bindings ["old"]`, `also grants access: user bob`
 	// no writes; a second reconcile emits no new AdoptionDryRun event
 	// an app with only group bindings: message contains `also grants access: none`
+})
+It("pins the Unmanaged adoption dry-run text", func() {
+	// SeedApplication("legacy-u") with a user binding for bob; Adopt, dryRun, access {Unmanaged}
+	// message contains "; access: unmanaged; also grants access: user bob; nothing was written"
+	// without bindings: contains "; access: unmanaged; also grants access: none"
 })
 It("lists bindings by the application pk, never by pbm_uuid", func() {
 	// bound app; fake.SetApplicationField(slug, "pbm_uuid", "") (what the 2026.2.3 compat shim yields); reconcile
@@ -1106,62 +1142,31 @@ It("computes AccessOpen and status.access.bindings from the bindings after the w
 	// (the pre-write list was empty, so a value computed before the writes would say NoBindings)
 })
 It("re-enqueues applications listing a group, and groups listed by an application", func() {
-	// applicationsForGroup(group "immich-users") -> the app's request; groupsForApplication(app) -> the group's request
+	// AuthentikGroup metadata.name "g-res" with spec.name "immich-users"; app Groups [immich-users]
+	// applicationsForGroup(that group) -> the app's request (matched by groupName, not metadata.name)
+	// groupsForApplication(app) -> the group's request
 })
-It("reports access drift under ReadOnly and writes nothing", func() {})
-It("sends no writes on a second reconcile", func() {})
+Context("ReadOnly with access type Groups", func() {
+	It("reports drift and writes nothing", func() {
+		// SeedApplication("ro-app"); live binding for group "old"; SeedGroup("immich-users"); ReadOnly, Groups [immich-users]
+		// AccessInSync False reason "DriftDetected", message contains `would bind groups ["immich-users"]` and `would remove group bindings ["old"]`
+		// Ready True reason "ReadOnly"; writes() empty
+	})
+	It("reports InSync when the bindings match", func() {
+		// live binding for "immich-users" only -> AccessInSync True reason "InSync"; writes() empty
+	})
+	It("reports GroupNotFound and claims no drift for an unresolved name", func() {
+		// Groups [immich-users, ghost]; live binding "old" only -> AccessInSync False reason "GroupNotFound",
+		// message contains `"ghost"` and `would bind groups ["immich-users"]` and not "would remove"; writes() empty
+	})
+	It("is never gated by WaitingForGroups", func() {
+		// ReadOnly, Groups [ghost] (nothing resolves) -> Ready True reason "ReadOnly", Provenance Adopted; AccessInSync False "GroupNotFound"
+	})
+})
+It("sends no writes on a second reconcile", func() { /* bound app; n := len(writes()); reconcile -> len(writes()) == n */ })
 ```
 
-- [ ] **Step 3: Run to see them fail**
-
-Run: `dx go test ./internal/controller/ -count=1 -run 'TestPlanBindings|TestDescribeBinding'` then `dx make manifests generate` then `envtest "AuthentikApplication|Samples"`
-Expected: FAIL (undefined symbols; existing app specs fail admission until step 5 of the rules is applied).
-
-- [ ] **Step 4: Implement** the API, `application_access.go`, the controller changes 1-5, the test-literal updates (rule 6) and the samples (rule 7).
-
-- [ ] **Step 5: Run to see them pass**
-
-Run: `dx go test ./internal/controller/ -count=1 -run 'TestPlanBindings|TestDescribeBinding' && envtest "AuthentikApplication|Samples|AuthentikGroup"`
-Expected: PASS, including every pre-existing application spec unchanged in its assertions.
-
-- [ ] **Step 6: Regenerate, full suite, lint, e2e compiles**
-
-Run: `dx make chart-regen && dx task test && dx make lint && dx go vet -tags e2e ./test/...`
-Expected: exit 0.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add api config dist internal/controller test/e2e/helpers_test.go
-git commit -m "feat(application)!: required spec.access owns the application's group bindings" \
-  -m "Groups binds exactly the listed groups (add before remove, nothing removed from an incomplete picture, never through zero bindings); Unmanaged writes none. AccessInSync and AccessOpen report the result." \
-  -m "BREAKING CHANGE: AuthentikApplication.spec.access is required unless managementPolicy is ReadOnly." \
-  -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-```
-
-Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
-
----
-
-### Task 9: Converter maps JeffResc groupBindings to spec.access
-Kind: rewrite
-
-**Files:**
-- Modify: `internal/migrate/jeffresc/build.go`, `internal/migrate/jeffresc/convert.go`, `internal/migrate/jeffresc/convert_test.go`, `internal/migrate/jeffresc/golden_test.go`, `hack/convert-jeffresc/main.go`, `hack/convert-jeffresc/main_test.go`, `docs/migration-from-jeffresc.md`
-- Modify (regenerated by `go test -run TestGolden -update`): every file under `internal/migrate/jeffresc/testdata/<case>/golden/`
-- Delete: `internal/migrate/jeffresc/testdata/err-group-bindings/` (now converts)
-- Rename: `internal/migrate/jeffresc/testdata/group-bindings-accepted/` -> `internal/migrate/jeffresc/testdata/group-bindings/`
-
-**Interfaces:**
-- Consumes: Task 8 API (`ApplicationAccess`, `AccessTypeGroups`, `AccessTypeUnmanaged`).
-- Produces: `Options.AcceptUnmanagedGroupBindings` and the `--accept-unmanaged-group-bindings` flag removed; `applicationObject` sets `Spec.Access`; the header comment for Unmanaged is exactly `# spec.access is Unmanaged: this application's live bindings are unknown offline; the adoption dry run lists them.`
-
-Rules: non-empty `groupBindings` -> `access: {type: Groups, groups: [...]}` in input order with duplicates dropped (each drop reported as a note `groupBindings lists %q more than once; kept once`); empty or absent -> `access: {type: Unmanaged}` plus the header line. `bindingsNotice`, the `validateSource` groupBindings error and the "accepted with" note are removed.
-
-- [ ] **Step 1: Write the failing tests**
-
-`convert_test.go` (replace the accept-flag tests that cover the removed behaviour):
+`internal/migrate/jeffresc/convert_test.go` (delete the accept-flag tests that cover the removed behaviour) and `hack/convert-jeffresc/main_test.go`:
 ```go
 func TestConvertGroupBindingsToAccess(t *testing.T) {
 	// groupBindings [media-users, media-admins, media-users] -> app Spec.Access == {Groups, [media-users, media-admins]}
@@ -1170,47 +1175,47 @@ func TestConvertGroupBindingsToAccess(t *testing.T) {
 func TestConvertWithoutGroupBindingsIsUnmanaged(t *testing.T) {
 	// no groupBindings -> Spec.Access == {Unmanaged}; the file contains the exact Unmanaged header line
 }
+// main_test.go: the groupBindings input converts with exit 0 and no flag; passing --accept-unmanaged-group-bindings
+// exits 2 with stderr containing "flag provided but not defined"
 ```
-`hack/convert-jeffresc/main_test.go`: the groupBindings input converts with exit 0 and no flag; passing `--accept-unmanaged-group-bindings` exits 2 with stderr containing `flag provided but not defined`. `golden_test.go`: drop the `err-group-bindings` case and `acceptFlag`; rename the accepted case to `{name: "group-bindings", opts: dry}`.
+`golden_test.go`: drop the `err-group-bindings` case and the `acceptFlag` constant (defined in `convert_test.go`); rename the accepted case to `{name: "group-bindings", opts: dry}`.
 
-- [ ] **Step 2: Run to see them fail**
+- [ ] **Step 3: Run to see them fail**
 
-Run: `dx go test ./internal/migrate/jeffresc/ ./hack/convert-jeffresc/ -count=1`
-Expected: FAIL.
+Run: `dx go test ./internal/controller/ -count=1 -run 'TestPlanBindings|TestDescribeBinding'` then `dx go test ./internal/migrate/jeffresc/ ./hack/convert-jeffresc/ -count=1` then `dx make manifests generate` then `envtest "AuthentikApplication|Samples"`
+Expected: FAIL (undefined symbols; converter tests fail; existing app specs fail admission until controller rule 6 is applied).
 
-- [ ] **Step 3: Implement**, rename and delete the fixtures, then regenerate the goldens
+- [ ] **Step 4: Implement** the API, `application_access.go`, controller rules 1-5, the test-literal updates (rule 6), the samples (rule 7) and the converter and migration doc (rule 8); rename and delete the converter fixtures, then regenerate the goldens.
 
 Run: `dx go test ./internal/migrate/jeffresc/ -run TestGolden -update -count=1`
 Expected: PASS; `git diff --stat` shows every application golden gaining `access`, and `group-bindings/golden/authentikapplication-immich.yaml` with `type: Groups` and both groups. Read the diff: any change other than `access` and the removed notices is a defect to fix before continuing.
 
-- [ ] **Step 4: Update `docs/migration-from-jeffresc.md`**: replace "groupBindings fail open after migration" with how `groupBindings` map to `spec.access` (and Unmanaged when absent, with the dry-run listing), remove the flag row and the flag from the refusals paragraph, and update the field-map row `spec.groupBindings` -> `AuthentikApplication.spec.access.groups`.
-
 - [ ] **Step 5: Run to see them pass**
 
-Run: `dx go test ./internal/migrate/jeffresc/ ./hack/convert-jeffresc/ -count=1`
-Expected: PASS.
+Run: `dx go test ./internal/controller/ -count=1 -run 'TestPlanBindings|TestDescribeBinding' && dx go test ./internal/migrate/jeffresc/ ./hack/convert-jeffresc/ -count=1 && envtest "AuthentikApplication|Samples|AuthentikGroup"`
+Expected: PASS, including every pre-existing application spec unchanged in its assertions.
 
-- [ ] **Step 6: Full suite and lint**
+- [ ] **Step 6: Regenerate, full suite (includes TestOutputAdmittedByAPIServer against the new CRD), lint, e2e compiles**
 
-Run: `dx task test && dx make lint`
-Expected: exit 0.
+Run: `dx make chart-regen && dx task test && dx make lint && dx go vet -tags e2e ./test/...` (`task test` in the background, per Global Constraints)
+Expected: exit 0; `TestOutputAdmittedByAPIServer` passes with every converted application carrying `access`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add -A internal/migrate/jeffresc hack/convert-jeffresc docs/migration-from-jeffresc.md
-git commit -m "feat(migrate)!: convert JeffResc groupBindings to spec.access" \
-  -m "groupBindings become access type Groups; objects without them become Unmanaged, whose live bindings the adoption dry run lists." \
-  -m "BREAKING CHANGE: convert-jeffresc no longer accepts --accept-unmanaged-group-bindings." \
+git add -A api config dist internal/controller internal/migrate/jeffresc hack/convert-jeffresc docs/migration-from-jeffresc.md test/e2e/helpers_test.go
+git commit --no-gpg-sign -m "feat(application)!: required spec.access owns the application's group bindings" \
+  -m "Groups binds exactly the listed groups (add before remove, nothing removed from an incomplete picture, never through zero bindings); Unmanaged writes none. AccessInSync and AccessOpen report the result. convert-jeffresc maps groupBindings to access Groups and objects without them to Unmanaged." \
+  -m "BREAKING CHANGE: AuthentikApplication.spec.access is required unless managementPolicy is ReadOnly; convert-jeffresc no longer accepts --accept-unmanaged-group-bindings." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
-### Task 10: AuthentikUser API, lifecycle and invitation happy path
+### Task 9: AuthentikUser API, lifecycle and invitation happy path
 Kind: rewrite
 
 **Files:**
@@ -1256,11 +1261,17 @@ func TestInvitationNaming(t *testing.T) {
 
 `authentikuser_test.go` (setup as groups; connection `DefaultExternalURL: "https://sso.example.com"`; `invite := &InvitationSpec{Flow: fakeauthentik.FlowEnrollmentSlug}`):
 ```go
-It("rejects an invitation under Adopt and its absence under Create at admission", func() {})
+It("rejects an invitation under Adopt and its absence under Create at admission", func() {
+	// Adopt with invitation, and Create without one -> each Create error contains "invitation is required when managementPolicy may create"
+	// AdoptOrCreate with invitation and Adopt without one are accepted
+})
 It("rejects a zero or negative expiresAfter at admission", func() { // Review Focus 5
 	// expiresAfter "0s" and "-1h" -> Create error containing "expiresAfter must be positive"
 })
-It("rejects a changed username and reserved attribute keys (given_name, family_name, settings) at admission", func() {})
+It("rejects a changed username and reserved attribute keys (given_name, family_name, settings) at admission", func() {
+	// Update of spec.username -> error contains "username is immutable"
+	// attributes with "given_name", "family_name" or "settings" -> each Create error contains "reserved"
+})
 It("adopts an existing person by username and patches only what the spec sets", func() {
 	// SeedUser("alice", {"name": "Alice", "email": "a@x", "attributes": {"foreign": "f"}}); Adopt, firstName "Alice", attributes {"team": "ops"}
 	// PATCH body has "attributes" == {"foreign": "f", "given_name": "Alice", "team": "ops"} and no "name", "email", "groups" or "roles"
@@ -1287,10 +1298,13 @@ It("refuses to adopt a person another resource already tracks", func() {
 	// two Adopt resources with username "frank" -> the second: reason "Conflict", message contains "already managed by default/<first>"
 })
 It("settles two holders: Created beats Adopted, then the lower UID", func() {
-	// as the group spec: statuses set to the same userPk; Adopted loses to Created; between two Adopted the higher UID releases
+	// SeedUser("hal"); A: status {UserPK: pk, Provenance: Created}; B: status {UserPK: pk, Provenance: Adopted} (Status().Update)
+	// reconcile B -> reason "Conflict", message contains "default/A" and "takes precedence"; B's UserPK and Provenance cleared
+	// two Adopted holders: reconcile the higher metadata.uid -> it releases; the lower keeps UserPK
 })
 It("re-checks a fresh claim through the API reader when the cache missed the other holder", func() {
-	// adopter with Client: staleCache{indexedClient{k8sClient}}, APIReader: k8sClient -> final reason "Conflict", UserPK cleared, writes() empty
+	// SeedUser("raced"); holder A (Adopt) status set to {UserPK: pk, Provenance: Created}; adopter B (Adopt, username "raced")
+	// users.Client = staleListClient{k8sClient}, APIReader: k8sClient -> final reason "Conflict", B's UserPK cleared, writes() empty
 })
 It("deletes only a Created user outside the identity selector", func() {
 	// selector Nothing: Created user with deletionPolicy Delete -> DELETE sent; adopted user with deletionPolicy Delete -> retained,
@@ -1300,7 +1314,12 @@ It("offboards with isActive false and never deactivates the token user", func() 
 	// adopted bob, isActive false -> live is_active false
 	// a user resource for "akadmin" with isActive false -> reason "InvalidSpec"; live akadmin still active
 })
-It("observes under ReadOnly and reports drift", func() {})
+It("observes under ReadOnly and reports drift", func() {
+	// SeedUser("gina", {"name": "Gina", "is_active": true}); ReadOnly, name "Regina", isActive false
+	// Ready True reason "ReadOnly"; Provenance Adopted; Drifted True reason "DriftDetected", message starts with
+	// "the object in Authentik differs from the spec: " and contains `is_active: true -> false` and `name: "Gina" -> "Regina"`
+	// writes() empty; with the spec matching the live account -> Drifted False reason "InSync"
+})
 It("reports ExternalURLRequired and creates no invitation without an explicit external URL", func() {
 	// connection without DefaultExternalURL; Create with invitation -> reason "ExternalURLRequired"; fake.Invitations() empty
 })
@@ -1325,8 +1344,13 @@ It("reports InvitationExpired from status once past expires", func() {
 	// issue; set status.invitation.expires 1h in the past (Status().Update) -> "InvitationExpired"; live invitation deleted; Secret deleted
 })
 It("never re-invites a Created user that vanished", func() { /* enrol; fake.DeleteUser -> "AdoptionTargetNotFound"; no new invitation */ })
-It("retains a Created user on deletion by default and deletes it with an explicit Delete", func() {})
-It("sends no writes on a second reconcile", func() {})
+It("retains a Created user on deletion by default and deletes it with an explicit Delete", func() {
+	// enrolled (Created) user, deletionPolicy unset: Delete CR -> fake.User(pk) still present; CR gone; Normal "Retained" note contains "isActive: false"
+	// a second enrolled user with deletionPolicy Delete: Delete CR -> fake.User(pk) nil; a Normal "Deleted" event
+})
+It("sends no writes on a second reconcile", func() {
+	// adopted user in sync; n := len(writes()); reconcile -> len(writes()) == n; with a pending invitation also no new write
+})
 ```
 Also rerun the samples spec after replacing the sample.
 
@@ -1351,17 +1375,17 @@ Expected: exit 0.
 
 ```bash
 git add api config dist internal/connection internal/controller
-git commit -m "feat(user): AuthentikUser adopts people and invites new ones" \
+git commit --no-gpg-sign -m "feat(user): AuthentikUser adopts people and invites new ones" \
   -m "A Create user issues a single-use invitation pinning the username; the link lives only in an owned Secret; the account carrying the owner proof is recognised as Created. Accounts are retained on deletion unless deletionPolicy is Delete." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
-### Task 11: Invitation failure paths, AuthenticatorMissing and MemberHeld
+### Task 10: Invitation failure paths, AuthenticatorMissing and MemberHeld
 Kind: rewrite
 
 **Files:**
@@ -1370,7 +1394,7 @@ Kind: rewrite
 - Modify (regenerated): `config/rbac/role.yaml`, `dist/chart/templates/rbac/manager-role.yaml`
 
 **Interfaces:**
-- Consumes: Tasks 3, 7 (`planMembers` `Held`), 10.
+- Consumes: Tasks 3, 7 (`planMembers` `Held`), 9.
 - Produces:
   - Reasons `reasonMultipleEnrolments = "MultipleEnrolments"`, `reasonEnrolledUnderOtherName = "EnrolledUnderOtherName"`, `reasonInvitationAmbiguous = "InvitationAmbiguous"`; `const ConditionAuthenticatorMissing = "AuthenticatorMissing"`, reason `reasonNoAuthenticator = "NoAuthenticator"`; event reason `InvitationWithdrawn`.
   - Indexes `const indexUserUsername = ".spec.username"` (`userUsernameIndex`), `const indexGroupMember = ".spec.members"` (`groupMemberIndex`, one key per listed username), both registered by the group reconciler; `func (r *AuthentikGroupReconciler) groupsForUser(ctx context.Context, o client.Object) []reconcile.Request`; `func (r *AuthentikGroupReconciler) heldUsernames(ctx context.Context, g *authentikiov1alpha1.AuthentikGroup, usernames []string) (map[string]bool, error)`.
@@ -1412,7 +1436,10 @@ It("reports MultipleEnrolments naming every account", func() {
 It("withdraws the invitation when the policy changes to Adopt", func() {
 	// issue; spec policy Adopt and invitation removed -> invitation and Secret gone; status.invitation nil; event "InvitationWithdrawn"
 })
-It("deletes the live invitation when the resource is deleted while inviting", func() {})
+It("deletes the live invitation when the resource is deleted while inviting", func() {
+	// issue; Delete CR; reconcile -> fake.InvitationByName(name) nil; CR gone (finalizer released)
+	// with fake.FailNextOn("DELETE", "/stages/invitation/invitations/", 500): the CR keeps its finalizer, the invitation remains, reconcile returns an error
+})
 It("reports InvitationAmbiguous and issues nothing when two invitations share its name", func() {
 	// issue; fake.SeedInvitation(status.invitation.name, nil) (a second one with the same name)
 	// reconcile -> Ready False "InvitationAmbiguous"; a Warning "InvitationAmbiguous" event; len(fake.Invitations()) == 2 (none deleted, none added)
@@ -1459,21 +1486,21 @@ Expected: exit 0.
 
 ```bash
 git add config dist internal/controller
-git commit -m "feat(user): invitation recovery, reissue by attempt, and held group members" \
+git commit --no-gpg-sign -m "feat(user): invitation recovery, reissue by attempt, and held group members" \
   -m "Lost responses are recovered by name; a new link only on a higher attempt; squatted usernames withdraw the invitation; the sign-up token never reaches a condition, event, log or error. Groups hold a username while its invitation is pending." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
-### Task 12: Converter maps JeffResc AuthentikGroup; documentation
+### Task 11: Converter maps JeffResc AuthentikGroup; documentation
 Kind: rewrite
 
 **Files:**
-- Modify: `internal/migrate/jeffresc/input.go`, `internal/migrate/jeffresc/convert.go`, `internal/migrate/jeffresc/build.go`, `internal/migrate/jeffresc/report.go`, `internal/migrate/jeffresc/convert_test.go`, `internal/migrate/jeffresc/golden_test.go`, `docs/design/scope.md`, `docs/migration-from-jeffresc.md`, `docs/roadmap/TASK-05-api-object-adoption-and-deletion-policy.md`, `docs/roadmap/TASK-09-migration-from-jeffresc.md`, `docs/roadmap/TASK-10-beyond-parity.md`
+- Modify: `internal/migrate/jeffresc/input.go`, `internal/migrate/jeffresc/convert.go`, `internal/migrate/jeffresc/build.go`, `internal/migrate/jeffresc/report.go`, `internal/migrate/jeffresc/convert_test.go`, `internal/migrate/jeffresc/golden_test.go`, `internal/migrate/jeffresc/validate_test.go`, `docs/design/scope.md`, `docs/migration-from-jeffresc.md`, `docs/roadmap/TASK-05-api-object-adoption-and-deletion-policy.md`, `docs/roadmap/TASK-09-migration-from-jeffresc.md`, `docs/roadmap/TASK-10-beyond-parity.md`
 - Rename: `internal/migrate/jeffresc/testdata/err-group-kind/` -> `internal/migrate/jeffresc/testdata/group-adopt/` (input extended, goldens regenerated)
 
 **Interfaces:**
@@ -1506,7 +1533,7 @@ func TestConvertRejectsUnknownGroupField(t *testing.T) { /* spec {users: [a]} ->
 func TestConvertStillRefusesEmptyInput(t *testing.T) { /* a non-goauthentik object only -> error containing "or AuthentikGroup" */ }
 func TestConvertGroupReportNamesIdentitySelector(t *testing.T) { /* report contains "--default-connection-identity-namespace-selector" */ }
 ```
-`golden_test.go`: replace `{name: "err-group-kind", ...}` with `{name: "group-adopt", opts: dry}`. The renamed fixture's `input.yaml` becomes the `TestConvertGroupAdoptsAndRetains` group (media/media-users with every field above) plus a second group `media/media-admins` with no `spec.name` and no attributes; delete its old `golden/error.txt`.
+`validate_test.go`: `TestOutputDecodesStrictly` gains `case "AuthentikGroup": err = sigsyaml.UnmarshalStrict(f.Data, &authentikiov1alpha1.AuthentikGroup{})` (it fatals on an unknown kind, and the group-adopt case now emits groups); `TestOutputAdmittedByAPIServer` then also creates the converted groups against the real CRD, with no change. `golden_test.go`: replace `{name: "err-group-kind", ...}` with `{name: "group-adopt", opts: dry}`. The renamed fixture's `input.yaml` becomes the `TestConvertGroupAdoptsAndRetains` group (media/media-users with every field above) plus a second group `media/media-admins` with no `spec.name` and no attributes; delete its old `golden/error.txt`.
 
 - [ ] **Step 2: Run to see them fail**
 
@@ -1534,17 +1561,17 @@ Expected: PASS; the ASCII check (added lines only; scope.md already holds a few 
 
 ```bash
 git add -A internal/migrate/jeffresc docs
-git commit -m "feat(migrate): convert JeffResc AuthentikGroup; document groups, users and access" \
+git commit --no-gpg-sign -m "feat(migrate): convert JeffResc AuthentikGroup; document groups, users and access" \
   -m "JeffResc groups become Adopt + Retain AuthentikGroups without members; reserved and object-valued attributes, parents and roles stay unmanaged and are reported. scope.md, the migration runbook and the roadmap describe the identity gate, spec.access, groups and users." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
-### Task 13: Real-Authentik e2e for enrolment, access and group migration
+### Task 12: Real-Authentik e2e for enrolment, access and group migration
 Kind: rewrite
 
 **Files:**
@@ -1653,13 +1680,13 @@ Expected: exit 0.
 
 ```bash
 git add test
-git commit -m "test(e2e): enrolment by invitation, group access at authorize, JeffResc group migration" \
+git commit --no-gpg-sign -m "test(e2e): enrolment by invitation, group access at authorize, JeffResc group migration" \
   -m "A test-only copy of the owner's enrolment flow without the passkey stage is driven through the flow executor; a member opens a Groups application and a non-member is refused; a JeffResc group with groupBindings migrates without binding writes. Runs on 2026.2.3 and 2026.8.5." \
   -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Run: the commands above, on the host, from `$WT`.
-Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints `1`. A signing failure is `PLAN: PAUSED — signing` (never `--no-gpg-sign`).
+Expected: one new commit; the commit is unsigned (re-signed before the push; see Run contract).
 
 ---
 
@@ -1692,3 +1719,10 @@ Expected: one new commit; `git cat-file commit HEAD | grep -c "^gpgsig"` prints 
 25. (Plan gate pass 1, S9) `firstName`/`lastName` write `given_name`/`family_name` whenever set, independently of `spec.attributes` (absent included); clearing them leaves the live value; the keys are never in `status.managedAttributes`. Reason: design 5.3 says unset keeps live, and CEL already gives each key a single writer.
 26. (Plan gate pass 1, minor) Invitation names are not unique in Authentik; an ambiguous lookup is `InvitationAmbiguous` and the reconciler then creates and deletes nothing. Reason: deleting or trusting the wrong invitation could leak or kill someone else's sign-up link.
 27. (Plan gate pass 1, S7) A JeffResc input holding only `AuthentikGroup` objects converts (the empty-input error now also counts groups). Reason: groups are migrated before or apart from applications in the runbook.
+28. (Plan gate pass 2) The converter's `groupBindings` -> `spec.access` mapping is part of Task 8, not a separate task. Reason: design section 6 item 4 orders them together, and `TestOutputAdmittedByAPIServer` would fail in between against the CRD that makes `access` required. The plan has 12 tasks; the dispatch cap is 6 x 12 + 12 = 84.
+29. (Plan gate pass 2) Under ReadOnly with `access.type: Groups` the listed groups are resolved (read-only lookups), drift is computed from them and reported in `AccessInSync` (`DriftDetected`, `GroupNotFound` without removal claims, or `InSync`), and ReadOnly is never gated by `WaitingForGroups`. Reason: ReadOnly writes nothing, so it cannot open an application; its observation path runs through `adoptApplication`.
+30. (Plan gate pass 2) The stale-cache claim specs reuse the existing `staleListClient` with a `Created` holder, as the provider suite does, instead of a new wrapper. Reason: one test double for one behaviour.
+
+## Parked gate findings
+
+None. Every finding of plan gate passes 1 and 2 is folded into the plan (the optional commit-boilerplate collapse of pass 1 was applied as a template in Global Constraints, with each task keeping its own commit step so a task brief stays self-contained).
