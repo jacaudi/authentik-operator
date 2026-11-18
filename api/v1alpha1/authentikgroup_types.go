@@ -17,56 +17,100 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // AuthentikGroupSpec defines the desired state of AuthentikGroup.
+// +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
 type AuthentikGroupSpec struct {
+	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
+	// An existing group is matched by name. Adoption patches the fields the
+	// spec sets and leaves the others (isSuperuser when unset, every attribute
+	// key the spec does not list, parents, roles, members) as they are.
+	APIManagementSpec `json:",inline"`
+
 	// authentikRef names the AuthentikDeployment (same namespace) whose
 	// connection this object is reconciled against. When omitted, the
 	// operator's default connection is used.
 	// +optional
 	AuthentikRef *AuthentikRef `json:"authentikRef,omitempty"`
 
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of AuthentikGroup. Edit authentikgroup_types.go to remove/update
+	// name is the group's name in Authentik; defaults to metadata.name. It
+	// cannot change once the group is created or adopted (InvalidSpec).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F]+$`
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Name string `json:"name,omitempty"`
+
+	// isSuperuser makes the group's users superusers. Unset: held to false on a
+	// group this resource created, the live value on an adopted group.
+	// +optional
+	IsSuperuser *bool `json:"isSuperuser,omitempty"`
+
+	// attributes are the group's attributes, inherited by its members in
+	// claims. The operator owns only the keys listed here: it sets them, removes
+	// a key it set earlier that is no longer listed, and keeps every other key
+	// (Authentik's own and any set in its UI). An empty map removes the keys the
+	// operator set; omitting the field releases them without deleting them.
+	// Values are strings, numbers, booleans or lists. Keys starting with
+	// goauthentik.io/, and authentik_operator and settings, are reserved: the
+	// resource reports InvalidSpec and writes nothing.
+	// +kubebuilder:validation:MaxProperties=64
+	// +optional
+	Attributes map[string]apiextensionsv1.JSON `json:"attributes,omitzero"`
 }
 
 // AuthentikGroupStatus defines the observed state of AuthentikGroup.
 type AuthentikGroupStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the AuthentikGroup resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// conditions represent the current state of the resource. "Ready" is
+	// True once the group in Authentik matches the spec.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// groupPk is the Authentik primary key (UUID) of the group this resource
+	// manages, whether it created or adopted it.
+	// +optional
+	GroupPK string `json:"groupPk,omitempty"`
+
+	// name is the group's name in Authentik when it was created or adopted.
+	// spec.name cannot change from it.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// provenance is Created or Adopted once decided; empty means not yet
+	// decided (including while an adoption dry run is reporting).
+	// +optional
+	Provenance Provenance `json:"provenance,omitempty"`
+
+	// pendingCreate holds the group name while a create is in flight. It lets
+	// the next reconcile recognise its own group, by the ownership proof it
+	// carries, if the create's outcome was lost (timeout, failed status write).
+	// +optional
+	PendingCreate string `json:"pendingCreate,omitempty"`
+
+	// managedAttributes lists the attribute keys the operator owns: the keys it
+	// set from spec.attributes. It removes one from the group when the spec stops
+	// listing it.
+	// +optional
+	ManagedAttributes []string `json:"managedAttributes,omitempty"`
+
+	// observedGeneration is the spec generation last synced to Authentik.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Name",type=string,JSONPath=".status.name"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Provenance",type=string,JSONPath=".status.provenance"
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].reason",priority=1
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // AuthentikGroup is the Schema for the authentikgroups API.
 type AuthentikGroup struct {

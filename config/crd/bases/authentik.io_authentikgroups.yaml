@@ -14,7 +14,24 @@ spec:
     singular: authentikgroup
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.name
+      name: Name
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.provenance
+      name: Provenance
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: AuthentikGroup is the Schema for the authentikgroups API.
@@ -39,6 +56,20 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikGroup
             properties:
+              attributes:
+                additionalProperties:
+                  x-kubernetes-preserve-unknown-fields: true
+                description: |-
+                  attributes are the group's attributes, inherited by its members in
+                  claims. The operator owns only the keys listed here: it sets them, removes
+                  a key it set earlier that is no longer listed, and keeps every other key
+                  (Authentik's own and any set in its UI). An empty map removes the keys the
+                  operator set; omitting the field releases them without deleting them.
+                  Values are strings, numbers, booleans or lists. Keys starting with
+                  goauthentik.io/, and authentik_operator and settings, are reserved: the
+                  resource reports InvalidSpec and writes nothing.
+                maxProperties: 64
+                type: object
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -56,25 +87,84 @@ spec:
                 required:
                 - name
                 type: object
-              foo:
-                description: foo is an example field of AuthentikGroup. Edit authentikgroup_types.go
-                  to remove/update
+              deletionPolicy:
+                description: |-
+                  deletionPolicy is what happens to the object in Authentik when this
+                  resource is deleted: Delete or Retain. When unset: Delete for an object
+                  this resource created, Retain for an adopted one or one of undecided
+                  provenance. An explicit Delete always wins, so it can remove an object
+                  this resource did not create; a Warning event is emitted when it does so
+                  for undecided provenance. ReadOnly never deletes (Delete is rejected).
+                  The rendered credentials Secret is a Kubernetes object owned by this
+                  resource and is garbage-collected with it under either policy.
+                enum:
+                - Delete
+                - Retain
+                type: string
+              dryRun:
+                description: |-
+                  dryRun finds the existing object and reports, in the Ready condition
+                  (reason AdoptionDryRun) and an event, which fields adoption would
+                  change. Nothing is written to Authentik, and no credentials Secret is
+                  rendered. Set it back to false to adopt for real. Only with
+                  managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
+                  takeover (and the decision to create under AdoptOrCreate): once the
+                  object is adopted, spec edits are applied live whatever dryRun says.
+                type: boolean
+              isSuperuser:
+                description: |-
+                  isSuperuser makes the group's users superusers. Unset: held to false on a
+                  group this resource created, the live value on an adopted group.
+                type: boolean
+              managementPolicy:
+                default: Create
+                description: |-
+                  managementPolicy is how this resource relates to the object in
+                  Authentik. Create (the default) creates it and treats an existing one as
+                  a Conflict. Adopt takes over an existing object and never creates one.
+                  AdoptOrCreate adopts if the object exists and creates it if not.
+                  ReadOnly finds the existing object, renders the credentials Secret and
+                  reports drift in the Drifted condition, and never writes to Authentik
+                  or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+                  operator's default connection need an administrator to allow the
+                  namespace (--default-connection-adoption-namespace-selector); with
+                  spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
+                  temporary choice for a disaster-recovery re-bootstrap: it removes the
+                  protection against minting new client credentials through a typo in a
+                  name, slug or pk.
+                enum:
+                - Create
+                - Adopt
+                - AdoptOrCreate
+                - ReadOnly
+                type: string
+              name:
+                description: |-
+                  name is the group's name in Authentik; defaults to metadata.name. It
+                  cannot change once the group is created or adopted (InvalidSpec).
+                maxLength: 255
+                minLength: 1
+                pattern: ^[^\x00-\x1F\x7F]+$
                 type: string
             type: object
+            x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
+              rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
+                && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
+            - message: managementPolicy ReadOnly never deletes; deletionPolicy Delete
+                is not allowed
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''ReadOnly''
+                && has(self.deletionPolicy) && self.deletionPolicy == ''Delete'')'
           status:
             description: status defines the observed state of AuthentikGroup
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the AuthentikGroup resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state of the resource. "Ready" is
+                  True once the group in Authentik matches the spec.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -133,6 +223,43 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              groupPk:
+                description: |-
+                  groupPk is the Authentik primary key (UUID) of the group this resource
+                  manages, whether it created or adopted it.
+                type: string
+              managedAttributes:
+                description: |-
+                  managedAttributes lists the attribute keys the operator owns: the keys it
+                  set from spec.attributes. It removes one from the group when the spec stops
+                  listing it.
+                items:
+                  type: string
+                type: array
+              name:
+                description: |-
+                  name is the group's name in Authentik when it was created or adopted.
+                  spec.name cannot change from it.
+                type: string
+              observedGeneration:
+                description: observedGeneration is the spec generation last synced
+                  to Authentik.
+                format: int64
+                type: integer
+              pendingCreate:
+                description: |-
+                  pendingCreate holds the group name while a create is in flight. It lets
+                  the next reconcile recognise its own group, by the ownership proof it
+                  carries, if the create's outcome was lost (timeout, failed status write).
+                type: string
+              provenance:
+                description: |-
+                  provenance is Created or Adopted once decided; empty means not yet
+                  decided (including while an adoption dry run is reporting).
+                enum:
+                - Created
+                - Adopted
+                type: string
             type: object
         required:
         - spec

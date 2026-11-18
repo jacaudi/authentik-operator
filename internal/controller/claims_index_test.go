@@ -38,6 +38,7 @@ import (
 var testIndexes = map[string]client.IndexerFunc{
 	indexProviderPK:     providerPKIndex,
 	indexApplicationUID: applicationUIDIndex,
+	indexGroupPK:        groupPKIndex,
 }
 
 // indexedClient serves List with client.MatchingFields the way the manager's
@@ -105,6 +106,14 @@ func TestIndexFuncs(t *testing.T) {
 	a.Status.ApplicationUID = "uid-1"
 	if got := applicationUIDIndex(a); len(got) != 1 || got[0] != "uid-1" {
 		t.Errorf("applicationUIDIndex = %v, want [uid-1]", got)
+	}
+	g := &authentikiov1alpha1.AuthentikGroup{}
+	if got := groupPKIndex(g); got != nil {
+		t.Errorf("a group that tracks nothing must not be indexed, got %v", got)
+	}
+	g.Status.GroupPK = "pk-1"
+	if got := groupPKIndex(g); len(got) != 1 || got[0] != "pk-1" {
+		t.Errorf("groupPKIndex = %v, want [pk-1]", got)
 	}
 }
 
