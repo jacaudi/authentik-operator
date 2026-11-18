@@ -833,6 +833,23 @@ var _ = Describe("AuthentikUser", func() {
 			Expect(drain()).To(ContainElement(ContainSubstring("Normal Deleted")))
 		})
 
+		It("never deletes an account that does not carry this resource's ownership proof", func() {
+			other := fake.SeedUser("someone-else", nil)
+			u := newUser("no-proof", policyCreate, func(s *authentikiov1alpha1.AuthentikUserSpec) {
+				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			})
+			enrol(u)
+			claimStatus(u, other, authentikiov1alpha1.ProvenanceCreated)
+			drain()
+			del(u)
+
+			mustReconcile(u)
+			Expect(fake.User(other)).NotTo(BeNil())
+			Expect(gone(u)).To(BeTrue(), "the finalizer is released")
+			Expect(drain()).To(ContainElement(And(ContainSubstring("Warning Retained"),
+				ContainSubstring("ownership proof"))))
+		})
+
 		It("retains an adopted user by default", func() {
 			pk := fake.SeedUser("adopted-keep", nil)
 			u := newUser("adopted-keep", policyAdopt, nil)
@@ -845,10 +862,11 @@ var _ = Describe("AuthentikUser", func() {
 
 		It("deletes only a Created user outside the identity selector", func() {
 			users.IdentityNamespaceSelector = labels.Nothing()
-			createdPK := fake.SeedUser("out-created", nil)
 			created := newUser("out-created", policyCreate, func(s *authentikiov1alpha1.AuthentikUserSpec) {
 				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
 			})
+			// An account this resource created carries its ownership proof.
+			createdPK := fake.SeedUser("out-created", map[string]any{fieldAttributes: proof(created)})
 			mustReconcile(created) // adds the finalizer; the identity gate then refuses the sync
 			claimStatus(created, createdPK, authentikiov1alpha1.ProvenanceCreated)
 			adoptedPK := fake.SeedUser("out-adopted", nil)

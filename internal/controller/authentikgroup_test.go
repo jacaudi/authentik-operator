@@ -638,6 +638,23 @@ var _ = Describe("AuthentikGroup", func() {
 			Expect(drain()).To(ContainElement(ContainSubstring("Normal Deleted")))
 		})
 
+		It("never deletes a group that does not carry this resource's ownership proof", func() {
+			other := fake.SeedGroup("someone-elses", nil)
+			g := newGroup("del-no-proof", policyCreate, func(s *authentikiov1alpha1.AuthentikGroupSpec) {
+				s.DeletionPolicy = authentikiov1alpha1.DeletionPolicyDelete
+			})
+			mustReconcile(g)
+			setStatus(g, func(s *authentikiov1alpha1.AuthentikGroupStatus) { s.GroupPK = other })
+			drain()
+			del(g)
+
+			mustReconcile(g)
+			Expect(fake.Group(other)).NotTo(BeNil())
+			Expect(gone(g)).To(BeTrue(), "the finalizer is released")
+			Expect(drain()).To(ContainElement(And(ContainSubstring("Warning Retained"),
+				ContainSubstring("ownership proof"))))
+		})
+
 		It("retains an adopted group by default", func() {
 			pk := fake.SeedGroup("del-adopted", nil)
 			g := newGroup("del-adopted", policyAdopt, nil)

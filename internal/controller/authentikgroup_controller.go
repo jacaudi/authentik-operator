@@ -617,6 +617,20 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 		return r.deletionFailed(g, err)
 	}
 	c := resolved.Client
+	// A group this resource created carries its ownership proof; status alone is not enough to delete by.
+	if g.Status.Provenance == authentikiov1alpha1.ProvenanceCreated {
+		live, err := c.GetGroup(ctx, pk)
+		switch {
+		case authentik.IsNotFound(err):
+			return ctrl.Result{}, true, nil
+		case err != nil:
+			return r.deletionFailed(g, err)
+		case !authentik.HasOwnerProof(live.Attributes, string(g.UID)):
+			r.event(g, corev1.EventTypeWarning, "Retained", "Delete", "Group %q left in Authentik: it does not carry "+
+				"this resource's ownership proof, so this resource did not create it", name)
+			return ctrl.Result{}, true, nil
+		}
+	}
 	me, err := c.Me(ctx)
 	if err != nil {
 		return r.deletionFailed(g, err)

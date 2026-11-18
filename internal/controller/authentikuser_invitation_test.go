@@ -472,6 +472,19 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 			Expect(fake.Invitations()).To(HaveLen(2))
 			Expect(get(u).Finalizers).To(ContainElement(FinalizerName))
 		})
+
+		It("never deletes an invitation whose name this resource did not issue", func() {
+			u := newUser(usernameDave, policyCreate, nil)
+			mustReconcile(u)
+			other := "someone-elses-invitation"
+			fake.SeedInvitation(other, nil)
+			setStatus(u, func(s *authentikiov1alpha1.AuthentikUserStatus) { s.Invitation.Name = other })
+
+			Expect(k8sClient.Delete(ctx, u)).To(Succeed())
+			mustReconcile(u)
+			Expect(fake.InvitationByName(other)).NotTo(BeNil())
+			Expect(gone(u)).To(BeTrue(), "the finalizer is released")
+		})
 	})
 
 	It("reports InvitationAmbiguous and issues nothing when two invitations share its name", func() {

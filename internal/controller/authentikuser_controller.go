@@ -656,6 +656,20 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 		return r.deletionFailed(u, err)
 	}
 	c := resolved.Client
+	// An account this resource created carries its ownership proof; status alone is not enough to delete by.
+	if u.Status.Provenance == authentikiov1alpha1.ProvenanceCreated {
+		live, err := c.GetUser(ctx, pk)
+		switch {
+		case authentik.IsNotFound(err):
+			return ctrl.Result{}, true, nil
+		case err != nil:
+			return r.deletionFailed(u, err)
+		case !authentik.HasOwnerProof(live.Attributes, string(u.UID)):
+			r.event(u, corev1.EventTypeWarning, "Retained", "Delete", "User %q left in Authentik: it does not carry "+
+				"this resource's ownership proof, so this resource did not create it", name)
+			return ctrl.Result{}, true, nil
+		}
+	}
 	me, err := c.Me(ctx)
 	if err != nil {
 		return r.deletionFailed(u, err)

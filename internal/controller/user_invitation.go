@@ -90,7 +90,13 @@ const (
 // Authentik. Names are not unique there, so the uid keeps one resource's
 // invitations apart from every other's.
 func invitationName(uid types.UID, attempt int32) string {
-	return fmt.Sprintf("k8s-%s-%d", uid, attempt)
+	return fmt.Sprintf("%s%d", invitationNamePrefix(uid), attempt)
+}
+
+// invitationNamePrefix starts the name of every invitation the resource with
+// this uid issues; one that does not is not this resource's to delete.
+func invitationNamePrefix(uid types.UID) string {
+	return fmt.Sprintf("k8s-%s-", uid)
 }
 
 // invitationAttempt is spec.invitation.attempt, at least 1.
@@ -172,7 +178,7 @@ func (r *AuthentikUserReconciler) reissueInvitation(ctx context.Context, resolve
 		return err
 	}
 	previous := u.Status.Invitation
-	if err := deleteInvitation(ctx, resolved.Client, previous.Name); err != nil {
+	if err := deleteInvitation(ctx, resolved.Client, u.UID, previous.Name); err != nil {
 		return err
 	}
 	if previous.SecretName != invitationSecretName(u) {
@@ -331,9 +337,13 @@ func findOwnInvitation(ctx context.Context, c *authentik.Client,
 	return found, nil
 }
 
-// deleteInvitation deletes the live invitation named name, if there is one.
+// deleteInvitation deletes the live invitation named name, if there is one and
+// it is a name the resource with this uid issues (see invitationNamePrefix).
 // Errors carry no pk (see authentik.Client.DeleteInvitation).
-func deleteInvitation(ctx context.Context, c *authentik.Client, name string) error {
+func deleteInvitation(ctx context.Context, c *authentik.Client, uid types.UID, name string) error {
+	if !strings.HasPrefix(name, invitationNamePrefix(uid)) {
+		return nil
+	}
 	found, err := findInvitation(ctx, c, name)
 	switch {
 	case authentik.IsNotFound(err):
@@ -349,7 +359,7 @@ func deleteInvitation(ctx context.Context, c *authentik.Client, name string) err
 // failed delete retries with the evidence still in status.
 func (r *AuthentikUserReconciler) revokeInvitation(ctx context.Context, c *authentik.Client,
 	u *authentikiov1alpha1.AuthentikUser) error {
-	if err := deleteInvitation(ctx, c, u.Status.Invitation.Name); err != nil {
+	if err := deleteInvitation(ctx, c, u.UID, u.Status.Invitation.Name); err != nil {
 		return err
 	}
 	return r.deleteInvitationSecret(ctx, u)
@@ -420,7 +430,7 @@ func (r *AuthentikUserReconciler) deleteLiveInvitation(ctx context.Context,
 	case err != nil:
 		return err
 	}
-	return deleteInvitation(ctx, resolved.Client, name)
+	return deleteInvitation(ctx, resolved.Client, u.UID, name)
 }
 
 // enrolmentProblem is the failure when the accounts that carry this resource's
