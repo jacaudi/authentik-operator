@@ -1,8 +1,66 @@
 # authentik-operator
-// TODO(user): Add simple overview of use/purpose
+A Kubernetes operator that manages objects in an [Authentik](https://goauthentik.io)
+server (applications, OAuth2 providers, groups, people) from custom resources in
+the `authentik.io/v1alpha1` API group.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+| Kind | Manages |
+|---|---|
+| `AuthentikDeployment` | the connection to an Authentik server (`ConnectOnly`); managing the install itself (`Managed`) is not built yet |
+| `AuthentikApplication` | an application, and who may open it (`spec.access`) |
+| `AuthentikOAuthProvider` | an OAuth2 provider |
+| `AuthentikGroup` | a group, its attributes and (optionally) its members |
+| `AuthentikUser` | a person: adopted, or invited to enrol |
+| `AuthentikCredentialsTemplate` | (cluster-scoped) the keys of rendered credential Secrets |
+
+Every kind except `AuthentikCredentialsTemplate` is namespaced. Examples are in
+[config/samples](config/samples); the decisions behind the behaviour are in
+[docs/design/scope.md](docs/design/scope.md).
+
+### Application access (breaking change)
+
+`spec.access` on `AuthentikApplication` is **required** (except under
+`managementPolicy: ReadOnly`): an application manifest without it is rejected.
+Add one of:
+
+```yaml
+spec:
+  access:
+    type: Groups              # bind exactly these Authentik groups
+    groups: [immich-users]
+  # or: access: {type: Unmanaged}   # never write a binding; status lists the live ones
+```
+
+`spec.access` says who may open the application. It is not `spec.group`, the
+section label in the library. Under `Groups` the application is not created
+until one of the listed groups exists (`Ready=False`, reason `WaitingForGroups`).
+An application with no enabled binding is open to every user unless the
+Authentik instance setting "Applications with no policies bound can be accessed
+by any user" (2026.5+) is off; the operator never changes it. See
+[Application access](docs/design/scope.md#application-access-task-10).
+
+### Groups and users
+
+- `AuthentikGroup.spec.members` (Authentik usernames) is authoritative when set
+  and never read or written when absent. Attributes are owned per key.
+- `AuthentikUser` is for people, not service accounts. With the default
+  `managementPolicy` (`Create`) the operator issues a single-use Authentik
+  invitation and writes the sign-up link to a Secret (keys `url` and `expires`,
+  named `<metadata.name>-invitation` unless `spec.invitation.secretName` is
+  set). The link is built from the browser-facing URL (`authentik.externalUrl`
+  in the Helm chart, `--authentik-external-url`); without it the resource
+  reports `ExternalURLRequired`. Anyone who can read Secrets in that namespace
+  can read the link. An unset `deletionPolicy` is `Retain` for every user.
+- On the operator's default connection, groups and users are reconciled only in
+  namespaces matched by `--default-connection-identity-namespace-selector` (Helm
+  value `identity.defaultConnectionNamespaceSelector`), under every
+  `managementPolicy`. The default is empty, which denies every namespace
+  (`IdentityNotAllowed`). Resources with `spec.authentikRef` are not affected.
+  Adoption is gated separately by `--default-connection-adoption-namespace-selector`.
+
+See [Groups](docs/design/scope.md#groups-task-10) and
+[Users](docs/design/scope.md#users-task-10).
 
 ## Getting Started
 
