@@ -235,7 +235,7 @@ func (r *AuthentikUserReconciler) createInvitation(ctx context.Context, resolved
 func (r *AuthentikUserReconciler) confirmInvitation(ctx context.Context, resolved *connection.Resolved,
 	u *authentikiov1alpha1.AuthentikUser) error {
 	inv := u.Status.Invitation
-	found, err := findInvitation(ctx, resolved.Client, inv.Name)
+	found, err := findOwnInvitation(ctx, resolved.Client, u)
 	switch {
 	case err == nil:
 		inv.Pending = false
@@ -264,7 +264,7 @@ func (r *AuthentikUserReconciler) checkInvitation(ctx context.Context, resolved 
 	u *authentikiov1alpha1.AuthentikUser) error {
 	inv := u.Status.Invitation
 	expired := !time.Now().Before(inv.Expires.Time)
-	found, err := findInvitation(ctx, resolved.Client, inv.Name)
+	found, err := findOwnInvitation(ctx, resolved.Client, u)
 	switch {
 	case err == nil && !expired:
 		if err := r.ensureInvitationSecret(ctx, resolved, u, found); err != nil {
@@ -307,6 +307,28 @@ func findInvitation(ctx context.Context, c *authentik.Client, name string) (*api
 			"cannot tell which one it issued, so it issues and deletes none. Delete the extra ones in Authentik", name)
 	}
 	return found, err
+}
+
+// findOwnInvitation is findInvitation for the invitation status records, and
+// refuses one that does not carry what desiredInvitation wrote into it: the
+// username, the ownership proof and single use. A name is not proof that this
+// resource issued the invitation, and its link is only ever written to the
+// Secret when it did.
+func findOwnInvitation(ctx context.Context, c *authentik.Client,
+	u *authentikiov1alpha1.AuthentikUser) (*api.Invitation, error) {
+	name := u.Status.Invitation.Name
+	found, err := findInvitation(ctx, c, name)
+	if err != nil {
+		return nil, err
+	}
+	username, _ := found.FixedData["username"].(string)
+	attributes, _ := found.FixedData["attributes"].(map[string]any)
+	if username != u.Spec.Username || !found.GetSingleUse() || !authentik.HasOwnerProof(attributes, string(u.UID)) {
+		return nil, condErrf(reasonInvitationAmbiguous, "an invitation named %q exists in Authentik but does not carry "+
+			"this resource's username and ownership proof, so this resource did not issue it; it neither links nor "+
+			"deletes it. Delete it in Authentik", name)
+	}
+	return found, nil
 }
 
 // deleteInvitation deletes the live invitation named name, if there is one.

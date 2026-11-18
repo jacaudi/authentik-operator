@@ -201,6 +201,52 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 		Expect(get(u).Status.Invitation.Pending).To(BeFalse())
 	})
 
+	// The link in the Secret is always that of an invitation carrying this resource's username, ownership proof and
+	// single use; an invitation of the same name that does not is never trusted.
+	Context("an invitation of the same name issued by someone else", func() {
+		// foreign replaces u's own invitation of attempt 1 by one of the same name with other content.
+		foreign := func(u *authentikiov1alpha1.AuthentikUser) string {
+			fake.ConsumeInvitation(attemptOf(u, 1))
+			return fake.SeedInvitation(attemptOf(u, 1), map[string]any{
+				"fixed_data": map[string]any{"username": "mallory"}, "single_use": false,
+			})
+		}
+		linkInSecret := func() string {
+			secret, err := secretOf("dave-invitation")
+			if err != nil {
+				return ""
+			}
+			return string(secret.Data[invitationSecretURL])
+		}
+
+		It("is not linked from the Secret while the resource waits for the person", func() {
+			u := newUser(usernameDave, policyCreate, nil)
+			mustReconcile(u)
+			foreignPK := foreign(u)
+
+			res, err := reconcileUser(u)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(userErrorRecheck))
+			Expect(ready(u).Reason).To(Equal(reasonInvitationAmbiguous))
+			Expect(linkInSecret()).NotTo(ContainSubstring(foreignPK))
+			Expect(fake.InvitationByName(attemptOf(u, 1))).NotTo(BeNil(), "it is not the resource's to delete")
+		})
+
+		It("is not adopted as the invitation whose create response was lost", func() {
+			u := newUser(usernameDave, policyCreate, nil)
+			fake.LoseNextInvitationCreate()
+			_, err := reconcileUser(u)
+			Expect(err).To(HaveOccurred())
+			Expect(get(u).Status.Invitation.Pending).To(BeTrue())
+			foreignPK := foreign(u)
+
+			mustReconcile(u)
+			Expect(ready(u).Reason).To(Equal(reasonInvitationAmbiguous))
+			Expect(linkInSecret()).To(BeEmpty(), "no Secret holds the other invitation's link (%s)", foreignPK)
+			Expect(get(u).Status.Invitation.Pending).To(BeTrue())
+		})
+	})
+
 	Context("reissue", func() {
 		It("issues a new link only when attempt is increased", func() {
 			u := newUser(usernameDave, policyCreate, nil)
