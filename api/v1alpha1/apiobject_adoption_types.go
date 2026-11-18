@@ -17,7 +17,7 @@ limitations under the License.
 package v1alpha1
 
 // This file holds the types shared by the kinds that manage Authentik API
-// objects (applications, providers): the management policy (create, adopt or
+// objects (applications, providers, groups, users): the management policy (create, adopt or
 // only observe a pre-existing object), provenance, and the deletion policy.
 // See docs/design/scope.md, section "API-object adoption".
 
@@ -60,9 +60,10 @@ const (
 	// ManagementPolicyAdoptOrCreate adopts the object if it exists and
 	// creates it if it does not.
 	ManagementPolicyAdoptOrCreate ManagementPolicy = "AdoptOrCreate"
-	// ManagementPolicyReadOnly finds an existing object, renders the
-	// credentials Secret and reports drift from the spec, but never writes to
-	// Authentik and never deletes the object.
+	// ManagementPolicyReadOnly finds an existing object, renders the kind's
+	// Secret (if it has one) and reports drift from the spec, but never writes
+	// to Authentik (an AuthentikUser switched to it while inviting deletes its
+	// live invitation) and never deletes the object.
 	ManagementPolicyReadOnly ManagementPolicy = "ReadOnly"
 )
 
@@ -150,9 +151,10 @@ type APIManagementSpec struct {
 	// Authentik. Create (the default) creates it and treats an existing one as
 	// a Conflict. Adopt takes over an existing object and never creates one.
 	// AdoptOrCreate adopts if the object exists and creates it if not.
-	// ReadOnly finds the existing object, renders the credentials Secret and
-	// reports drift in the Drifted condition, and never writes to Authentik
-	// or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+	// ReadOnly finds the existing object, renders the kind's Secret (if it has
+	// one) and reports drift in the Drifted condition, and never writes to
+	// Authentik (an AuthentikUser switched to it while inviting deletes its
+	// live invitation) or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
 	// operator's default connection need an administrator to allow the
 	// namespace (--default-connection-adoption-namespace-selector); with
 	// spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
@@ -165,8 +167,8 @@ type APIManagementSpec struct {
 
 	// dryRun finds the existing object and reports, in the Ready condition
 	// (reason AdoptionDryRun) and an event, which fields adoption would
-	// change. Nothing is written to Authentik, and no credentials Secret is
-	// rendered. Set it back to false to adopt for real. Only with
+	// change. Nothing is written to Authentik, and the kind's Secret (if it
+	// has one) is not rendered. Set it back to false to adopt for real. Only with
 	// managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
 	// takeover (and the decision to create under AdoptOrCreate): once the
 	// object is adopted, spec edits are applied live whatever dryRun says.
@@ -174,13 +176,15 @@ type APIManagementSpec struct {
 	DryRun bool `json:"dryRun,omitempty"`
 
 	// deletionPolicy is what happens to the object in Authentik when this
-	// resource is deleted: Delete or Retain. When unset: Delete for an object
-	// this resource created, Retain for an adopted one or one of undecided
-	// provenance. An explicit Delete always wins, so it can remove an object
-	// this resource did not create; a Warning event is emitted when it does so
-	// for undecided provenance. ReadOnly never deletes (Delete is rejected).
-	// The rendered credentials Secret is a Kubernetes object owned by this
-	// resource and is garbage-collected with it under either policy.
+	// resource is deleted: Delete or Retain. When unset the per-kind default
+	// applies: by provenance for providers, applications and groups (Delete
+	// for an object this resource created, Retain for an adopted one or one of
+	// undecided provenance); Retain for every AuthentikUser. An explicit
+	// Delete wins, so it can remove an object this resource did not create; a
+	// Warning event is emitted when it does so for undecided provenance.
+	// ReadOnly never deletes (Delete is rejected). The kind's Secret, if it
+	// renders one, is a Kubernetes object owned by this resource and is
+	// garbage-collected with it under either policy.
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
