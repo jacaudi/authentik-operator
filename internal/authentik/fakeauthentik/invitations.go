@@ -152,7 +152,7 @@ func (s *Server) sortedInvitations(match func(map[string]any) bool) []map[string
 // addInvitation stores a new invitation with the defaults under in and returns it.
 func (s *Server) addInvitation(in map[string]any) map[string]any {
 	s.nextInvitation++
-	inv := map[string]any{"expires": nil, fixedDataKey: map[string]any{}, "single_use": true, "flow": nil}
+	inv := map[string]any{"expires": nil, fixedDataKey: map[string]any{}, "single_use": false, "flow": nil}
 	maps.Copy(inv, in)
 	pk := fmt.Sprintf("00000000-0000-0000-0002-%012d", s.nextInvitation)
 	inv[fieldPK] = pk

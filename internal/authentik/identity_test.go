@@ -693,3 +693,18 @@ func TestFakeFailNextOnFiresOnce(t *testing.T) {
 		t.Errorf("GetUser again = %v, want success (the rule is consumed)", err)
 	}
 }
+
+func TestFakeInvitationSingleUseDefaultsToFalse(t *testing.T) {
+	t.Parallel()
+	fake, c := newFakeClient(t)
+	if _, err := c.CreateInvitation(t.Context(), api.InvitationRequest{Name: "reusable"}); err != nil {
+		t.Fatalf("CreateInvitation: %v", err)
+	}
+	if got := fake.InvitationByName("reusable")["single_use"]; got != false {
+		t.Errorf("single_use = %v, want false (Authentik's default) when the request omits it", got)
+	}
+	fake.SeedInvitation("seeded", nil)
+	if got := fake.InvitationByName("seeded")["single_use"]; got != false {
+		t.Errorf("seeded single_use = %v, want false", got)
+	}
+}
