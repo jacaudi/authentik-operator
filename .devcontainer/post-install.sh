@@ -115,7 +115,8 @@ echo "------------------------------------"
 
 # The repo uses extensions.relativeWorktrees (written by host git >= 2.48);
 # Debian trixie ships git 2.47.3, which refuses to open such a repository.
-# renovate: datasource=git-tags depName=https://github.com/git/git
+# Not tracked by Renovate: bump by hand, updating both the version and the
+# sha256 from https://mirrors.edge.kernel.org/pub/software/scm/git/sha256sums.asc
 GIT_VERSION=2.53.0
 GIT_SHA256=5818bd7d80b061bbbdfec8a433d609dc8818a05991f731ffc4a561e2ca18c653
 if [ "$(git --version 2>/dev/null)" != "git version ${GIT_VERSION}" ]; then
@@ -140,9 +141,12 @@ echo "------------------------------------"
 echo "Installing pinned tools..."
 echo "------------------------------------"
 
-# Pins match the repo: .taskfiles/chart.yml, Makefile, .github/actions/setup,
-# .github/workflows/ci-chart.yml. Installed unconditionally (this script runs
-# once, on create).
+# Renovate tracks these pins (.github/renovate.json). Twins elsewhere in the
+# repo, to keep in step: helm-unittest in .taskfiles/chart.yml; yq in
+# .github/workflows/ci-chart.yml; golangci-lint in Makefile and
+# .github/actions/setup/action.yml; govulncheck and hadolint in
+# .github/actions/setup/action.yml. task and helm are pinned only here.
+# Installed unconditionally (this script runs once, on create).
 
 # renovate: datasource=github-releases depName=go-task/task
 TASK_VERSION=v3.54.0
