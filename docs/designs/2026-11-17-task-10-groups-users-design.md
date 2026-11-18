@@ -6,6 +6,11 @@ citations (local, gitignored): `docs/reference/2026-11-15-task10-membership-deci
 `2026-11-17-task10-people-decision.html`, `2026-11-17-task10-build-approach-decision.html`,
 `2026-11-15-task10-operator-comparison.html` (all under the main checkout).
 
+Reconciled with the code as built (end-of-build drift check, 2026-11-18). A
+passage that changed since approval says so in parentheses and cites the ruling
+that allowed it, in the implementation ledger or the plan
+(`docs/plans/2026-11-17-task-10-groups-users-implementation.md`).
+
 ## 1. Intent
 
 `AuthentikGroup` and `AuthentikUser` ship today as kubebuilder scaffold stubs
@@ -38,7 +43,8 @@ Goals
   adoption") unchanged: `managementPolicy`, `dryRun`, `deletionPolicy`,
   `status.provenance`, claims and tie-break, adoption gate.
 - Unblock v0.1.0 without touching the shipped provider and application
-  adoption flows beyond the access field.
+  adoption flows beyond the access field. (As built, a few shared helpers in
+  `internal/controller/common.go` were refactored, behaviour-preserving: see 5.1.)
 
 Non-goals (this design)
 - Machine accounts: service accounts, API tokens, app passwords, token Secrets
@@ -120,11 +126,27 @@ must not import `internal/controller`).
   Created" rule, and the undecided-provenance Warning), the claim
   persist-then-recheck sequence (uses `claims.go` unchanged), and status
   plumbing (`failed`, `setReady`, `patchStatus` equivalents).
+  (Changed at build: only the finalize decision is in `internal/adopt`
+  ([`finalize.go`](../../internal/adopt/finalize.go), `adopt.Finalize`). The claim
+  re-check and the status plumbing (`classifyFailure`, `patchStatus`,
+  `recheckClaim`, `syncThenPersist`, `addFinalizer`) are in
+  [`internal/controller/identity_status.go`](../../internal/controller/identity_status.go):
+  the status plumbing works on controller types, which `internal/adopt` must not
+  import (plan Rulings 1-2; pre-flight F2 ruling). `failed` and `setReady` stay
+  methods of each reconciler.)
 - Guards (owner): concrete parameters, few helpers, no helper added before two
   kinds call it; `Facts` stays at these eight; anything kind-specific
   (members, invitations, bindings) stays in the controller.
 - The provider and application controllers are **not** changed to use it in
-  this task.
+  this task. (Changed at build: shared helpers in
+  [`common.go`](../../internal/controller/common.go) that they call were
+  refactored for the new kinds, behaviour-preserving: `adoptionGate.check` goes
+  through a new `selectorMatches`; `ParseAdoptionNamespaceSelector` became
+  `ParseNamespaceSelector`; `dryRunReport` split into `dryRunChanges` and
+  `dryRunMessage`; `recordDrift` delegates to `setDrift`; the application
+  controller's dry run goes through `dryRunAdoption`. The provider and
+  application messages are unchanged: ledger "Task 7: Ruling: builder also
+  edited internal/controller/common.go", verified by the Task 7 critic.)
 
 ### 5.2 AuthentikGroup
 
@@ -133,25 +155,28 @@ Spec (all optional unless stated; `APIManagementSpec` inline: `managementPolicy`
 
 | Field | Meaning |
 |---|---|
-| `name` | Authentik group name; default `metadata.name`. Immutable once the group is tracked, enforced by the controller (CEL cannot see status): a changed name is `InvalidSpec` (renaming would change every app's bindings by name). |
+| `name` | Authentik group name; default `metadata.name`; 1 to 255 characters, no control characters. Immutable once the group is tracked, enforced by the controller against `status.name` (CEL cannot see status): a changed name is `InvalidSpec` (renaming would change every app's bindings by name). |
 | `isSuperuser` | `*bool`. On a group this resource **created**, unset is held to `false` (#18: Created objects are held to create-time defaults), so a UI flip to superuser is reverted. On an adopted group, unset keeps live. |
 | `attributes` | Per-key owned map (5.3a). Group attributes are inherited by members in claims (`user.group_attributes()`), so this is where a role claim lives. |
-| `members` | `*[]string` of Authentik usernames. **Absent: membership never read or written** (any provenance; an explicit exception to "Created objects are held to create-time defaults"). **Present (incl. `[]`): exactly this list.** |
+| `members` | `*[]string` of Authentik usernames, at most 1000, each 1 to 150 characters. **Absent: membership never read or written** (any provenance; an explicit exception to "Created objects are held to create-time defaults"). **Present (incl. `[]`): exactly this list.** |
 
 No `match` field: group names are unique, so the target is the group named
 `name`. No `parents` or `roles` (unmanaged, live values kept). `attributes`
 as in 5.3a.
 
-Status: `conditions`, `groupPk` (UUID string), `provenance`, `pendingCreate`,
-`observedGeneration`, `members` (list of `{username, pk}` pinned on first
-resolution).
+Status: `conditions`, `groupPk` (UUID string), `name`, `provenance`,
+`pendingCreate`, `observedGeneration`, `members` (list of `{username, pk}`
+pinned on first resolution). (`name` added at build: the group's name in
+Authentik when it was created or adopted, so the controller can tell a spec
+rename from a rename made in the Authentik UI; plan Ruling 3.)
 
 Conditions: `Ready` (sync of the group itself; blocking reasons such as
 `Conflict`, `IdentityNotAllowed`, `DeletionBlocked`), `MembersInSync` (only
 when `members` is present; `False` with reason `MemberNotFound`,
-`MemberIdentityChanged` or `MemberHeld`, message naming the usernames), and
-`Drifted` under ReadOnly. A members problem never makes `Ready` false: the
-group exists and the other members are correct.
+`MemberIdentityChanged`, `MemberHeld` or `AuthentikError` (a write Authentik
+refused), message naming the usernames), and `Drifted` under ReadOnly. A
+members problem never makes `Ready` false: the group exists and the other
+members are correct.
 
 Behaviour
 - Policy flow from `adopt.Decide`. Lost create: `pendingCreate` holds the name;
@@ -161,7 +186,10 @@ Behaviour
   operator's own key in `attributes`, written on create only and reserved).
 - Members (authoritative when present):
   - resolve each username to a pk; unknown -> condition `MemberNotFound`
-    naming it; all other adds **and every removal** still apply;
+    naming it; all other adds **and every removal** still apply; a write that
+    fails (for example a 403 on `add_user`) is joined with the others and
+    reported as `MembersInSync` `False`, reason `AuthentikError`, without
+    stopping the remaining writes, and the group is rechecked in a minute;
   - a username whose pk differs from the pinned one -> held out, condition
     `MemberIdentityChanged`, until the pin is cleared from status;
   - a username is **held** (`MemberHeld`: neither added nor removed, not
@@ -194,7 +222,9 @@ Behaviour
   immich #0 to Group immich-users") and the remedy: remove the binding in
   Authentik or from the app's `access.groups`, or set `deletionPolicy:
   Retain` on this CR. Any policy binding blocks: application, flow, stage or
-  source bindings alike.
+  source bindings alike. A group the resource created is deleted only if it
+  still carries the resource's ownership proof; otherwise a Warning `Retained`
+  is emitted and the group stays.
   **Fail closed on visibility:** `used_by` lists only what the token may see
   (`core/api/used_by.py:83`). Unless the token's user is a superuser (from
   `GET /core/users/me/`), the operator cannot know the list is complete, so
@@ -208,18 +238,30 @@ Behaviour
   but on the live bindings rather than CR references.
 - Recheck: 5 minutes when synced, 1 minute on user-fixable errors (as today).
 
+Implemented in:
+[`api/v1alpha1/authentikgroup_types.go`](../../api/v1alpha1/authentikgroup_types.go),
+[`authentikgroup_controller.go`](../../internal/controller/authentikgroup_controller.go)
+(reconcile, gates, deletion),
+[`group_desired.go`](../../internal/controller/group_desired.go) (fields to
+write),
+[`group_members.go`](../../internal/controller/group_members.go) (member plan,
+`MemberHeld`),
+[`internal/authentik/group.go`](../../internal/authentik/group.go) (Authentik
+calls) and the ownership-proof single source
+[`internal/authentik/owner.go`](../../internal/authentik/owner.go).
+
 ### 5.3 AuthentikUser (people)
 
 Spec:
 
 | Field | Meaning |
 |---|---|
-| `username` | Required, immutable (CEL `self == oldSelf`). |
+| `username` | Required, immutable (CEL `self == oldSelf`). A tracked account that is renamed in Authentik is a `Conflict`, see "Create = invite" step 1. |
 | `name`, `email`, `path`, `type` (`internal` / `external`) | Optional; unset keeps live. |
 | `firstName`, `lastName` | Optional strings; unset keeps live. Written to Authentik's `given_name` and `family_name` attribute keys, which the OIDC `profile` scope reads (`blueprints/system/providers-oauth2.yaml:33-50`), so apps receive them as `given_name` / `family_name`. The owner chose these names over the claim names. |
 | `isActive` | `*bool`; unset keeps live. `false` is offboarding. |
 | `attributes` | Per-key owned map (5.3a). |
-| `invitation` | Required when the policy may create (`Create`, `AdoptOrCreate`); forbidden under `Adopt` / `ReadOnly` (CEL). `{flow: <enrolment flow slug>, expiresAfter: <duration>, secretName?: <name>, attempt?: <int>}`. Bumping `attempt` is the only way to get a new link (see "Reissue"). |
+| `invitation` | Required when the policy may create (`Create`, `AdoptOrCreate`); forbidden under `Adopt` / `ReadOnly` (CEL). `{flow: <enrolment flow slug>, expiresAfter: <duration>, secretName?: <name>, attempt?: <int>}`. Bumping `attempt` is the only way to get a new link (see "Reissue"). `flow` is a slug (pattern, at most 50 characters) and `secretName` a DNS name (pattern, at most 253). (Limits added at build: plan Task 9 API step.) |
 
 Status: `conditions` (`Ready`, `Drifted` under ReadOnly), `userPk` (int32),
 `provenance`, `observedGeneration`, and while inviting `invitation`:
@@ -239,7 +281,11 @@ Create = invite (decision 4)
    `scope.md:115-117`). If one appears while an invitation is in progress
    and lacks the proof: step 6.
 
-   How a User maps onto `Facts`: "tracked found" = `GET` by `status.userPk`;
+   How a User maps onto `Facts`: "tracked found" = `GET` by `status.userPk`
+   whose username is still `spec.username` (changed at build: an account
+   renamed in Authentik since it was tracked is a `Conflict`, "the account pk N
+   is now named X, not Y; refusing to manage it", and nothing is patched; plan
+   Ruling 15);
    "own create pending" = `status.invitation` present (the whole inviting
    phase, not only the request in flight); "own create proven" = the
    attribute query of step 5 found exactly one account; "target" = find by
@@ -263,7 +309,15 @@ Create = invite (decision 4)
    `stages/user_write/stage.py:125-129`, same on 2026.2.3). Authentik
    generates the pk, so `status.invitation.pending: true` and the name are
    persisted **before** the request, and a lost response is recovered by
-   listing invitations filtered by that exact name.
+   listing invitations filtered by that exact name. Names are not unique in
+   Authentik: several invitations with the name are `Ready=False`, reason
+   `InvitationAmbiguous` (the resource issues and deletes none, and deletion
+   stays Terminating), and so is a single one that does not carry this
+   resource's username, single use and ownership proof, which is neither linked
+   nor deleted. The flow slug is resolved before anything is issued or replaced:
+   an unknown slug is `Ready=False`, reason `ReferenceNotFound`. (Both reasons
+   added at build: plan Ruling 26 and the plan-gate pass 1 minors disposition;
+   flow lookup per plan Task 9.)
 4. **The pk never leaves the Secret.** Invitation API errors are wrapped so
    the request path (which carries the pk, `internal/authentik/errors.go`
    puts paths into messages) is redacted before an error reaches a
@@ -298,8 +352,10 @@ Create = invite (decision 4)
    deletes a single-use invitation as soon as its first stage runs):
    `Ready=False`, reason `InvitationConsumed` (gone before
    `status.invitation.expires`) or `InvitationExpired` (past it; decided from
-   status, since 2026.2.3 keeps expired rows listed until cleanup); the
-   Secret is deleted; **no automatic reissue**. A normal enrolment passes
+   status, since 2026.2.3 keeps expired rows listed until cleanup); an expired
+   invitation that is still listed is deleted in Authentik too (changed at build:
+   it serves anti-goal 4, no live sign-up link outside the Secret; plan Task 9
+   `checkInvitation`); the Secret is deleted; **no automatic reissue**. A normal enrolment passes
    through this state (Authentik deletes the invitation at its first stage,
    before the account exists), so step 5's search keeps running and moves
    the CR on as soon as the account appears.
@@ -320,9 +376,13 @@ Create = invite (decision 4)
    re-invite (the username is taken).
 10. Switching the policy away from `Create` / `AdoptOrCreate`, or deleting
     the CR, while inviting deletes the live invitation in Authentik; the
-    Secret goes with it (owner reference). Editing `invitation.flow`,
-    `expiresAfter` or `secretName` while inviting takes effect on the next
-    attempt.
+    Secret goes with it (owner reference). A namespace the identity gate stops
+    allowing while inviting has its invitation and Secret deleted before the
+    resource reports `IdentityNotAllowed`; `status.invitation` stays. A switch to
+    `ReadOnly` or `Adopt` is thus the one Authentik write `ReadOnly` performs, in
+    the safe direction; `dryRun` under `AdoptOrCreate` mid-invitation leaves the
+    invitation live. Editing `invitation.flow`, `expiresAfter` or `secretName`
+    while inviting takes effect on the next attempt.
 
 Owner blueprint change (documented, not automated): the enrolment flow's
 username prompt becomes `text_read_only`, so `fixed_data.username` wins
@@ -344,8 +404,23 @@ Other behaviour
   re-enrol; pocket-id-operator retains users by default); an explicit
   `Delete` still deletes. A retained account stays active: set
   `isActive: false` first to offboard. A documented, per-kind exception to
-  `EffectiveDeletionPolicy` (section 8, call 4).
+  `EffectiveDeletionPolicy` (section 8, call 4). An account the resource
+  created is deleted only if it still carries the resource's ownership proof;
+  otherwise a Warning `Retained` is emitted and the account stays.
 - Gates as 5.2.
+
+Implemented in:
+[`api/v1alpha1/authentikuser_types.go`](../../api/v1alpha1/authentikuser_types.go),
+[`authentikuser_controller.go`](../../internal/controller/authentikuser_controller.go)
+(reconcile, gates, deletion),
+[`user_desired.go`](../../internal/controller/user_desired.go) (fields and the
+invitation request),
+[`user_invitation.go`](../../internal/controller/user_invitation.go) (the
+invitation lifecycle and its Secret),
+[`internal/authentik/user.go`](../../internal/authentik/user.go),
+[`invitation.go`](../../internal/authentik/invitation.go) and
+[`owner.go`](../../internal/authentik/owner.go) (the ownership-proof single
+source).
 
 ### 5.3a Attributes: per-key, owned keys only (owner decision)
 
@@ -355,7 +430,8 @@ Authentik replaces the whole `attributes` dict on every API write
 lists, the model kaniop uses for SSH keys:
 
 - `spec.attributes` is `map[string]apiextensionsv1.JSON` (values: string,
-  number, bool, list), top-level keys only; a listed key's value is owned
+  number, bool, list), top-level keys only, at most 64 (on groups and users;
+  limit added at build, plan Task 6/9 API steps); a listed key's value is owned
   whole.
 - `status.managedAttributes` records the keys the operator owns. Each sync
   reads the live dict, sets the listed keys, deletes keys it owned and no
@@ -364,10 +440,15 @@ lists, the model kaniop uses for SSH keys:
   compare-and-set; stated, accepted).
 - Absent `spec.attributes`: nothing read or written (previously owned keys
   are released, not deleted). `{}`: removes the owned keys.
-- Reserved, refused by CEL: keys starting `goauthentik.io/`,
-  `authentik_operator` (ownership proof), `settings` (the user's own
-  settings), and on users `given_name` and `family_name` (owned by
-  `firstName` / `lastName`, one writer per key).
+- Reserved, refused by the reconciler (`Ready=False`, reason `InvalidSpec`,
+  nothing written): keys starting `goauthentik.io/`, `authentik_operator`
+  (ownership proof), `settings` (the user's own settings), and on users
+  `given_name` and `family_name` (owned by `firstName` / `lastName`, one writer
+  per key). A spec with a reserved key is therefore admitted and fails at
+  reconcile (`reservedAttributes` in
+  [`attributes.go`](../../internal/controller/attributes.go)). (Changed at
+  build, not CEL: CEL cannot type a map of untyped JSON values; ledger "Task 6:
+  Ruling: reserved attribute keys ... refused by the controller".)
 - Adoption keeps every live key; the dry run lists keys it would set or
   remove. ReadOnly reports differing owned keys in `Drifted`.
 - An Authentik 2026.8 attribute schema (`ObjectAttribute`) can reject a
@@ -392,6 +473,9 @@ access:
   and django-filter ignores an empty `target=`, which would return **every
   binding in the instance**. Before any delete the operator also checks
   `binding.target == application pk`.
+- `access.groups` holds 1 to 64 names of 1 to 255 characters each (limits added
+  at build: plan Task 8 API step; the JeffResc converter refuses a source over
+  them, 5.6).
 - `Groups`: the app's **group** bindings are exactly the listed groups. For
   each, the operator holds `enabled: true`, `negate: false`; adds missing ones
   (`order` = one past the highest existing order) **before** removing
@@ -410,13 +494,20 @@ access:
   `policyEngineMode` follows #18: spec wins, unset keeps live, `any` on create;
   CEL rejects a spec `all` with more than one group. A live `all` with more
   than one listed group (adopted) is left alone, since it only narrows access,
-  and reported (`AccessInSync=False`, reason `AccessNarrowed`).
+  and reported (`AccessInSync=False`, reason `AccessNarrowed`). The same reason
+  reports a negated binding of a listed group under a live `all`, which excludes
+  that group (changed at build: plan Ruling 13).
 - Conditions: `Ready` keeps its meaning (the application itself; blocking
-  reasons include the new `WaitingForGroups`); a new `AccessInSync`
-  (`Groups` only; reasons `GroupNotFound`, `AccessNarrowed`); and a new
-  `AccessOpen` (`True` when the app has no enabled binding of any kind, so
-  every user may open it unless the instance setting is off). A
-  binding problem never flips `Ready`.
+  reasons include the new `WaitingForGroups` and `AccessPending`); a new
+  `AccessInSync` (`Groups` only; reasons `GroupNotFound`, `AccessNarrowed`,
+  `AuthentikError` (the binding list or a binding write failed), `DriftDetected`
+  (under `ReadOnly`, the bindings differ from the spec: ReadOnly access drift is
+  reported here, not in `Drifted`, and never as `AccessNarrowed`) and `InSync`);
+  and a new `AccessOpen` (`True`, reason `NoBindings`, when the app has no
+  enabled binding of any kind, so every user may open it unless the instance
+  setting is off; `False`, reason `Bound`). A binding problem never flips
+  `Ready`, except `AccessPending` and `WaitingForGroups`. (`AuthentikError`
+  and `DriftDetected` added at build: plan Rulings 12 and 13.)
   User and policy bindings are untouched but listed in status and the adoption
   dry run as "also grants access".
 - `Unmanaged`: bindings never written; status lists them; with none, a
@@ -427,9 +518,14 @@ access:
   `Ready=False`, reason `WaitingForGroups`. Once created, the bindings are
   written in the same reconcile, right after the create; the seconds between
   the two are the only window, closed by the instance setting on 2026.5+.
-  Until the first listed binding exists on a newly created app, `Ready=False`
-  with reason `AccessPending` and a fast requeue (error backoff), plus a
-  Warning event if the binding write fails.
+  Until a listed group has a managed binding on an application this resource
+  created (new, recreated, or created earlier whose listed bindings were since
+  removed), and while the bindings of a just-created application cannot be read,
+  `Ready=False` with reason `AccessPending`. The requeue is one minute when no
+  write failed, and error backoff when the binding write failed, which also
+  emits a Warning event. (Changed at build: plan-gate pass 1 S2 disposition and
+  plan Ruling 11, AccessPending until the first listed binding exists on a new,
+  recreated or Created app; Ready is set once per reconcile, Task 8 fix round.)
 - Group names resolved on every reconcile (not pk-pinned).
 - Adoption dry run lists bindings to add and remove by group name.
 - Watches: an `AuthentikGroup` change re-enqueues applications listing its
@@ -439,6 +535,13 @@ access:
 - Docs recommend turning off the instance setting "Applications with no
   policies bound can be accessed by any user" (2026.5+); the operator never
   changes it.
+
+Implemented in:
+[`api/v1alpha1/authentikapplication_types.go`](../../api/v1alpha1/authentikapplication_types.go),
+[`application_access.go`](../../internal/controller/application_access.go)
+(binding plan, conditions, `AccessPending`) called from
+[`authentikapplication_controller.go`](../../internal/controller/authentikapplication_controller.go),
+and [`internal/authentik/binding.go`](../../internal/authentik/binding.go).
 
 ### 5.4a Authentik 2026.2.3 compatibility
 
@@ -464,6 +567,12 @@ access:
 - Owner's value: `kubernetes.io/metadata.name in (authentik)` in both this and
   the adoption flag.
 
+Implemented in
+[`identity_gate.go`](../../internal/controller/identity_gate.go) (the gate) and
+[`identity_status.go`](../../internal/controller/identity_status.go) (the status
+plumbing and claim re-check both new kinds share, see 5.1); the selector is
+parsed in [`cmd/main.go`](../../cmd/main.go).
+
 ### 5.6 JeffResc converter
 
 - `groupBindings: [g...]` -> `access: {type: Groups, groups: [g...]}`; no
@@ -471,10 +580,25 @@ access:
   bindings are unknown offline and the dry run lists them.
   `--accept-unmanaged-group-bindings` is removed.
 - JeffResc `AuthentikGroup` -> `AuthentikGroup` with `managementPolicy: Adopt`,
-  `deletionPolicy: Retain`, `name`, `isSuperuser` if set; `members` absent
+  `deletionPolicy: Retain`, `name`, `isSuperuser` if set, and `spec.dryRun` per
+  `--dry-run-adoption`, as for providers and applications; `members` absent
   (JeffResc never managed membership). JeffResc `attributes` convert to
-  `attributes` (owned per key, minus reserved keys, reported). `parents`, `roles` are
+  `attributes` (owned per key, minus reserved keys, reported); a key whose value
+  is an object or `null` is dropped and reported too, since a key is owned whole
+  and the CRD takes no such value. `parents`, `roles` are
   not converted (they stay live, unmanaged); the report lists them.
+- Converter behaviour added at build (plan-gate pass 3 S1 disposition; ledger
+  "Task 8: Ruling: converter badGroupBindings ..."):
+  - the CRD refuses `policyEngineMode: all` with several listed groups, so a
+    JeffResc `all` with more than one `groupBindings` entry is left unset in the
+    converted application and the report says the live value is kept and
+    reported as `AccessNarrowed`;
+  - duplicate `groupBindings` names are collapsed to one, with a note;
+  - a source with more than 64 `groupBindings` entries, or one empty or longer
+    than 255 characters, is refused (the limits of `spec.access.groups`, 5.4);
+  - the report's identity-gate hint names the namespaces of the converted
+    groups (for example `kubernetes.io/metadata.name in (media)`), not only the
+    owner's recommended `kubernetes.io/metadata.name in (authentik)` (5.5).
 - Golden fixtures updated; runbook gains a step for groups.
 - `spec.access` becomes required, so `config/samples`, the e2e manifests
   (`test/e2e`), the chart docs and `docs/migration-from-jeffresc.md` examples
@@ -495,7 +619,7 @@ access:
 
 - Unit: `adopt.Decide` table test (row per `scope.md` line); member diffing;
   attribute merging (owned keys set and removed, foreign keys kept, no write
-  when equal, reserved keys refused by CEL);
+  when equal, reserved keys refused by the reconciler, see 5.3a);
   binding diffing (enabled/negate/duplicates/ordering).
 - envtest + `fakeauthentik`: extend the fake with groups (incl. `add_user` /
   `remove_user`, attributes), users (incl. type, is_active), policy bindings,
@@ -527,6 +651,13 @@ together, once green on 2026.2.3 and 2026.8.5; release PR #33 stays held until
 then.
 
 
+0. Devcontainer tooling (added at build: owner run-contract decision "Fix
+   devcontainer first"; the git source build and pinned tools are the owner's
+   choice, and Renovate tracks them through a regex manager in
+   `.github/renovate.json`; ledger Task 1 rulings). `.devcontainer/post-install.sh`
+   builds git from source and installs pinned `task`, `helm`, `helm-unittest`,
+   `yq`, `golangci-lint`, `govulncheck`, `hadolint` and `yamllint`, so `task
+   test` and `make lint` run the CI contract inside the devcontainer.
 1. `internal/adopt` (decision function + helpers, unit tests).
 2. `fakeauthentik` extensions.
 3. `AuthentikGroup` API + controller.

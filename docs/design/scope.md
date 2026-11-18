@@ -542,12 +542,14 @@ section in the library.
   narrows access, and reported as `AccessInSync=False`, reason `AccessNarrowed`.
 - **Never zero bindings by the operator's hand.** Under `Groups` the operator
   neither creates the application nor takes over an existing one until at least
-  one listed group resolves (`Ready=False`, reason `WaitingForGroups`). A newly
-  created application has `Ready=False`, reason `AccessPending`, with a one-minute
-  requeue, until its first binding exists, and a Warning event if the binding
-  write fails.
+  one listed group resolves (`Ready=False`, reason `WaitingForGroups`). Any
+  application this resource created (new, recreated, or created earlier whose
+  listed bindings were since removed) has `Ready=False`, reason `AccessPending`,
+  with a one-minute requeue, for as long as none of its listed groups has a
+  managed binding, and a Warning event if the binding write fails.
 - Conditions: `Ready` keeps its meaning (the application itself); `AccessInSync`
   (`Groups` only; reasons `GroupNotFound`, `AccessNarrowed`, `AuthentikError`,
+  `DriftDetected` (under `ReadOnly`, where the bindings differ from the spec),
   `InSync`); `AccessOpen` (`True`, reason `NoBindings`, when the application has no
   enabled binding of any kind, so every user may open it unless the instance
   setting below is off). A binding problem never flips `Ready`, except
@@ -610,6 +612,9 @@ are unique in Authentik, so the target is the group named `spec.name` (default
 - **Members, authoritative when present.** Each username resolves to a user pk.
   An unknown username is reported (`MembersInSync=False`, reason
   `MemberNotFound`) while every other add and every removal still applies. A
+  write Authentik refuses (for example an `add_user` the token may not make) is
+  reported the same way, reason `AuthentikError`, and does not stop the other
+  writes: a person removed in Git still loses membership. A
   username whose pk differs from the one pinned in `status.members` is held out
   (`MemberIdentityChanged`) until the pin is cleared. A username is **held**
   (`MemberHeld`: neither added nor removed) only while an `AuthentikUser` with
@@ -632,7 +637,9 @@ are unique in Authentik, so the target is the group named `spec.name` (default
   token's user is a superuser the operator cannot know the list is complete: it
   then retains the group, removes the finalizer and emits the Warning
   `RetainedUnverifiable` (delete the group in Authentik after checking its
-  bindings). `Retain` deletes nothing and is never blocked.
+  bindings). `Retain` deletes nothing and is never blocked. A group the resource
+  created is deleted only if it still carries the resource's ownership proof
+  (otherwise a Warning `Retained` is emitted and the group stays).
 - A group this resource created that vanishes is recreated; an adopted one that
   vanishes reports `AdoptionTargetNotFound`.
 - Recheck: 5 minutes when synced, 1 minute on errors the user can fix.
@@ -682,7 +689,10 @@ reserved there as well, and reserved keys are refused at reconcile with
    (before `status.invitation.expires`) or `InvitationExpired`, with no automatic
    reissue: a normal enrolment passes through that state briefly, and the account
    search keeps running. Several invitations with the same name:
-   `InvitationAmbiguous`; the operator deletes none of them.
+   `InvitationAmbiguous`; the operator deletes none of them. The same reason
+   covers a single invitation of that name that does not carry this resource's
+   username, single use and ownership proof: the operator did not issue it, so it
+   writes no link for it and deletes nothing.
 5. **Reissue only by `attempt`.** Increase `spec.invitation.attempt` for a new
    link; the operator deletes any live invitation of the previous attempt and
    rewrites the Secret. Once the user is `Created`, `attempt` does nothing.
@@ -691,7 +701,15 @@ reserved there as well, and reserved keys are refused at reconcile with
    `AuthenticatorMissing` (reason `NoAuthenticator`) is `True` and does not
    affect `Ready`.
 7. Switching the policy away from `Create` or `AdoptOrCreate`, or deleting the
-   resource, while inviting deletes the live invitation.
+   resource, while inviting deletes the live invitation. A switch to `ReadOnly`
+   (or `Adopt`) therefore performs one Authentik write, the deletion of the
+   invitation, in the safe direction. `dryRun` under `AdoptOrCreate` mid-invitation
+   does not: the invitation is still live.
+8. A resource whose namespace the identity gate stops allowing while inviting has
+   its live invitation and its Secret deleted before it reports
+   `IdentityNotAllowed`; `status.invitation` stays, so the resource reports
+   `InvitationConsumed` once allowed again, and a new link needs a higher
+   `attempt`.
 
 **Owner's blueprint change (documented, not automated).** The enrolment flow's
 username prompt must be `text_read_only`, so the invitation's pinned username
@@ -719,9 +737,11 @@ Other behaviour:
 - **Deletion: an unset `deletionPolicy` resolves to `Retain` for every
   `AuthentikUser`, whatever its provenance.** This is a deliberate per-kind
   exception to `EffectiveDeletionPolicy` (re-enrolling a passkey is costly); an
-  explicit `Delete` still deletes, and `ReadOnly` never deletes. A retained
-  account stays active: set `isActive: false` first to offboard a person. The
-  operator never deactivates or deletes its own token's user.
+  explicit `Delete` still deletes, and `ReadOnly` never deletes. An account the
+  resource created is deleted only if it still carries the resource's ownership
+  proof (otherwise a Warning `Retained` is emitted and the account stays). A
+  retained account stays active: set `isActive: false` first to offboard a
+  person. The operator never deactivates or deletes its own token's user.
 - Writes are PATCH only (a PUT would clear the user's groups and roles); the
   operator never sends `groups` or `roles`. Group membership is managed from
   `AuthentikGroup.spec.members`.
