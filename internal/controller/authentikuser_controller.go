@@ -146,10 +146,18 @@ func (r *AuthentikUserReconciler) sync(ctx context.Context, u *authentikiov1alph
 // nothing; a spec invalid on its face is refused before any call to Authentik.
 // An invitation the policy no longer allows is withdrawn before the adoption
 // gate: the live sign-up link must go whether or not the resource may adopt.
+// The one exception to "nothing is read or written" for a denied namespace is
+// that very withdrawal: an invitation the resource holds is revoked (see
+// revokeGatedOutInvitation).
 func (r *AuthentikUserReconciler) syncUser(ctx context.Context, u *authentikiov1alpha1.AuthentikUser,
 	persist func() error) (*api.User, bool, error) {
 	if err := (identityGate{r.APIReader, r.IdentityNamespaceSelector}).check(ctx, u.Namespace,
 		u.Spec.AuthentikRef); err != nil {
+		if conditionReason(err, "") == reasonIdentityNotAllowed {
+			if rerr := r.revokeGatedOutInvitation(ctx, u); rerr != nil {
+				return nil, false, rerr
+			}
+		}
 		return nil, false, err
 	}
 	if err := r.withdrawInvitation(ctx, u); err != nil {

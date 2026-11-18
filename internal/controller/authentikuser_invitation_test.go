@@ -373,6 +373,29 @@ var _ = Describe("AuthentikUser invitation lifecycle", func() {
 		})
 	})
 
+	Context("identity gate", func() {
+		It("removes the invitation and its Secret when the namespace is gated out while inviting", func() {
+			u := newUser(usernameDave, policyAdoptOrCreate, nil)
+			mustReconcile(u)
+			Expect(fake.Invitations()).To(HaveLen(1))
+			Expect(secretGone("dave-invitation")).To(BeFalse())
+
+			users.IdentityNamespaceSelector = labels.Nothing()
+			res, err := reconcileUser(u)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(userErrorRecheck))
+			Expect(ready(u).Reason).To(Equal(reasonIdentityNotAllowed))
+			Expect(fake.Invitations()).To(BeEmpty())
+			Expect(secretGone("dave-invitation")).To(BeTrue())
+			Expect(get(u).Status.Invitation).NotTo(BeNil(), "the evidence stays: nothing may adopt an account of that name")
+
+			users.IdentityNamespaceSelector = labels.Everything()
+			mustReconcile(u)
+			Expect(ready(u).Reason).To(Equal(reasonInvitationConsumed), "no link is issued again without a new attempt")
+			Expect(fake.Invitations()).To(BeEmpty())
+		})
+	})
+
 	Context("deletion while inviting", func() {
 		It("deletes the live invitation first and keeps the finalizer while that fails", func() {
 			u := newUser(usernameDave, policyCreate, nil)

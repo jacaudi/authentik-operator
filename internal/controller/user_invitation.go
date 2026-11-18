@@ -358,6 +358,29 @@ func (r *AuthentikUserReconciler) withdrawInvitation(ctx context.Context,
 	return nil
 }
 
+// revokeGatedOutInvitation revokes the invitation of a resource whose namespace
+// the identity gate no longer allows. The link is the operator's own credential
+// and must not outlive the authority that issued it, as it must not outlive the
+// resource (see deleteLiveInvitation). status.invitation is kept, as for a
+// Conflict: it is the evidence that stops AdoptOrCreate adopting an account of
+// that name, and it makes the resource report InvitationConsumed, not issue a
+// link again, once the namespace is allowed.
+//
+// ponytail: this repeats, at the cost of one list and one Secret read, on every
+// recheck while the namespace stays gated out; record that it was done in
+// status if that cost matters.
+func (r *AuthentikUserReconciler) revokeGatedOutInvitation(ctx context.Context,
+	u *authentikiov1alpha1.AuthentikUser) error {
+	if u.Status.Invitation == nil {
+		return nil
+	}
+	resolved, err := resolve(ctx, r.Connections, u.Namespace, u.Spec.AuthentikRef)
+	if err != nil {
+		return err
+	}
+	return r.revokeInvitation(ctx, resolved.Client, u)
+}
+
 // deleteLiveInvitation deletes the invitation of a resource being deleted, so
 // no usable sign-up link outlives it (the Secret goes with its owner
 // reference). A connection whose objects are already gone cannot be reached:
