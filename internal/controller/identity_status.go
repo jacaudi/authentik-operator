@@ -17,9 +17,13 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"errors"
 
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
@@ -45,4 +49,46 @@ func classifyFailure(err error) (reason string, result ctrl.Result, retErr error
 		return reasonInvalidSpec, retryLater, nil, true
 	}
 	return reasonAuthentikError, ctrl.Result{}, err, false
+}
+
+// patchStatus writes obj's status as a merge patch against base, which is obj
+// as it was when its status was last persisted. It writes nothing when the two
+// agree, and treats an obj deleted meanwhile as written: there is no status
+// left to record.
+func patchStatus(ctx context.Context, w client.StatusWriter, obj, base client.Object) error {
+	if equality.Semantic.DeepEqual(base, obj) {
+		return nil
+	}
+	if err := w.Patch(ctx, obj, client.MergeFrom(base)); !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// recheckClaim is the last step of taking a claim on an Authentik object, and
+// the routine check of a claim already held: persist records the claim in
+// status (nil when it is already recorded), then holders lists the other
+// resources holding the same object, and when one outranks self (see
+// claim.outranks) release forgets the claim and the result is a Conflict
+// naming it. subject names the object in that message. A resource that
+// persists, re-checks through the API reader and yields before it writes to
+// Authentik leaves two racing claimants exactly one winner.
+func recheckClaim(persist func() error, self claim, holders func() ([]claim, error), subject string,
+	release func()) error {
+	if persist != nil {
+		if err := persist(); err != nil {
+			return err
+		}
+	}
+	others, err := holders()
+	if err != nil {
+		return err
+	}
+	winner, lost := outrankedBy(self, others)
+	if !lost {
+		return nil
+	}
+	release()
+	return condErrf(reasonConflict, "%s is also claimed by %s, which takes precedence; this resource released it",
+		subject, winner)
 }

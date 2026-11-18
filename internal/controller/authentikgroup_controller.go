@@ -25,8 +25,6 @@ import (
 
 	api "goauthentik.io/api/v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -264,7 +262,7 @@ func (r *AuthentikGroupReconciler) act(ctx context.Context, c *authentik.Client,
 	action := adopt.Decide(work.facts)
 	switch action {
 	case adopt.ActionUseTracked:
-		if err := r.yieldIfOutranked(ctx, r.Client, true, g); err != nil {
+		if err := r.yieldIfOutranked(ctx, r.Client, true, g, nil); err != nil {
 			return nil, err
 		}
 		return r.syncFields(ctx, c, g, work.tracked, work.want)
@@ -385,25 +383,18 @@ func (r *AuthentikGroupReconciler) claimants(ctx context.Context, rd client.Read
 	return holders(ctx, r.Connections, groupClaim(g), candidates)
 }
 
-// yieldIfOutranked releases this resource's claim and reports a Conflict when
-// another resource holding the same group outranks it (see claim.outranks), so
-// two resources that passed the pre-adoption check together are settled, and a
-// Created resource keeps the group over an adopter. rd is the reader the
-// holders are listed with.
+// yieldIfOutranked persists the claim (persist, nil when it is already recorded),
+// then releases it and reports a Conflict when another resource holding the
+// same group outranks it (see recheckClaim), so two resources that passed the
+// pre-adoption check together are settled, and a Created resource keeps the
+// group over an adopter. rd is the reader the holders are listed with.
 func (r *AuthentikGroupReconciler) yieldIfOutranked(ctx context.Context, rd client.Reader, cached bool,
-	g *authentikiov1alpha1.AuthentikGroup) error {
-	others, err := r.claimants(ctx, rd, cached, g, g.Status.GroupPK)
-	if err != nil {
-		return err
-	}
-	winner, lost := outrankedBy(groupClaim(g), others)
-	if !lost {
-		return nil
-	}
-	name := g.Status.Name
-	g.Status.Provenance, g.Status.GroupPK, g.Status.Name, g.Status.ManagedAttributes = "", "", "", nil
-	return condErrf(reasonConflict, "group %q is also claimed by %s, which takes precedence; "+
-		"this resource released it", name, winner)
+	g *authentikiov1alpha1.AuthentikGroup, persist func() error) error {
+	return recheckClaim(persist, groupClaim(g), func() ([]claim, error) {
+		return r.claimants(ctx, rd, cached, g, g.Status.GroupPK)
+	}, fmt.Sprintf("group %q", g.Status.Name), func() {
+		g.Status.Provenance, g.Status.GroupPK, g.Status.Name, g.Status.ManagedAttributes = "", "", "", nil
+	})
 }
 
 // adoptGroup takes over target (or, under ReadOnly, starts observing it): any
@@ -415,13 +406,10 @@ func (r *AuthentikGroupReconciler) adoptGroup(ctx context.Context, g *authentiki
 		return err
 	}
 	recordGroup(g, authentikiov1alpha1.ProvenanceAdopted, target)
-	if err := persist(); err != nil {
-		return err
-	}
 	// Re-check after the claim is persisted, reading the API rather than the
 	// informer cache, which need not hold another resource's just-written
 	// claim; no Authentik write has happened yet.
-	if err := r.yieldIfOutranked(ctx, r.APIReader, false, g); err != nil {
+	if err := r.yieldIfOutranked(ctx, r.APIReader, false, g, persist); err != nil {
 		return err
 	}
 	if readOnly(g.Spec.ManagementPolicy) {
@@ -700,16 +688,9 @@ func (r *AuthentikGroupReconciler) event(g *authentikiov1alpha1.AuthentikGroup,
 
 func (r *AuthentikGroupReconciler) patchStatus(ctx context.Context,
 	g *authentikiov1alpha1.AuthentikGroup, orig *authentikiov1alpha1.AuthentikGroupStatus) error {
-	if equality.Semantic.DeepEqual(orig, &g.Status) {
-		return nil
-	}
 	base := g.DeepCopy()
 	base.Status = *orig
-	err := r.Status().Patch(ctx, g, client.MergeFrom(base))
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
+	return patchStatus(ctx, r.Status(), g, base)
 }
 
 // groupPKIndex indexes groups by the pk they track.

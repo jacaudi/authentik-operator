@@ -18,10 +18,12 @@ package controller
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
 
@@ -62,4 +64,67 @@ func TestClassifyFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecheckClaim(t *testing.T) {
+	self := claim{namespace: "n", name: "self", uid: "m", provenance: authentikiov1alpha1.ProvenanceAdopted}
+	owner := claim{namespace: "n", name: "owner", uid: "y", provenance: authentikiov1alpha1.ProvenanceCreated}
+	boom := errors.New("boom")
+
+	t.Run("persists before it lists the holders, and keeps the claim when nobody outranks it", func(t *testing.T) {
+		var order []string
+		persist := func() error { order = append(order, "persist"); return nil }
+		holders := func() ([]claim, error) { order = append(order, "holders"); return nil, nil }
+		released := false
+		err := recheckClaim(persist, self, holders, `group "x"`, func() { released = true })
+		if err != nil || released {
+			t.Fatalf("err = %v, released = %t; want the claim kept", err, released)
+		}
+		if got := strings.Join(order, ","); got != "persist,holders" {
+			t.Errorf("order = %s, want persist,holders", got)
+		}
+	})
+
+	t.Run("a nil persist only re-checks", func(t *testing.T) {
+		err := recheckClaim(nil, self, func() ([]claim, error) { return nil, nil }, `group "x"`, func() {})
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+	})
+
+	t.Run("an outranking holder releases the claim and reports a Conflict naming it", func(t *testing.T) {
+		released := false
+		err := recheckClaim(nil, self, func() ([]claim, error) { return []claim{owner}, nil }, `group "x"`,
+			func() { released = true })
+		if !released {
+			t.Error("the claim was not released")
+		}
+		reason := conditionReason(err, "")
+		if reason != reasonConflict {
+			t.Fatalf("reason = %q, want %q (err %v)", reason, reasonConflict, err)
+		}
+		for _, want := range []string{`group "x"`, "n/owner", "takes precedence"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("message %q lacks %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("a failed persist stops before the holders are listed", func(t *testing.T) {
+		listed := false
+		err := recheckClaim(func() error { return boom }, self,
+			func() ([]claim, error) { listed = true; return nil, nil }, `group "x"`, func() {})
+		if !errors.Is(err, boom) || listed {
+			t.Errorf("err = %v, listed = %t; want boom and no listing", err, listed)
+		}
+	})
+
+	t.Run("a failed listing is returned and keeps the claim", func(t *testing.T) {
+		released := false
+		err := recheckClaim(nil, self, func() ([]claim, error) { return nil, boom }, `group "x"`,
+			func() { released = true })
+		if !errors.Is(err, boom) || released {
+			t.Errorf("err = %v, released = %t; want boom and the claim kept", err, released)
+		}
+	})
 }
