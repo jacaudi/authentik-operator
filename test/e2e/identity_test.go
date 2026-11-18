@@ -21,6 +21,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,6 +138,11 @@ var _ = Describe("groups, users and access against a real Authentik", Ordered, f
 		// BeforeSuite creates only the operator namespace and appsNS; the
 		// migration scenario creates and deletes e2e-migrated inside its own specs.
 		Expect(ensureNamespace(ctx, migratedNS, nil)).To(Succeed())
+		// Top-level containers run in random order, and the custom-CA spec leaves the
+		// operator on the TLS connection, whose browser-facing URL is not one this
+		// test dials: the invitation link would carry it. Put the default
+		// connection back (a no-op when the operator already has it).
+		Expect(installOperator(ctx, authentikURL)).To(Succeed())
 		Expect(ak.EnsureEnrolmentFlow(ctx, idFlow)).To(Succeed())
 		var err error
 		memberPK, err = ak.CreateUserWithPassword(ctx, idMember, idPassword)
@@ -175,6 +181,12 @@ var _ = Describe("groups, users and access against a real Authentik", Ordered, f
 		By("reading the sign-up link from the invitation Secret")
 		data := eventuallySecret(ctx, idPerson+"-invitation")
 		Expect(data).To(HaveKey("url"))
+		// The pk is the sign-up token: take it now (the Secret goes once the person is
+		// recognised) and keep it out of every message.
+		link, err := url.Parse(data["url"])
+		Expect(err).NotTo(HaveOccurred())
+		invitationPK := link.Query().Get("itoken")
+		Expect(invitationPK).NotTo(BeEmpty())
 
 		By("enrolling through the link, as the person's browser would")
 		Expect(aktest.Enrol(ctx, clusterTransport(), data["url"])).To(Succeed())
@@ -194,6 +206,12 @@ var _ = Describe("groups, users and access against a real Authentik", Ordered, f
 				"the invitation Secret is still there")
 		}).WithContext(ctx).WithTimeout(waitTimeout).WithPolling(5 * time.Second).Should(Succeed())
 		personPK = int(got.Status.UserPK)
+
+		By("the sign-up link being dead in Authentik itself: the invitation is single use")
+		// Asserted on the server, not on the operator's bookkeeping. The error is not
+		// printed: its text names the invitation pk.
+		err = ak.Do(ctx, "GET", "/api/v3/stages/invitation/invitations/"+invitationPK+"/", nil, nil)
+		Expect(aktest.IsNotFound(err)).To(BeTrue(), "the invitation can still be used after the account was created")
 
 		By("the account carrying the ownership proof the invitation's fixed data wrote")
 		var acct aktest.Obj

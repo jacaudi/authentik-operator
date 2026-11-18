@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -30,7 +31,8 @@ const (
 	enrolPromptChallenge = `{"component":"ak-stage-prompt","fields":[{"field_key":"username","initial_value":"dave"}]}`
 	enrolDoneChallenge   = `{"component":"xak-flow-redirect","to":"/"}`
 	enrolExecutorPath    = "/api/v3/flows/executor/enrol/"
-	bindingCall          = "POST /api/v3/flows/bindings/"
+	bindingsPath         = "/api/v3/flows/bindings/"
+	bindingCall          = "POST " + bindingsPath
 )
 
 // fakeEnrolment serves the flow executor the way Authentik does: a GET answers
@@ -104,12 +106,14 @@ func TestEnrolRejects(t *testing.T) {
 }
 
 // recorder answers every POST with a pk named after the endpoint and records
-// the calls, so the creation order and the bindings' wiring can be asserted.
+// the calls and the bodies it was sent, so the creation order, the prompt
+// stage's fields and each of the four bindings can be asserted.
 type recorder struct {
-	mu    sync.Mutex
-	exist bool
-	calls []string
-	posts map[string]Obj
+	mu       sync.Mutex
+	exist    bool
+	calls    []string
+	posts    map[string]Obj
+	bindings []Obj // the body of every POST to the flow bindings, in order
 }
 
 func (rc *recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +134,9 @@ func (rc *recorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rc.posts = map[string]Obj{}
 	}
 	rc.posts[r.URL.Path] = in
+	if r.URL.Path == bindingsPath {
+		rc.bindings = append(rc.bindings, in)
+	}
 	pk := strings.ReplaceAll(strings.Trim(r.URL.Path, "/"), "/", "-")
 	_, _ = w.Write([]byte(`{"pk":"` + pk + `"}`))
 }
@@ -158,6 +165,18 @@ func TestEnsureEnrolmentFlowCreatesTheStagesInOrderAndBindsFour(t *testing.T) {
 	if got := rc.posts["/api/v3/stages/prompt/stages/"]["fields"]; !slices.Equal(
 		toStrings(got), []string{"api-v3-stages-prompt-prompts"}) {
 		t.Errorf("prompt stage fields = %v, want the prompt's pk", got)
+	}
+	bind := func(stage string, order float64) Obj {
+		return Obj{fTarget: "api-v3-flows-instances", "stage": stage, fOrder: order}
+	}
+	wantBindings := []Obj{
+		bind("api-v3-stages-invitation-stages", 5),
+		bind("api-v3-stages-prompt-stages", 10),
+		bind("api-v3-stages-user_write", 20),
+		bind("api-v3-stages-user_login", 100),
+	}
+	if !reflect.DeepEqual(rc.bindings, wantBindings) {
+		t.Errorf("bindings\n got %v\nwant %v", rc.bindings, wantBindings)
 	}
 }
 
