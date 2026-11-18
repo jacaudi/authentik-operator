@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ const (
 	metaNamespaceLabel = "kubernetes.io/metadata.name"
 	maxSlugLen         = 50
 )
+
+// slugPattern is the pattern of AuthentikApplication spec.slug in the CRD
+// (api/v1alpha1/authentikapplication_types.go).
+var slugPattern = regexp.MustCompile(`^[-a-zA-Z0-9_]+$`)
 
 // templateGroup is one distinct (template, labels, annotations) tuple.
 type templateGroup struct {
@@ -156,6 +161,15 @@ func validateSource(a source, ns, slug string) error {
 	if len(slug) > maxSlugLen {
 		errs = append(errs, fmt.Sprintf(
 			"slug %q is longer than the %d characters this operator allows", slug, maxSlugLen))
+	}
+	// Output file names are built from both, so each must be a plain name.
+	if !slugPattern.MatchString(slug) {
+		errs = append(errs, fmt.Sprintf("slug %q does not match %s, the pattern this operator requires of spec.slug",
+			slug, slugPattern))
+	}
+	if msgs := validation.IsDNS1123Subdomain(a.name); len(msgs) > 0 {
+		errs = append(errs, fmt.Sprintf("metadata.name %q is not a valid Kubernetes name: %s", a.name,
+			strings.Join(msgs, "; ")))
 	}
 	if l := a.spec.MetaLaunchURL; l != "" && !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
 		errs = append(errs, fmt.Sprintf("metaLaunchUrl %q is not http(s), which this operator requires; "+
