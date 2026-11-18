@@ -401,9 +401,12 @@ access:
   operator adds what it can and **removes nothing** in that reconcile;
   `AccessInSync=False`, reason `GroupNotFound`. A binding for a renamed group
   therefore survives until the spec is fixed.
-- Group bindings with `expiring: true` (2026.5+ temporary grants) and
-  **negated** group bindings (which exclude a group; removing one would widen
-  access) are left alone and reported, like user and policy bindings.
+- Group bindings with `expiring: true` (2026.5+ temporary grants) are left
+  alone and reported, like user and policy bindings. **Negated** group
+  bindings follow the live `policyEngineMode`: under `any` a negated binding
+  on G admits every user outside G (it widens access), so it is removed;
+  under `all` it excludes G (removing it would widen access), so it is left
+  alone and reported. (Corrected at plan time.)
   `policyEngineMode` follows #18: spec wins, unset keeps live, `any` on create;
   CEL rejects a spec `all` with more than one group. A live `all` with more
   than one listed group (adopted) is left alone, since it only narrows access,
