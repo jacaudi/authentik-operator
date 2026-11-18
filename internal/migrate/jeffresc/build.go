@@ -78,7 +78,9 @@ type builder struct {
 	reports       []objectReport
 	templateNames map[string]string
 	namespaces    []string // namespaces of the emitted objects, for the adoption-gate hint
-	groups        bool     // an AuthentikGroup was emitted: the report names the identity-gate selector
+	// groupNamespaces are the namespaces of the emitted groups only, for the identity-gate hint: the identity
+	// selector grants power over users and superuser groups, so it must not name an application's namespace.
+	groupNamespaces []string
 }
 
 func (b *builder) addFile(name string, data []byte) error {
@@ -439,18 +441,11 @@ func (b *builder) addGroup(a source) error {
 	}
 	rep.files = []string{file}
 	b.reports = append(b.reports, rep)
-	b.groups = true
+	if !slices.Contains(b.groupNamespaces, ns) {
+		b.groupNamespaces = append(b.groupNamespaces, ns)
+	}
 	return nil
 }
-
-// Attribute keys this operator never owns on a group (the same set as
-// reservedAttributes in internal/controller/attributes.go, which refuses them
-// at reconcile): Authentik's own prefix, the ownership proof and the user's
-// settings.
-const (
-	reservedAttributePrefix = "goauthentik.io/"
-	reservedSettingsKey     = "settings"
-)
 
 // groupAttributes keeps the top-level attributes this operator can own per
 // key: every key except the reserved ones and those holding an object or null,
@@ -461,8 +456,7 @@ func groupAttributes(in map[string]json.RawMessage, rep *objectReport) map[strin
 	for _, key := range slices.Sorted(maps.Keys(in)) {
 		raw := bytes.TrimSpace(in[key])
 		switch {
-		case strings.HasPrefix(key, reservedAttributePrefix) || key == authentik.OwnerAttribute ||
-			key == reservedSettingsKey:
+		case authentik.ReservedAttribute(key):
 			rep.notes = append(rep.notes, fmt.Sprintf(
 				"attribute %q is reserved for Authentik or this operator; left in Authentik, unmanaged", key))
 		case bytes.HasPrefix(raw, []byte("{")) || bytes.Equal(raw, []byte("null")):

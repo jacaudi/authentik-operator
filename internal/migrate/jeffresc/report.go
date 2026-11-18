@@ -58,19 +58,7 @@ func usesClientSecret(tmpl string) bool { return strings.Contains(tmpl, ".Client
 func (b *builder) report(skipped []string) string {
 	var sb strings.Builder
 	sb.WriteString("convert-jeffresc report\n=======================\n\n")
-	sb.WriteString("Every converted object adopts the provider or application JeffResc created\n")
-	sb.WriteString("(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc\n")
-	sb.WriteString("left unset (it applied its own default) is left unset here, so the live value stays.\n")
-	sb.WriteString("The one exception is grantTypes, which is always written: copied from JeffResc's\n")
-	sb.WriteString("spec.provider.grantTypes (v0.2.7+) when it lists any, else [authorization_code, refresh_token],\n")
-	sb.WriteString("JeffResc's own default (it treats an empty list as the pair). Authentik 2026.5+ rejects a login\n")
-	sb.WriteString("whose grant type is not listed, and JeffResc v0.2.6 and older never sent the field, so providers\n")
-	sb.WriteString("they created on 2026.5+ have none and reject every login (JeffResc issue 279). Providers that\n")
-	sb.WriteString("existed before the 2026.5 upgrade were back-filled with all 7 grant types (Authentik migration\n")
-	sb.WriteString("0032): the pair narrows those to 2, as JeffResc v0.2.7+ does itself, and drops implicit, hybrid,\n")
-	sb.WriteString("password, client_credentials and device_code. The dry run shows the change per provider.\n")
-	sb.WriteString("Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists\n")
-	sb.WriteString("`field: old -> new`) and edit the spec until the only listed changes are ones you intend.\n")
+	b.writeIntro(&sb)
 	for _, r := range b.reports {
 		fmt.Fprintf(&sb, "\n%s\n", r.ref)
 		fmt.Fprintf(&sb, "  files: %s\n", strings.Join(r.files, ", "))
@@ -99,19 +87,65 @@ func (b *builder) report(skipped []string) string {
 		namespaces := strings.Join(slices.Sorted(slices.Values(b.namespaces)), ", ")
 		allowed := fmt.Sprintf("  %s in (%s)\n", metaNamespaceLabel, namespaces)
 		sb.WriteString(allowed)
-		if b.groups {
+		if len(b.groupNamespaces) > 0 {
+			// Only the groups' namespaces: an identity selector grants power over users and superuser groups.
+			groupNamespaces := strings.Join(slices.Sorted(slices.Values(b.groupNamespaces)), ", ")
 			sb.WriteString("\nIdentity gate: groups on the default connection are refused (reason IdentityNotAllowed)\n")
 			sb.WriteString("unless the operator admin allows their namespaces with\n")
 			sb.WriteString("--default-connection-identity-namespace-selector, or the Helm value\n")
 			sb.WriteString("identity.defaultConnectionNamespaceSelector, set to:\n")
-			sb.WriteString(allowed)
+			fmt.Fprintf(&sb, "  %s in (%s)\n", metaNamespaceLabel, groupNamespaces)
 		}
+	}
+	b.writeAdoptMode(&sb)
+	return sb.String()
+}
+
+// onlyGroups reports that groups were converted and no provider or application.
+func (b *builder) onlyGroups() bool { return len(b.groupNamespaces) > 0 && len(b.providers) == 0 }
+
+// writeIntro says how the converted objects adopt.
+func (b *builder) writeIntro(sb *strings.Builder) {
+	if b.onlyGroups() {
+		sb.WriteString("Every converted object adopts the group JeffResc created (managementPolicy: Adopt).\n")
+		sb.WriteString("Adoption writes only the fields in the spec: a field JeffResc left unset is left unset\n")
+		sb.WriteString("here, so the live value stays.\n")
+	} else {
+		sb.WriteString("Every converted object adopts the provider or application JeffResc created\n")
+		sb.WriteString("(managementPolicy: Adopt). Adoption writes only the fields in the spec: a field JeffResc\n")
+		sb.WriteString("left unset (it applied its own default) is left unset here, so the live value stays.\n")
+		sb.WriteString("The one exception is grantTypes, which is always written: copied from JeffResc's\n")
+		sb.WriteString("spec.provider.grantTypes (v0.2.7+) when it lists any, else [authorization_code, refresh_token],\n")
+		sb.WriteString("JeffResc's own default (it treats an empty list as the pair). Authentik 2026.5+ rejects a login\n")
+		sb.WriteString("whose grant type is not listed, and JeffResc v0.2.6 and older never sent the field, so providers\n")
+		sb.WriteString("they created on 2026.5+ have none and reject every login (JeffResc issue 279). Providers that\n")
+		sb.WriteString("existed before the 2026.5 upgrade were back-filled with all 7 grant types (Authentik migration\n")
+		sb.WriteString("0032): the pair narrows those to 2, as JeffResc v0.2.7+ does itself, and drops implicit, hybrid,\n")
+		sb.WriteString("password, client_credentials and device_code. The dry run shows the change per provider.\n")
+	}
+	sb.WriteString("Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists\n")
+	sb.WriteString("`field: old -> new`) and edit the spec until the only listed changes are ones you intend.\n")
+	if len(b.groupNamespaces) > 0 && !b.onlyGroups() {
+		sb.WriteString("Converted groups adopt the group JeffResc created in the same way; their members are never\n")
+		sb.WriteString("written (see each group's notes).\n")
+	}
+}
+
+// writeAdoptMode ends the report with how to leave adopt mode.
+func (b *builder) writeAdoptMode(sb *strings.Builder) {
+	if b.onlyGroups() {
+		sb.WriteString("\nAdopt mode: a missing group is reported as AdoptionTargetNotFound and nothing is created.\n")
+		sb.WriteString("Once every group is migrated, leave adopt mode: remove managementPolicy and dryRun from\n")
+		sb.WriteString("every converted group (final runbook step in docs/migration-from-jeffresc.md).\n")
+		return
 	}
 	sb.WriteString("\nAdopt mode: a missing match target is reported as AdoptionTargetNotFound and nothing is\n")
 	sb.WriteString("created. Once every app is migrated and SSO login is verified, leave adopt mode: remove\n")
 	sb.WriteString("managementPolicy, match and dryRun from every converted provider and application (final\n")
 	sb.WriteString("runbook step in docs/migration-from-jeffresc.md).\n")
-	return sb.String()
+	if len(b.groupNamespaces) > 0 {
+		sb.WriteString("Converted groups have no match: remove managementPolicy and dryRun from them as well.\n")
+	}
 }
 
 func writeList(sb *strings.Builder, items []string) {

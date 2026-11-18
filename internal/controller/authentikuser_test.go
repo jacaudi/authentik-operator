@@ -250,7 +250,7 @@ var _ = Describe("AuthentikUser", func() {
 	})
 
 	It("reports reserved attribute keys (given_name, family_name, settings) as InvalidSpec and reads nothing", func() {
-		for _, key := range []string{attrGivenName, attrFamilyName, reservedSettingsKey} {
+		for _, key := range []string{attrGivenName, attrFamilyName, authentik.ReservedSettingsKey} {
 			u := newUser("reserved-"+strings.ReplaceAll(key, "_", "-"), policyAdopt,
 				withAttrs(map[string]string{key: rawX, attrRole: rawAdmin}))
 			mustReconcile(u)

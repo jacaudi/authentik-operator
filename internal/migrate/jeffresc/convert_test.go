@@ -767,3 +767,74 @@ func TestConvertGroupReportNamesIdentitySelector(t *testing.T) {
 		t.Errorf("an application-only report names the identity selector:\n%s", appOnly.Report)
 	}
 }
+
+// The identity selector grants power over users and superuser groups, so it
+// names only the namespaces of the converted groups; the adoption selector
+// still names every converted namespace.
+func TestConvertGroupIdentitySelectorListsOnlyGroupNamespaces(t *testing.T) {
+	groups := strings.Replace(mediaUsers, "namespace: media", "namespace: authentik", 1)
+	in := app("a", "team-a") + "---\n" + groups
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(res.Report, "Identity gate")
+	if i < 0 {
+		t.Fatalf("report lacks the identity gate paragraph:\n%s", res.Report)
+	}
+	adoption, identity := res.Report[:i], res.Report[i:]
+	if !strings.Contains(adoption, "kubernetes.io/metadata.name in (authentik, team-a)") {
+		t.Errorf("the adoption line must list every namespace:\n%s", adoption)
+	}
+	if !strings.Contains(identity, "in (authentik)\n") || strings.Contains(identity, "team-a") {
+		t.Errorf("the identity line must list only the group namespace:\n%s", identity)
+	}
+}
+
+func TestConvertGroupAttributesNotOwnedAreReported(t *testing.T) {
+	in := strings.Replace(mediaUsers, "    goauthentik.io/x: y\n",
+		"    empty: null\n    tilde: ~\n    authentik_operator: x\n    list: [a, 1]\n    flag: false\n", 1)
+	obj, res := groupOf(t, in, "authentikgroup-media-users.yaml", Options{})
+	if keys := slices.Sorted(maps.Keys(obj.Spec.Attributes)); !slices.Equal(keys, []string{"flag", "list", "role"}) {
+		t.Errorf("kept attributes = %v, want flag, list and role", keys)
+	}
+	const (
+		object   = "has an object or null value, which this operator cannot own per key; left in Authentik, unmanaged"
+		reserved = "is reserved for Authentik or this operator; left in Authentik, unmanaged"
+	)
+	for _, want := range []string{
+		`attribute "empty" ` + object, `attribute "tilde" ` + object, `attribute "nested" ` + object,
+		`attribute "authentik_operator" ` + reserved, `attribute "settings" ` + reserved,
+	} {
+		if !strings.Contains(res.Report, want) {
+			t.Errorf("report lacks %q:\n%s", want, res.Report)
+		}
+	}
+}
+
+// A report of groups alone must not talk about providers and applications.
+func TestConvertGroupReportWording(t *testing.T) {
+	_, res := groupOf(t, mediaUsers, "authentikgroup-media-users.yaml", Options{})
+	for _, bad := range []string{"provider or application", "grantTypes", "every converted provider and application"} {
+		if strings.Contains(res.Report, bad) {
+			t.Errorf("a group-only report mentions %q:\n%s", bad, res.Report)
+		}
+	}
+	for _, want := range []string{"adopts the group JeffResc created", "every converted group"} {
+		if !strings.Contains(res.Report, want) {
+			t.Errorf("a group-only report lacks %q:\n%s", want, res.Report)
+		}
+	}
+	mixed, err := Convert([]Input{{Source: testSource, Data: []byte(app("a", "ns") + "---\n" + mediaUsers)}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"adopts the provider or application JeffResc created", "Converted groups adopt the group",
+		"Converted groups have no match",
+	} {
+		if !strings.Contains(mixed.Report, want) {
+			t.Errorf("a mixed report lacks %q:\n%s", want, mixed.Report)
+		}
+	}
+}

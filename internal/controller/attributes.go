@@ -97,26 +97,17 @@ func mergeAttributes(live, want map[string]any, owned []string) attributeMerge {
 	return m
 }
 
-// Attribute keys the operator or Authentik owns. A CEL rule cannot refuse them
-// at admission (the apiserver cannot type a map of untyped values), so
-// reservedAttributes does it in the reconciler.
-const (
-	reservedAttributePrefix = "goauthentik.io/"
-	reservedOwnerKey        = authentik.OwnerAttribute
-	reservedSettingsKey     = "settings"
-)
-
 // reservedAttributes refuses a spec that lists a key the operator must not
-// own: one starting with goauthentik.io/ (Authentik's own), the ownership
-// proof key authentik_operator, and settings (the user's own settings), plus
-// any extra keys the kind reserves (a user also reserves given_name and
-// family_name). The error names every offending key, sorted. It reads nothing
-// and runs before any call to Authentik.
+// own (authentik.ReservedAttribute: Authentik's goauthentik.io/ keys, the
+// ownership proof key authentik_operator, and settings), plus any extra keys
+// the kind reserves (a user also reserves given_name and family_name). A CEL
+// rule cannot refuse them at admission (the apiserver cannot type a map of
+// untyped values), so the reconciler does. The error names every offending
+// key, sorted. It reads nothing and runs before any call to Authentik.
 func reservedAttributes(spec map[string]apiextensionsv1.JSON, extra ...string) error {
 	var bad []string
 	for _, key := range slices.Sorted(maps.Keys(spec)) {
-		if strings.HasPrefix(key, reservedAttributePrefix) || key == reservedOwnerKey ||
-			key == reservedSettingsKey || slices.Contains(extra, key) {
+		if authentik.ReservedAttribute(key) || slices.Contains(extra, key) {
 			bad = append(bad, strconv.Quote(key))
 		}
 	}
@@ -124,6 +115,6 @@ func reservedAttributes(spec map[string]apiextensionsv1.JSON, extra ...string) e
 		return nil
 	}
 	return fmt.Errorf("spec.attributes lists reserved key(s) %s: keys starting with %s, and %s and %s, belong to "+
-		"Authentik or the operator; remove them", strings.Join(bad, ", "), reservedAttributePrefix,
-		reservedOwnerKey, reservedSettingsKey)
+		"Authentik or the operator; remove them", strings.Join(bad, ", "), authentik.ReservedAttributePrefix,
+		authentik.OwnerAttribute, authentik.ReservedSettingsKey)
 }

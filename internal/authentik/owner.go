@@ -16,6 +16,8 @@ limitations under the License.
 
 package authentik
 
+import "strings"
+
 // Ownership proof. The operator marks every group and user it created, and
 // every user it adopted through an invitation, with its owner's metadata.uid
 // under this attribute key, and trusts no object without the proof. The
@@ -44,4 +46,22 @@ func HasOwnerProof(attrs map[string]any, uid string) bool {
 	}
 	got, ok := proof[OwnerUIDKey].(string)
 	return ok && got == uid
+}
+
+// Attribute keys on a group or user that the operator never owns. This is the
+// single source of the set; reserved keys are refused wherever a spec lists
+// them (the reconcilers) and left out when a spec is generated (the JeffResc
+// converter).
+const (
+	// ReservedAttributePrefix starts every attributes key Authentik itself uses.
+	ReservedAttributePrefix = "goauthentik.io/"
+	// ReservedSettingsKey is the attributes key of a user's own settings.
+	ReservedSettingsKey = "settings"
+)
+
+// ReservedAttribute reports whether key is one the operator must not own: a key
+// starting with ReservedAttributePrefix, the ownership proof OwnerAttribute, or
+// ReservedSettingsKey. Kinds reserve further keys of their own on top.
+func ReservedAttribute(key string) bool {
+	return strings.HasPrefix(key, ReservedAttributePrefix) || key == OwnerAttribute || key == ReservedSettingsKey
 }

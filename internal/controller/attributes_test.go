@@ -24,6 +24,8 @@ import (
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+
+	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
 
 func rawAttributes(values map[string]string) map[string]apiextensionsv1.JSON {
@@ -137,15 +139,16 @@ func TestReservedAttributes(t *testing.T) {
 		want  []string // keys the error must name; nil means no error
 	}{
 		{"ordinary keys pass", map[string]string{"role": rawA, "team": `"b"`}, nil, nil},
-		{"settings is reserved", map[string]string{reservedSettingsKey: rawA}, nil, []string{reservedSettingsKey}},
-		{"authentik_operator is reserved", map[string]string{reservedOwnerKey: rawA}, nil,
-			[]string{reservedOwnerKey}},
+		{"settings is reserved", map[string]string{authentik.ReservedSettingsKey: rawA}, nil,
+			[]string{authentik.ReservedSettingsKey}},
+		{"authentik_operator is reserved", map[string]string{authentik.OwnerAttribute: rawA}, nil,
+			[]string{authentik.OwnerAttribute}},
 		{"the goauthentik.io/ prefix is reserved", map[string]string{"goauthentik.io/user/x": rawA}, nil,
 			[]string{"goauthentik.io/user/x"}},
 		{"a key that only contains the prefix passes", map[string]string{"x-goauthentik.io/y": rawA}, nil, nil},
 		{"every offending key is named, sorted",
-			map[string]string{reservedSettingsKey: `1`, "ok": `1`, reservedOwnerKey: `1`}, nil,
-			[]string{reservedOwnerKey, reservedSettingsKey}},
+			map[string]string{authentik.ReservedSettingsKey: `1`, "ok": `1`, authentik.OwnerAttribute: `1`}, nil,
+			[]string{authentik.OwnerAttribute, authentik.ReservedSettingsKey}},
 		{"extra keys are reserved too", map[string]string{givenNameKey: rawA, "role": `"b"`}, []string{givenNameKey},
 			[]string{givenNameKey}},
 		{"an absent map passes", nil, nil, nil},
@@ -172,7 +175,7 @@ func TestReservedAttributes(t *testing.T) {
 				}
 			}
 			if c.name == "every offending key is named, sorted" &&
-				strings.Index(err.Error(), reservedOwnerKey) > strings.Index(err.Error(), reservedSettingsKey) {
+				strings.Index(err.Error(), authentik.OwnerAttribute) > strings.Index(err.Error(), authentik.ReservedSettingsKey) {
 				t.Errorf("error %q does not list the keys sorted", err)
 			}
 		})

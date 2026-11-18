@@ -517,7 +517,7 @@ var _ = Describe("AuthentikGroup", func() {
 	})
 
 	It("reports a reserved attribute key as InvalidSpec naming the key and writes no attributes", func() {
-		for _, key := range []string{reservedSettingsKey, reservedOwnerKey, "goauthentik.io/x"} {
+		for _, key := range []string{authentik.ReservedSettingsKey, authentik.OwnerAttribute, "goauthentik.io/x"} {
 			name := "reserved-" + strings.NewReplacer("/", "-", "_", "-", ".", "-").Replace(key)
 			fake.SeedGroup(name, nil)
 			g := newGroup(name, policyAdopt,
