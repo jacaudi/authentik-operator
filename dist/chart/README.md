@@ -59,7 +59,9 @@ token, which spans every team. On the default connection the operator reconciles
 them, under every `spec.managementPolicy`, only in namespaces matching
 `identity.defaultConnectionNamespaceSelector`; the denied resource reports the
 reason `IdentityNotAllowed`. Resources with a same-namespace `spec.authentikRef`
-are not affected.
+are not affected. Outside the selector, deleting a group or user removes it from
+Authentik only if the resource created it; an adopted one, or one whose
+provenance is undecided, is retained with a Warning event.
 
 ```bash
 helm upgrade --install authentik-operator oci://ghcr.io/jacaudi/charts/authentik-operator \
@@ -156,7 +158,7 @@ depending on each object's deletion policy, what it manages in Authentik). Keep
 | `authentik.caBundle.secret.{name,key}` | `""`, `ca.crt` | Same, from a Secret. |
 | `authentik.insecureSkipVerify` | `false` | `--authentik-insecure-skip-verify`. Testing only. |
 | `adoption.defaultConnectionNamespaceSelector` | `""` | `--default-connection-adoption-namespace-selector`: a Kubernetes label selector (for example `kubernetes.io/metadata.name=team-a`, or `kubernetes.io/metadata.name in (team-a, team-b)`) naming the namespaces whose resources may use `spec.managementPolicy` `Adopt`, `AdoptOrCreate` or `ReadOnly` (and `spec.dryRun`) on the default connection. Empty denies every namespace: those resources report `AdoptionNotAllowed`. Resources with a same-namespace `spec.authentikRef` are not affected; that connection's own token bounds what they can reach. Changing it restarts the pod. |
-| `identity.defaultConnectionNamespaceSelector` | `""` | `--default-connection-identity-namespace-selector`: a Kubernetes label selector (for example `kubernetes.io/metadata.name in (authentik)`, the recommended value, or `kubernetes.io/metadata.name=team-a`) naming the namespaces whose `AuthentikGroup` and `AuthentikUser` resources the operator reconciles on the default connection, under every `spec.managementPolicy`. Empty denies every namespace: those resources report `IdentityNotAllowed`. Resources with a same-namespace `spec.authentikRef` are not affected; that connection's own token bounds what they can reach. Changing it restarts the pod. |
+| `identity.defaultConnectionNamespaceSelector` | `""` | `--default-connection-identity-namespace-selector`: a Kubernetes label selector (for example `kubernetes.io/metadata.name in (authentik)`, the recommended value, or `kubernetes.io/metadata.name=team-a`) naming the namespaces whose `AuthentikGroup` and `AuthentikUser` resources the operator reconciles on the default connection, under every `spec.managementPolicy`. Empty denies every namespace: those resources report `IdentityNotAllowed`. Resources with a same-namespace `spec.authentikRef` are not affected; that connection's own token bounds what they can reach. Outside the selector, deleting a group or user removes it from Authentik only if the resource created it; an adopted or undecided one is retained with a Warning event. Changing it restarts the pod. |
 | `extraArgs` | `[]` | Extra flags appended to the manager args (templated with `tpl`). |
 | `extraEnv` | `[]` | Extra container environment variables. |
 | `extraVolumes`, `extraVolumeMounts` | `[]` | |

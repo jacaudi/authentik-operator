@@ -17,22 +17,26 @@ limitations under the License.
 package jeffresc
 
 import (
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
+	"github.com/jacaudi/authentik-operator/internal/authentik"
 )
 
 const errDupFile = "two inputs convert to the same file %s; convert them separately or give them distinct names"
@@ -74,6 +78,7 @@ type builder struct {
 	reports       []objectReport
 	templateNames map[string]string
 	namespaces    []string // namespaces of the emitted objects, for the adoption-gate hint
+	groups        bool     // an AuthentikGroup was emitted: the report names the identity-gate selector
 }
 
 func (b *builder) addFile(name string, data []byte) error {
@@ -373,6 +378,104 @@ func (b *builder) applicationObject(a source, ns, slug, providerRes string,
 		ObjectMeta: metav1.ObjectMeta{Name: a.name, Namespace: ns},
 		Spec:       spec,
 	}
+}
+
+// addGroup converts a JeffResc AuthentikGroup to an AuthentikGroup that adopts
+// the group JeffResc created and leaves it in Authentik when deleted. What the
+// operator cannot own (reserved and object-valued attributes, parents, roles,
+// membership) stays in Authentik, unmanaged, and is reported.
+func (b *builder) addGroup(a source) error {
+	g := a.group
+	rep := objectReport{ref: a.ref()}
+	ns := cmp.Or(b.opts.Namespace, a.namespace)
+	if !slices.Contains(b.namespaces, ns) {
+		b.namespaces = append(b.namespaces, ns)
+	}
+	name := cmp.Or(g.Name, a.name)
+	var errs []string
+	if ns == "" {
+		errs = append(errs, "no namespace (set metadata.namespace or --namespace)")
+	}
+	if utf8.RuneCountInString(name) > maxGroupNameLen {
+		errs = append(errs, fmt.Sprintf("the group name is longer than the %d characters this operator allows",
+			maxGroupNameLen))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s: %s: %s", a.from, a.ref(), strings.Join(errs, "; "))
+	}
+	obj := &authentikiov1alpha1.AuthentikGroup{
+		TypeMeta:   typeMeta("AuthentikGroup"),
+		ObjectMeta: metav1.ObjectMeta{Name: a.name, Namespace: ns},
+		Spec: authentikiov1alpha1.AuthentikGroupSpec{
+			APIManagementSpec: managementSpec(b.opts.DryRunAdoption),
+			Name:              name,
+			IsSuperuser:       g.IsSuperuser,
+			Attributes:        groupAttributes(g.Attributes, &rep),
+		},
+	}
+	if b.opts.AuthentikRef != "" {
+		obj.Spec.AuthentikRef = &authentikiov1alpha1.AuthentikRef{Name: b.opts.AuthentikRef}
+	}
+	var left []string
+	if len(g.Parents) > 0 {
+		left = append(left, fmt.Sprintf("parents %q", g.Parents))
+	}
+	if len(g.Roles) > 0 {
+		left = append(left, fmt.Sprintf("roles %q", g.Roles))
+	}
+	if len(left) > 0 {
+		rep.notes = append(rep.notes, strings.Join(left, " and ")+" are not converted; "+
+			"they stay as they are in Authentik, unmanaged")
+	}
+	rep.notes = append(rep.notes,
+		"members are not managed: JeffResc never managed membership, so spec.members is absent")
+	file := "authentikgroup-" + a.name + ".yaml"
+	data, err := render(obj, headerFor(a), dryRunExplicit(b.opts.DryRunAdoption))
+	if err != nil {
+		return err
+	}
+	if err := b.addFile(file, data); err != nil {
+		return err
+	}
+	rep.files = []string{file}
+	b.reports = append(b.reports, rep)
+	b.groups = true
+	return nil
+}
+
+// Attribute keys this operator never owns on a group (the same set as
+// reservedAttributes in internal/controller/attributes.go, which refuses them
+// at reconcile): Authentik's own prefix, the ownership proof and the user's
+// settings.
+const (
+	reservedAttributePrefix = "goauthentik.io/"
+	reservedSettingsKey     = "settings"
+)
+
+// groupAttributes keeps the top-level attributes this operator can own per
+// key: every key except the reserved ones and those holding an object or null,
+// which a spec.attributes value cannot be. It reports each key it skips; they
+// stay in Authentik, unmanaged. It returns nil when none is kept.
+func groupAttributes(in map[string]json.RawMessage, rep *objectReport) map[string]apiextensionsv1.JSON {
+	var out map[string]apiextensionsv1.JSON
+	for _, key := range slices.Sorted(maps.Keys(in)) {
+		raw := bytes.TrimSpace(in[key])
+		switch {
+		case strings.HasPrefix(key, reservedAttributePrefix) || key == authentik.OwnerAttribute ||
+			key == reservedSettingsKey:
+			rep.notes = append(rep.notes, fmt.Sprintf(
+				"attribute %q is reserved for Authentik or this operator; left in Authentik, unmanaged", key))
+		case bytes.HasPrefix(raw, []byte("{")) || bytes.Equal(raw, []byte("null")):
+			rep.notes = append(rep.notes, fmt.Sprintf("attribute %q has an object or null value, "+
+				"which this operator cannot own per key; left in Authentik, unmanaged", key))
+		default:
+			if out == nil {
+				out = map[string]apiextensionsv1.JSON{}
+			}
+			out[key] = apiextensionsv1.JSON{Raw: raw}
+		}
+	}
+	return out
 }
 
 // finish names the templates, links providers to them and serialises.

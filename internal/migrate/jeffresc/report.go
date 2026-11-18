@@ -96,7 +96,16 @@ func (b *builder) report(skipped []string) string {
 		sb.WriteString("(reason AdoptionNotAllowed) unless the operator admin allows their namespaces. Set the flag\n")
 		sb.WriteString("--default-connection-adoption-namespace-selector, or the Helm value\n")
 		sb.WriteString("adoption.defaultConnectionNamespaceSelector, to:\n")
-		fmt.Fprintf(&sb, "  %s in (%s)\n", metaNamespaceLabel, strings.Join(slices.Sorted(slices.Values(b.namespaces)), ", "))
+		namespaces := strings.Join(slices.Sorted(slices.Values(b.namespaces)), ", ")
+		allowed := fmt.Sprintf("  %s in (%s)\n", metaNamespaceLabel, namespaces)
+		sb.WriteString(allowed)
+		if b.groups {
+			sb.WriteString("\nIdentity gate: groups on the default connection are refused (reason IdentityNotAllowed)\n")
+			sb.WriteString("unless the operator admin allows their namespaces with\n")
+			sb.WriteString("--default-connection-identity-namespace-selector, or the Helm value\n")
+			sb.WriteString("identity.defaultConnectionNamespaceSelector, set to:\n")
+			sb.WriteString(allowed)
+		}
 	}
 	sb.WriteString("\nAdopt mode: a missing match target is reported as AdoptionTargetNotFound and nothing is\n")
 	sb.WriteString("created. Once every app is migrated and SSO login is verified, leave adopt mode: remove\n")

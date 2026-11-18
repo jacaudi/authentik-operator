@@ -26,9 +26,9 @@ as the codegen target, consistent with those repos.
 | Kind | Manages |
 |---|---|
 | `AuthentikDeployment` | the Authentik install itself — Deployment, Service, Ingress, RBAC |
-| `AuthentikApplication` | an application in Authentik |
-| `AuthentikUser` | a user |
-| `AuthentikGroup` | a group |
+| `AuthentikApplication` | an application in Authentik, and who may open it (`spec.access`); see "Application access (TASK-10)" |
+| `AuthentikUser` | a person: adopted, or invited to enrol (the operator never creates a person through the API or manages a password); see "Users (TASK-10)" |
+| `AuthentikGroup` | a group; `members` is authoritative when set; see "Groups (TASK-10)" |
 | `AuthentikOAuthProvider` | an OAuth2 provider |
 | `AuthentikCredentialsTemplate` | (cluster-scoped) the keys, labels and annotations of credential Secrets |
 
@@ -89,8 +89,10 @@ than on a live object the operator is about to take over.
 
 `AuthentikOAuthProvider` and `AuthentikApplication` follow the same contract as
 `AuthentikDeployment` adoption above -- explicit, opt-in, release rather than
-delete -- applied to objects inside Authentik. (Group and User are stubs and
-get it when they get a controller.) Migrating from another operator is the use
+delete -- applied to objects inside Authentik. `AuthentikGroup` and
+`AuthentikUser` follow the same contract through `internal/adopt`, behind the
+identity gate (see "Identity gate (TASK-10)", "Groups (TASK-10)" and "Users
+(TASK-10)"). Migrating from another operator is the use
 case: a provider recreated instead of adopted gets a new client ID and secret
 and every consuming app breaks.
 
@@ -275,6 +277,10 @@ provenance never deletes **by default** (`Retain`, with a Warning event
 "provenance unknown; retaining"). An explicit `Delete` wins over provenance,
 so it can remove an object this resource did not create; when it does so for
 undecided provenance a Warning event says so first. `ReadOnly` never deletes.
+Two exceptions for identities: an unset `deletionPolicy` on an `AuthentikUser`
+is `Retain` whatever its provenance, and outside the identity selector a group
+or user is deleted only if it was `Created` (see "Users (TASK-10)" and "Identity
+gate (TASK-10)").
 `Retain` removes the finalizer and leaves the Authentik object. The credentials
 Secret is a Kubernetes object owned by the provider resource and is
 garbage-collected with it under either policy (the credentials stay readable in
@@ -363,6 +369,7 @@ used, configured by flags / environment (compatible with JeffResc):
 | `--authentik-ca-file` | | optional PEM bundle |
 | `--authentik-insecure-skip-verify` | | testing only |
 | `--default-connection-adoption-namespace-selector` | | label selector for the namespaces that may use `managementPolicy` Adopt, AdoptOrCreate or ReadOnly on the default connection; empty (the default) denies all; objects with `authentikRef` are not affected (see "Adoption trust boundary") |
+| `--default-connection-identity-namespace-selector` | | label selector for the namespaces whose `AuthentikGroup` and `AuthentikUser` resources are reconciled on the default connection, under every `managementPolicy` (`Create` included), checked before the adoption gate (reason `IdentityNotAllowed`); empty (the default) denies all; outside the selector deletion removes only `Created` objects, and adopted or undecided ones are retained with a Warning; objects with `authentikRef` are not affected (see "Identity gate (TASK-10)") |
 
 With neither a ref nor a default, an object is not reconciled and says so in
 its status (reason `NoConnection`).
@@ -458,6 +465,268 @@ migration path for an install that starts out Helm-managed: it must be
 possible without recreating the resource, and it takes over nothing by itself
 because adoption is gated by `spec.adoption.enabled` and is reversible. The
 only rule kept across updates is that ConnectOnly requires `spec.connection`.
+
+## Identity gate (TASK-10)
+
+`AuthentikGroup` and `AuthentikUser` act on Authentik with the operator's own
+token, which spans every team, so who may create, change or delete them on the
+default connection is an administrator's decision, separate from adoption.
+
+- Flag `--default-connection-identity-namespace-selector` (chart value
+  `identity.defaultConnectionNamespaceSelector`): a Kubernetes label selector
+  matched against the Namespace's labels, parsed at startup (an invalid selector
+  stops the operator). The recommended value, and the owner's, for this and for
+  the adoption selector, is `kubernetes.io/metadata.name in (authentik)`.
+- On the default connection a group or user reconciles only in a namespace the
+  selector matches, **under every `managementPolicy`, `Create` included**: even
+  creating a person or a group with the operator's token is gated. An empty
+  selector, the default, denies every namespace. A denied resource reports
+  `Ready=False`, reason `IdentityNotAllowed`.
+- The identity gate is checked **before** the adoption gate, which still applies
+  afterwards to `Adopt`, `AdoptOrCreate` and `ReadOnly` (a group that adopts
+  needs both selectors).
+- `spec.authentikRef` is not gated: that deployment's own token bounds what the
+  resource can reach.
+- **Outside the selector, deletion removes only `Created` objects.** A group or
+  user that was adopted, or whose provenance is undecided, is retained when its
+  resource is deleted, with a Warning event, whatever `deletionPolicy` says.
+  Like the other namespace selectors there is no Namespace watch: a label change
+  takes effect within the 5-minute recheck.
+
+Trust boundaries:
+
+- Kubernetes RBAC decides who may write the resources (the chart's helper roles
+  are off by default and not aggregated into the built-in roles).
+- Inside an allowed namespace a writer has full power over users and groups in
+  Authentik, superuser groups included, and anyone who can read Secrets there
+  can read an invitation link (see "Users").
+- Authentik creates `ak-<provider name>-client_credentials` users on demand;
+  never list them in a group.
+- Removing someone from an access group stops new sign-ins only: refresh tokens
+  already issued are not re-checked against the bindings (only
+  `client_credentials` and token exchange run the policy check). To cut a person
+  off at once, deactivate them (`isActive: false`); Authentik deletes a
+  deactivated user's tokens.
+
+## Application access (TASK-10)
+
+`AuthentikApplication.spec.access` says who may open the application, and is
+required (except under `ReadOnly`, where it is optional and drift is reported):
+
+```yaml
+access:
+  type: Groups              # or Unmanaged; a union discriminator
+  groups: [immich-users]    # Authentik group names, 1 to 64; required iff type Groups
+```
+
+It is not the existing `spec.group`, which is the label of the application's
+section in the library.
+
+- **`Groups`**: the application's group bindings are exactly the listed groups.
+  Each is held `enabled: true`, `negate: false`. The operator adds the missing
+  bindings (`order` one past the highest existing) **before** removing unlisted
+  or duplicate ones, and removes only from a complete picture: if a listed group
+  does not resolve (missing, unreadable to the token, or renamed in the UI) it
+  adds what it can, removes nothing, and sets `AccessInSync=False`, reason
+  `GroupNotFound`. Group names are resolved on every reconcile, not pinned.
+- **`Unmanaged`**: no binding is ever written. `status.access.bindings` lists
+  the live ones, and an adoption dry run lists them too.
+- User and policy bindings, and group bindings with `expiring: true` (2026.5+
+  temporary grants), are never touched; they are listed in status and the dry
+  run as "also grants access". A negated group binding follows the live
+  `policyEngineMode`: under `any` it admits every user outside the group, so it
+  is removed; under `all` it excludes the group, so it is left and reported.
+- `policyEngineMode` follows the adoption contract (spec wins, unset keeps live,
+  `any` on create). The CRD refuses `all` with more than one listed group; a
+  live `all` with several (an adopted application) is left alone, because it only
+  narrows access, and reported as `AccessInSync=False`, reason `AccessNarrowed`.
+- **Never zero bindings by the operator's hand.** Under `Groups` the operator
+  neither creates the application nor takes over an existing one until at least
+  one listed group resolves (`Ready=False`, reason `WaitingForGroups`). A newly
+  created application has `Ready=False`, reason `AccessPending`, with a one-minute
+  requeue, until its first binding exists, and a Warning event if the binding
+  write fails.
+- Conditions: `Ready` keeps its meaning (the application itself); `AccessInSync`
+  (`Groups` only; reasons `GroupNotFound`, `AccessNarrowed`, `AuthentikError`,
+  `InSync`); `AccessOpen` (`True`, reason `NoBindings`, when the application has no
+  enabled binding of any kind, so every user may open it unless the instance
+  setting below is off). A binding problem never flips `Ready`, except
+  `AccessPending` and `WaitingForGroups`. An `AuthentikGroup` change re-enqueues
+  the applications that list its name.
+- **Safety of the binding list.** Bindings are listed with `target=<application
+  pk>`; an empty pk is an error and never a query (Authentik ignores an empty
+  `target=` and would return every binding in the instance), and every delete
+  re-checks `binding.target` against the application's pk.
+- **Token permissions.** The operator's token must be able to view policy
+  bindings for every application it manages, and to add them (`add_policybinding`)
+  to bind groups. Without view permission the binding list fails: a `Groups`
+  application reports `AccessInSync=False`, reason `AuthentikError`, the
+  reconcile backs off and no binding is written (an application just created
+  reports `Ready=False`, reason `AccessPending`).
+- **Recommended instance setting.** Turn off "Applications with no policies bound
+  can be accessed by any user" in Authentik (2026.5+): with it on, an application
+  without an enabled binding is open to every user, and `AccessOpen=True` says so.
+  The operator does not read or change the setting.
+
+## Groups (TASK-10)
+
+`AuthentikGroup` follows the adoption contract through `internal/adopt`, with
+the identity gate above in front of it. There is no `match` field: group names
+are unique in Authentik, so the target is the group named `spec.name` (default
+`metadata.name`). `spec.name` cannot change once the group is created or adopted
+(`InvalidSpec`): renaming it would change every application's bindings by name.
+
+| Field | Meaning |
+|---|---|
+| `name` | The group's name in Authentik; default `metadata.name`; 1 to 255 characters. |
+| `isSuperuser` | `*bool`. Unset: held to `false` on a group this resource **created** (a UI flip to superuser is reverted); the live value on an adopted group. |
+| `attributes` | Per-key owned map, below. Group attributes are inherited by members in claims, so this is where a role claim lives. |
+| `members` | Authentik usernames. **Absent: membership is never read or written**, whatever the provenance (an exception to "created objects are held to create-time defaults"). **Present, including `[]`: exactly this list.** |
+
+`parents` and `roles` are not fields: their live values are kept and never set
+(setting `parents` is itself an access grant).
+
+- **Attributes are owned per key.** Authentik replaces the whole `attributes`
+  dict on every write and keeps its own keys there (`settings`,
+  `goauthentik.io/...`), so the operator owns only the keys the spec lists. Each
+  sync reads the live dict, sets the listed keys, deletes keys it owned
+  (`status.managedAttributes`) and no longer lists, keeps every other key, and
+  PATCHes only when something differs. Absent `attributes` reads and writes
+  nothing (earlier keys are released, not deleted); `{}` removes the owned keys.
+  Values are strings, numbers, booleans or lists, top-level keys only, at most
+  64. Keys starting `goauthentik.io/`, and `authentik_operator` (the ownership
+  proof) and `settings`, are reserved: the resource reports `InvalidSpec` and
+  writes nothing. That refusal is made at reconcile, not by CEL, because
+  Kubernetes cannot type a map of untyped JSON values.
+- **Lost create.** `status.pendingCreate` holds the name while a create is in
+  flight. A group found by that name is this resource's only if it carries the
+  attribute `authentik_operator.owner_uid: <metadata.uid>` (a nested dict:
+  Authentik splits attribute paths on dots), written in the create request. A
+  target found while the create is pending but unproven is a `Conflict` under
+  every policy, `AdoptOrCreate` included (it could be a squatter's group). The
+  provider and application controllers keep their own rules for an unproven
+  target (see "Lost creates" above); settling that difference is noted in
+  TASK-05 and TASK-10.
+- **Members, authoritative when present.** Each username resolves to a user pk.
+  An unknown username is reported (`MembersInSync=False`, reason
+  `MemberNotFound`) while every other add and every removal still applies. A
+  username whose pk differs from the one pinned in `status.members` is held out
+  (`MemberIdentityChanged`) until the pin is cleared. A username is **held**
+  (`MemberHeld`: neither added nor removed) only while an `AuthentikUser` with
+  that `spec.username` is still being invited (same Authentik, through the
+  identity gate, policy `Create` or `AdoptOrCreate`, provenance not yet decided,
+  invitation present). The operator token's own user is never removed. Writes are
+  `add_user` and `remove_user` per member, never a PUT and never `users` in a
+  group write. A members problem never makes `Ready` false. The adoption dry run
+  lists the usernames it would add and remove, and under `ReadOnly` the `Drifted`
+  condition does.
+- **Deletion** follows `EffectiveDeletionPolicy` and the identity rule above.
+  When the effective policy would delete the group, the finalizer first asks
+  Authentik what uses it (`GET /core/groups/{uuid}/used_by/`). While any policy
+  binding uses it, on any application (one with a resource, `Unmanaged`, or
+  existing only in the UI), nothing is deleted: the resource stays terminating
+  with `Ready=False`, reason `DeletionBlocked`, naming each binding, and the
+  remedy: remove the binding in Authentik or the group from the application's
+  `access.groups`, or set `deletionPolicy: Retain`. If `used_by` cannot be read
+  the group stays too. `used_by` lists only what the token may see, so unless the
+  token's user is a superuser the operator cannot know the list is complete: it
+  then retains the group, removes the finalizer and emits the Warning
+  `RetainedUnverifiable` (delete the group in Authentik after checking its
+  bindings). `Retain` deletes nothing and is never blocked.
+- A group this resource created that vanishes is recreated; an adopted one that
+  vanishes reports `AdoptionTargetNotFound`.
+- Recheck: 5 minutes when synced, 1 minute on errors the user can fix.
+
+## Users (TASK-10)
+
+`AuthentikUser` manages **people**. The operator never creates a person through
+the API and never manages a password: it invites them, or adopts an account that
+exists. `spec.username` is required and immutable; `name`, `email`, `path`,
+`type` (`internal` or `external`), `isActive`, `firstName` and `lastName` are
+optional, and **unset keeps the live value, for a `Created` account too** (the
+person made the account in their own enrolment, so there are no operator
+create-time defaults to hold; a stated departure from the adoption contract,
+like `members` on groups). `firstName` and `lastName` are written to the
+attribute keys `given_name` and `family_name`, which the OIDC `profile` scope
+reads, so applications receive them as `given_name` and `family_name`.
+`attributes` are per key, as for groups; `given_name` and `family_name` are
+reserved there as well, and reserved keys are refused at reconcile with
+`InvalidSpec`, not by CEL.
+
+**Create means invite.** `spec.invitation` (`flow`: the enrolment flow's slug;
+`expiresAfter`, default 7 days; `secretName`, default `<metadata.name>-invitation`;
+`attempt`, default 1) is required when the policy may create (`Create`,
+`AdoptOrCreate`) and refused under `Adopt` and `ReadOnly`.
+
+1. The connection needs an explicit browser-facing base URL
+   (`--authentik-external-url` / chart `externalUrl` for the default connection,
+   `spec.connection.externalURL` on an `AuthentikDeployment`). Without one:
+   `Ready=False`, reason `ExternalURLRequired`, and no invitation is made.
+2. The operator creates a single-use invitation named `k8s-<metadata.uid>-<attempt>`
+   whose fixed data pins the username and carries the ownership proof
+   `attributes.authentik_operator.owner_uid`, and writes the link
+   `<externalURL>/if/flow/<slug>/?itoken=<pk>` to the Secret (keys `url` and
+   `expires`). `status.invitation` records the name and expiry. **The invitation
+   pk is the sign-up token: it is written only to the Secret, never to status, a
+   condition, an event, a log line or an error.** Anyone who can read Secrets in
+   that namespace can read the link.
+3. `Ready=False`, reason `InvitationPending`, until an account carrying the
+   ownership proof exists (found by an attribute query and re-checked
+   client-side). If its username equals `spec.username` the user is `Created`,
+   the invitation status is cleared and the Secret deleted. If it differs,
+   `EnrolledUnderOtherName`: it is not adopted. More than one account with the
+   proof: `MultipleEnrolments`.
+4. A person named `username` who appears without the proof while inviting is a
+   `Conflict`; the invitation and its Secret are deleted. An invitation that
+   disappears before any account carries the proof is `InvitationConsumed`
+   (before `status.invitation.expires`) or `InvitationExpired`, with no automatic
+   reissue: a normal enrolment passes through that state briefly, and the account
+   search keeps running. Several invitations with the same name:
+   `InvitationAmbiguous`; the operator deletes none of them.
+5. **Reissue only by `attempt`.** Increase `spec.invitation.attempt` for a new
+   link; the operator deletes any live invitation of the previous attempt and
+   rewrites the Secret. Once the user is `Created`, `attempt` does nothing.
+6. A person who stopped after the account was made but before enrolling an
+   authenticator is still recognised and `Created`; the condition
+   `AuthenticatorMissing` (reason `NoAuthenticator`) is `True` and does not
+   affect `Ready`.
+7. Switching the policy away from `Create` or `AdoptOrCreate`, or deleting the
+   resource, while inviting deletes the live invitation.
+
+**Owner's blueprint change (documented, not automated).** The enrolment flow's
+username prompt must be `text_read_only`, so the invitation's pinned username
+wins over anything the person types. Without it a person can enrol under another
+name and the resource reports `EnrolledUnderOtherName` and adopts nothing. Flows
+and stages are blueprints, outside this operator's scope.
+
+**Recommended recovery flow for lost passkeys.** A person who loses their only
+passkey cannot be re-invited (the username is taken, and a new invitation would
+enrol another account). Have a recovery path ready in Authentik instead: a
+recovery flow, set on the brand, that ends in an authenticator-setup stage,
+managed in the same blueprint as the enrolment flow, from which an administrator
+creates a recovery link on the user's page in the admin UI. The operator does
+not create or manage it.
+
+Other behaviour:
+
+- Adopt and ReadOnly find the account by `username`. The operator refuses to
+  adopt a `service_account` or `internal_service_account` user (`Conflict`): people
+  only. Under `AdoptOrCreate` an existing account is adopted.
+- A `Created` user that vanishes from Authentik is **not** re-invited:
+  deleting a person in the UI is read as intent. `Ready=False`, reason
+  `AdoptionTargetNotFound`, `userPk` kept; clear the status and bump `attempt` to
+  invite again.
+- **Deletion: an unset `deletionPolicy` resolves to `Retain` for every
+  `AuthentikUser`, whatever its provenance.** This is a deliberate per-kind
+  exception to `EffectiveDeletionPolicy` (re-enrolling a passkey is costly); an
+  explicit `Delete` still deletes, and `ReadOnly` never deletes. A retained
+  account stays active: set `isActive: false` first to offboard a person. The
+  operator never deactivates or deletes its own token's user.
+- Writes are PATCH only (a PUT would clear the user's groups and roles); the
+  operator never sends `groups` or `roles`. Group membership is managed from
+  `AuthentikGroup.spec.members`.
+- Gates and rechecks are those of groups: the identity gate first, then the
+  adoption gate for `Adopt`, `AdoptOrCreate` and `ReadOnly`.
 
 ## Known upstream defects this rewrite exists to fix
 

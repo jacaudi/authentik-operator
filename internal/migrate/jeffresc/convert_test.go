@@ -18,6 +18,7 @@ package jeffresc
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,8 +31,12 @@ import (
 )
 
 const (
-	testSource    = "in.yaml"
-	policyModeAll = "all"
+	testSource     = "in.yaml"
+	policyModeAll  = "all"
+	noNamespace    = "no namespace"
+	namespaceSSO   = "sso"
+	refMain        = "main"
+	mediaUsersName = "media-users"
 )
 
 const minimalApp = `apiVersion: goauthentik.io/v1alpha1
@@ -59,7 +64,7 @@ func TestConvertErrors(t *testing.T) {
 		opts           Options
 	}{
 		{"slug too long", strings.Replace(app("x", "ns"), "name: X", "name: X\n  slug: "+long, 1), "slug", Options{}},
-		{"no namespace", strings.Replace(app("x", "ns"), ", namespace: ns", "", 1), "no namespace", Options{}},
+		{noNamespace, strings.Replace(app("x", "ns"), ", namespace: ns", "", 1), noNamespace, Options{}},
 		{"same output name twice", app("x", "ns1") + "---\n" + app("x", "ns2"), "same file", Options{}},
 		{"nothing to convert", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\n",
 			"no AuthentikApplication", Options{}},
@@ -403,7 +408,7 @@ func TestConvertGroupBindingsToAccess(t *testing.T) {
 	in := withSpecLines(app("x", "ns"), "  groupBindings: [media-users, media-admins, media-users]\n")
 	file, obj, report := applicationOf(t, in, Options{})
 	want := authentikiov1alpha1.ApplicationAccess{
-		Type: authentikiov1alpha1.AccessTypeGroups, Groups: []string{"media-users", "media-admins"},
+		Type: authentikiov1alpha1.AccessTypeGroups, Groups: []string{mediaUsersName, "media-admins"},
 	}
 	if obj.Spec.Access == nil || obj.Spec.Access.Type != want.Type || !slices.Equal(obj.Spec.Access.Groups, want.Groups) {
 		t.Errorf("spec.access = %+v, want %+v", obj.Spec.Access, want)
@@ -519,17 +524,154 @@ func TestConvertDropsPolicyEngineModeAllWithSeveralGroups(t *testing.T) {
 	})
 }
 
-func TestGroupKindIsRefusedWithGuidance(t *testing.T) {
-	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\n" +
-		"metadata: {name: g, namespace: ns}\nspec: {name: g}\n"
-	_, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
-	if err == nil {
-		t.Fatal("want an error")
+// mediaUsers is a JeffResc group that exercises every field the converter reads.
+const mediaUsers = `apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikGroup
+metadata: {name: media-users, namespace: media}
+spec:
+  name: media-users
+  isSuperuser: true
+  deletionPolicy: Delete
+  parents: [p]
+  roles: [r]
+  attributes:
+    role: admin
+    settings: {theme: dark}
+    nested: {a: 1}
+    goauthentik.io/x: y
+`
+
+// groupOf converts in, which must hold groups only, and returns the decoded
+// group of the named file plus the result.
+func groupOf(t *testing.T, in, file string, opts Options) (obj authentikiov1alpha1.AuthentikGroup, res *Result) {
+	t.Helper()
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, opts)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"AuthentikGroup", "not supported", "keep it on JeffResc", "deletionPolicy Retain"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error lacks %q: %v", want, err)
+	for _, f := range res.Files {
+		if f.Name == file {
+			if err := sigsyaml.UnmarshalStrict(f.Data, &obj); err != nil {
+				t.Fatal(err)
+			}
+			return obj, res
 		}
+	}
+	t.Fatalf("no %s emitted; files: %v", file, res.Files)
+	return obj, res
+}
+
+func TestConvertGroupAdoptsAndRetains(t *testing.T) {
+	obj, res := groupOf(t, mediaUsers, "authentikgroup-media-users.yaml", Options{})
+	if len(res.Files) != 1 {
+		t.Fatalf("want exactly the group file, got %d files", len(res.Files))
+	}
+	s := obj.Spec
+	if s.ManagementPolicy != authentikiov1alpha1.ManagementPolicyAdopt ||
+		s.DeletionPolicy != authentikiov1alpha1.DeletionPolicyRetain {
+		t.Errorf("managementPolicy %q, deletionPolicy %q, want Adopt and Retain (JeffResc's was Delete)",
+			s.ManagementPolicy, s.DeletionPolicy)
+	}
+	if obj.Namespace != "media" || obj.Name != mediaUsersName || s.Name != mediaUsersName {
+		t.Errorf("identity = %s/%s, spec.name %q", obj.Namespace, obj.Name, s.Name)
+	}
+	if s.IsSuperuser == nil || !*s.IsSuperuser {
+		t.Errorf("isSuperuser = %v, want true", s.IsSuperuser)
+	}
+	if keys := slices.Sorted(maps.Keys(s.Attributes)); !slices.Equal(keys, []string{"role"}) ||
+		string(s.Attributes["role"].Raw) != `"admin"` {
+		t.Errorf("attributes = %v, want only role: admin", s.Attributes)
+	}
+	if s.Members != nil {
+		t.Errorf("members = %v, want absent (JeffResc never managed membership)", *s.Members)
+	}
+	for _, want := range []string{
+		`AuthentikGroup media/media-users`,
+		`attribute "settings" is reserved for Authentik or this operator; left in Authentik, unmanaged`,
+		`attribute "goauthentik.io/x" is reserved for Authentik or this operator; left in Authentik, unmanaged`,
+		`attribute "nested" has an object or null value, which this operator cannot own per key; ` +
+			`left in Authentik, unmanaged`,
+		`parents ["p"] and roles ["r"] are not converted; they stay as they are in Authentik, unmanaged`,
+		`members are not managed: JeffResc never managed membership, so spec.members is absent`,
+	} {
+		if !strings.Contains(res.Report, want) {
+			t.Errorf("report lacks %q:\n%s", want, res.Report)
+		}
+	}
+	if strings.Contains(res.Report, `attribute "role"`) || strings.Contains(res.Report, `attribute "nested" is reserved`) {
+		t.Errorf("report names a kept key or gives the wrong reason:\n%s", res.Report)
+	}
+}
+
+func TestConvertGroupNotesOnlyTheListsItHas(t *testing.T) {
+	in := strings.Replace(mediaUsers, "  roles: [r]\n", "", 1)
+	_, res := groupOf(t, in, "authentikgroup-media-users.yaml", Options{})
+	if !strings.Contains(res.Report, `parents ["p"] are not converted`) || strings.Contains(res.Report, "roles") {
+		t.Errorf("want a note for parents only:\n%s", res.Report)
+	}
+	bare := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\nmetadata: {name: g, namespace: ns}\nspec: {}\n"
+	_, res = groupOf(t, bare, "authentikgroup-g.yaml", Options{})
+	if strings.Contains(res.Report, "are not converted") || strings.Contains(res.Report, "attribute ") {
+		t.Errorf("a bare group has nothing to report but members:\n%s", res.Report)
+	}
+}
+
+func TestConvertGroupDefaultsNameToMetadata(t *testing.T) {
+	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\nmetadata: {name: media-admins, namespace: media}\n" +
+		"spec: {isSuperuser: false}\n"
+	obj, _ := groupOf(t, in, "authentikgroup-media-admins.yaml", Options{})
+	if obj.Spec.Name != "media-admins" {
+		t.Errorf("spec.name = %q, want the metadata name", obj.Spec.Name)
+	}
+	if obj.Spec.IsSuperuser == nil || *obj.Spec.IsSuperuser {
+		t.Errorf("isSuperuser = %v, want an explicit false", obj.Spec.IsSuperuser)
+	}
+	if obj.Spec.Attributes != nil {
+		t.Errorf("attributes = %v, want none", obj.Spec.Attributes)
+	}
+}
+
+func TestConvertGroupHonoursOptions(t *testing.T) {
+	obj, _ := groupOf(t, mediaUsers, "authentikgroup-media-users.yaml",
+		Options{DryRunAdoption: true, Namespace: namespaceSSO, AuthentikRef: refMain})
+	if obj.Namespace != namespaceSSO || !obj.Spec.DryRun ||
+		obj.Spec.AuthentikRef == nil || obj.Spec.AuthentikRef.Name != refMain {
+		t.Errorf("namespace %q, dryRun %v, authentikRef %+v, want sso, true, main",
+			obj.Namespace, obj.Spec.DryRun, obj.Spec.AuthentikRef)
+	}
+}
+
+func TestConvertRejectsUnknownGroupField(t *testing.T) {
+	in := "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\nmetadata: {name: g, namespace: ns}\n" +
+		"spec: {users: [a]}\n"
+	_, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("want an unknown field error, got %v", err)
+	}
+}
+
+func TestConvertRefusesGroupThatTheCRDCannotHold(t *testing.T) {
+	const head = "apiVersion: goauthentik.io/v1alpha1\nkind: AuthentikGroup\n"
+	long := strings.Repeat("a", 256)
+	for name, tc := range map[string]struct{ in, want string }{
+		noNamespace:     {head + "metadata: {name: g}\nspec: {}\n", noNamespace},
+		"no name":       {head + "metadata: {namespace: ns}\nspec: {}\n", "no metadata.name"},
+		"name too long": {head + "metadata: {name: g, namespace: ns}\nspec: {name: " + long + "}\n", "255"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(tc.in)}}, Options{})
+			if err == nil || res != nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error containing %q and no result, got %v, %v", tc.want, res, err)
+			}
+		})
+	}
+}
+
+func TestConvertStillRefusesEmptyInput(t *testing.T) {
+	in := "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\n"
+	_, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "or AuthentikGroup") {
+		t.Fatalf("want the empty-input error naming AuthentikGroup, got %v", err)
 	}
 }
 
@@ -592,11 +734,36 @@ func TestReportNamesAdoptionGateSelector(t *testing.T) {
 			t.Errorf("report lacks %q:\n%s", want, res.Report)
 		}
 	}
-	res, err = Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AuthentikRef: "main"})
+	res, err = Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AuthentikRef: refMain})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(res.Report, "adoption.defaultConnectionNamespaceSelector") {
 		t.Errorf("report names the selector although authentikRef is set:\n%s", res.Report)
+	}
+}
+
+// Groups on the default connection are refused unless the admin allows their
+// namespaces for identities, which is a different flag from the adoption one.
+func TestConvertGroupReportNamesIdentitySelector(t *testing.T) {
+	_, res := groupOf(t, mediaUsers, "authentikgroup-media-users.yaml", Options{})
+	for _, want := range []string{
+		"--default-connection-identity-namespace-selector", "identity.defaultConnectionNamespaceSelector",
+		"IdentityNotAllowed", "kubernetes.io/metadata.name in (media)",
+	} {
+		if !strings.Contains(res.Report, want) {
+			t.Errorf("report lacks %q:\n%s", want, res.Report)
+		}
+	}
+	_, res = groupOf(t, mediaUsers, "authentikgroup-media-users.yaml", Options{AuthentikRef: refMain})
+	if strings.Contains(res.Report, "Identity gate") {
+		t.Errorf("report names the identity selector although authentikRef is set:\n%s", res.Report)
+	}
+	appOnly, err := Convert([]Input{{Source: testSource, Data: []byte(app("a", "ns"))}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(appOnly.Report, "Identity gate") {
+		t.Errorf("an application-only report names the identity selector:\n%s", appOnly.Report)
 	}
 }

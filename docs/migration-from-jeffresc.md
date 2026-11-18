@@ -9,7 +9,7 @@ becomes three here.
 |---|---|
 | `AuthentikApplication` (v0.1.x) or `AuthentikOAuth2Application` (v0.2.x): application + provider + Secret in one object | `AuthentikOAuthProvider` + `AuthentikApplication` (same namespace) + a reference to a cluster-scoped `AuthentikCredentialsTemplate` |
 | `AuthentikSAMLApplication` (v0.2.x) | no equivalent (no SAML provider kind); leave it on JeffResc |
-| `AuthentikGroup` (v0.2.8+) | no equivalent (no group kind); leave it on JeffResc, or set its `deletionPolicy: Retain` and then delete it. The converter refuses it |
+| `AuthentikGroup` (v0.2.8+) | `AuthentikGroup` (same namespace): `managementPolicy: Adopt`, `deletionPolicy: Retain`, no `members`; see "AuthentikGroup becomes an adopted group" and step 4a |
 
 **Supported JeffResc versions:** the converter understands the input fields of
 JeffResc 0.1.8 through v0.2.10 (the 0.1.x tags have no `v` prefix). It decodes
@@ -18,8 +18,8 @@ learns it. Known gaps for the newest releases are listed in
 [TASK-09](roadmap/TASK-09-migration-from-jeffresc.md).
 
 `hack/convert-jeffresc` (`make convert-jeffresc` builds `bin/convert-jeffresc`)
-does the conversion. Everything it emits adopts the provider and application
-that JeffResc already created in Authentik (`managementPolicy: Adopt`), so
+does the conversion. Everything it emits adopts the provider, application or
+group that JeffResc already created in Authentik (`managementPolicy: Adopt`), so
 client IDs and secrets do not change and consuming apps keep working. The
 adoption contract (management policies, dry run, the adoption gate, deletion
 policy, what adoption writes) is in
@@ -35,6 +35,19 @@ namespace). With `spec.authentikRef` (converter flag `--authentik-ref`) the
 objects use a same-namespace `AuthentikDeployment` instead, and no allowance is
 needed. The converter's report prints the selector for the namespaces it
 converted. Step 1 shows how to set it.
+
+**Groups need a second allowance.** On the default connection an
+`AuthentikGroup` is reconciled only in namespaces matching
+`--default-connection-identity-namespace-selector`, set in the chart as
+`identity.defaultConnectionNamespaceSelector` (empty, the default, denies every
+namespace: reason `IdentityNotAllowed`). The identity gate applies under every
+`managementPolicy` and is checked before the adoption gate, so a converted group
+needs both selectors to include its namespace. Outside the identity selector,
+deleting a group removes it from Authentik only if this resource created it; an
+adopted group is retained with a Warning event. Neither selector affects an
+object with `spec.authentikRef`. The report prints this selector too when groups
+were converted (see
+[scope.md, "Identity gate"](design/scope.md#identity-gate-task-10)).
 
 Both CRD sets define kinds called `AuthentikApplication`, so once both are
 installed `kubectl get authentikapplication` is ambiguous. **Always use the
@@ -52,16 +65,18 @@ bin/convert-jeffresc --out out/ jeffresc-backup.yaml          # files and/or dir
 Writes one object per file, `<kind-lowercase>-<name>.yaml`, deterministically
 (no timestamps; `out/` can be committed), and prints a report on stderr.
 It fails, writing nothing, when an object cannot be converted faithfully
-(SAML or `AuthentikGroup` kind, unknown JeffResc field, a `groupBindings` entry
-`spec.access.groups` cannot hold, template variable or construct this
-operator does not support, a template that would render differently).
+(SAML kind, unknown JeffResc field, a `groupBindings` entry
+`spec.access.groups` cannot hold, a group with no namespace or a name over 255
+characters, template variable or construct this operator does not support, a
+template that would render differently). The input may be applications, groups
+or both.
 
 | flag | default | meaning |
 |---|---|---|
 | `--out DIR` | required | output directory |
-| `--dry-run-adoption` | `true` | `spec.dryRun` on every provider and application: preview what adoption would change, write nothing |
+| `--dry-run-adoption` | `true` | `spec.dryRun` on every provider, application and group: preview what adoption would change, write nothing |
 | `--namespace NS` | each source's namespace | namespace of the converted objects; the template's `namespaceSelector` follows it |
-| `--authentik-ref NAME` | none | `spec.authentikRef` (an `AuthentikDeployment` in the same namespace); omit to use the operator's default connection |
+| `--authentik-ref NAME` | none | `spec.authentikRef` (an `AuthentikDeployment` in the same namespace); omit to use the operator's default connection. With it neither the adoption nor the identity selector is needed |
 | `--template-name NAME` | `jeffresc-<hash>` | name of the `AuthentikCredentialsTemplate`; with several distinct templates it is a prefix (`NAME-<hash>`) |
 | `--secret-suffix S` | none | appended to every rendered Secret name, so new and old Secrets can exist side by side (recommended, see step 4) |
 | `--force` | off | write into a non-empty `--out` |
@@ -118,13 +133,47 @@ Emitted per JeffResc object:
   `authorization-url`, `token-url`, `userinfo-url`) are the same in both
   operators.
 
+### AuthentikGroup becomes an adopted group
+
+JeffResc v0.2.8+ has an `AuthentikGroup` kind that creates the group in
+Authentik. Each one becomes one `AuthentikGroup` here (file
+`authentikgroup-<metadata.name>.yaml`) that adopts the group JeffResc created,
+found by its name:
+
+- `managementPolicy: Adopt`, `dryRun: <flag>`, and `deletionPolicy: Retain`
+  **whatever JeffResc's `deletionPolicy` was**: deleting the new object later
+  leaves the group in Authentik. A group on a JeffResc default of `Delete` is
+  the case to know: JeffResc deletes the group with its CR, which also cascades
+  away the group's application bindings (step 4a deals with it).
+- `name` is JeffResc's `spec.name`, else `metadata.name`, always written:
+  adoption finds the group by this name, and a miss is reported as
+  `AdoptionTargetNotFound`, nothing created.
+- `isSuperuser` is copied when JeffResc set it; unset stays unset and the
+  adopted group keeps its live value.
+- **`members` is never written.** JeffResc never managed membership, so the
+  converted group leaves every member as it is. Add `spec.members` yourself if
+  you want this operator to own membership: a listed `members` is authoritative
+  (exactly that list, other members are removed), and the dry run lists the
+  usernames it would add and remove.
+- `attributes` are copied per key: the operator owns only the keys the spec
+  lists, and keeps every other key in Authentik. Three kinds of key are left out
+  and stay in Authentik, unmanaged, each named in the report: keys starting
+  `goauthentik.io/`, `authentik_operator` and `settings` (reserved for Authentik
+  and this operator), and any key whose value is an object or null (a value of a
+  listed key can be a string, number, boolean or list; Authentik's own `settings`
+  and similar objects are not something this operator can own per key).
+- `parents` and `roles` are not converted: they stay as they are in Authentik,
+  unmanaged, and the report lists the ones the JeffResc group had. Setting
+  `parents` is itself an access grant, so it is not done here.
+
 ### Field map
 
 JeffResc 0.1.8 and v0.2.5 have the same fields (note that the 0.1.x tags have
 no `v` prefix); v0.2.x renames the kind, adds validation and parses rendered
 Secret templates differently (see the template section). v0.2.7 adds
 `spec.provider.grantTypes` and v0.2.8 adds `spec.groupBindings` and the
-`AuthentikGroup` kind; the table covers everything up to v0.2.10. Fields JeffResc leaves
+`AuthentikGroup` kind; the application table below and the group table after it
+cover everything up to v0.2.10. Fields JeffResc leaves
 unset take JeffResc's own CRD defaults (listed in the table). The converter
 **leaves those fields unset**: adoption writes only the fields the spec sets and
 keeps the live value of the others, and the live object already has JeffResc's
@@ -158,9 +207,22 @@ the fields it names. To keep holding a defaulted field, add it to the spec.
 | `spec.groupBindings` (v0.2.8+) | `AuthentikApplication.spec.access.groups` | `access: {type: Groups, groups: [...]}`; `access: {type: Unmanaged}` when absent; see "groupBindings become spec.access" |
 | (none) | `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
 | `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
-| `AuthentikSAMLApplication`, `AuthentikGroup` | none | error |
+| `AuthentikSAMLApplication` | none | error |
 | Secret label `goauthentik.io/application` | none | JeffResc sets it; this operator does not |
 | Secret owner | the `AuthentikOAuthProvider` | JeffResc's Secret is owned by its CR; see step 4 |
+
+The `AuthentikGroup` kind (v0.2.8+):
+
+| JeffResc field | New field | Notes |
+|---|---|---|
+| `metadata.name`, `metadata.namespace` | `AuthentikGroup` `metadata` | `--namespace` retargets the namespace |
+| `spec.name` (default `metadata.name`) | `spec.name` | always written; at most 255 characters, the converter errors above that |
+| `spec.isSuperuser` | `spec.isSuperuser` | copied when set; unset stays unset, so the live value is kept |
+| `spec.attributes` | `spec.attributes` | per top-level key; reserved keys (`goauthentik.io/` prefix, `authentik_operator`, `settings`) and object or null values are left out and reported |
+| `spec.parents`, `spec.roles` | none | not converted; stay as they are in Authentik, unmanaged; reported |
+| `spec.deletionPolicy` (default `Delete`) | `spec.deletionPolicy: Retain` | always `Retain` |
+| (none; JeffResc never managed membership) | `spec.members` | never written, so membership is never read or written |
+| `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
 
 **Fields JeffResc has no field for are not written, except `grantTypes`.** This
 operator's own defaults (`refreshTokenThreshold`, `logoutMethod`, redirect
@@ -241,6 +303,14 @@ without it every converted object stays at `AdoptionNotAllowed`. You can add it
 later with `helm upgrade --reuse-values --set-string ...` (the pod restarts to
 read it). Skip it, and use `--authentik-ref NAME` when converting, if you attach
 the migrated objects to an `AuthentikDeployment` in each namespace instead.
+
+If you have JeffResc `AuthentikGroup` objects, set
+`identity.defaultConnectionNamespaceSelector` the same way, to the namespaces of
+those groups (the report prints the value; a cluster that keeps all its groups
+and users in one namespace can use `kubernetes.io/metadata.name in (authentik)`).
+It is rendered as the operator
+flag `--default-connection-identity-namespace-selector`; without it every
+converted group stays at `IdentityNotAllowed`.
 
 **Use a release name different from JeffResc's** (above: `jacaudi-authentik-operator`;
 JeffResc's chart is usually released as `authentik-operator`). Both charts name their
@@ -411,6 +481,42 @@ Prefer the suffix for anything that is not tolerant of that gap.
 Rollback: point consumers back at the old Secret names; the old Secrets are
 untouched until step 5.
 
+### 4a. Groups: adopt, then retire the JeffResc object (skip without JeffResc groups)
+
+JeffResc's `AuthentikGroup` has `deletionPolicy: Delete` by default, so deleting
+its CR deletes the group in Authentik, and with it the group's bindings on every
+application. Do this step while the old operator is still running (before
+step 5): it is the one that honours `Retain`. Per group:
+
+```sh
+kubectl get authentikgroups.goauthentik.io -A -o yaml > jeffresc-groups-backup.yaml   # once
+kubectl apply -f out/authentikgroup-media-users.yaml
+kubectl -n NS get authentikgroups.authentik.io media-users            # wait for READY True, PROVENANCE Adopted
+```
+
+The converted group starts with `dryRun: true` (default flag): read the Ready
+reason `AdoptionDryRun`, which lists what adoption would change, then set
+`dryRun: false` as in step 3. `IdentityNotAllowed` means the namespace is not in
+the identity selector (step 1); `AdoptionNotAllowed`, that it is not in the
+adoption selector; `AdoptionTargetNotFound`, that no group of that name exists
+in Authentik (the converter never emits `AdoptOrCreate`, so nothing is created).
+Only when the new group is `Ready`, make the JeffResc object harmless to delete,
+check it, and delete it:
+
+```sh
+kubectl -n NS patch authentikgroups.goauthentik.io media-users --type merge -p '{"spec":{"deletionPolicy":"Retain"}}'
+kubectl -n NS get authentikgroups.goauthentik.io media-users -o jsonpath='{.spec.deletionPolicy}{"\n"}'   # Retain
+kubectl -n NS delete authentikgroups.goauthentik.io media-users
+```
+
+The old operator releases the CR and leaves the group, its members and its
+bindings in Authentik; the new `AuthentikGroup` keeps managing it. The group
+CRDs are removed with the others in step 6, once no JeffResc `AuthentikGroup`
+is left.
+
+Rollback: re-apply the backup; delete the new `AuthentikGroup` first. Its
+`Retain` leaves the group in Authentik.
+
 ### 5. Retire the old CRs without deleting the Authentik objects
 
 JeffResc deletes the Authentik provider and application when its CR is
@@ -551,6 +657,9 @@ and, on v0.2.x, the webhook configuration deleted in gate 3; with Argo CD,
 re-enable auto-sync). It then only manages the SAML objects. Keep its chart
 and the SAML CRD. Delete the SAML CRD only when no SAML objects remain.
 
+If you migrated groups (step 4a), also delete `authentikgroups.goauthentik.io`,
+once no JeffResc `AuthentikGroup` is left.
+
 Delete the CRDs only after step 5: deleting a CRD deletes its CRs, and a CR
 still carrying the finalizer would be processed by any running JeffResc
 operator. Then verify SSO login for every application with a real user.
@@ -571,7 +680,9 @@ nothing.
 Once SSO login is verified for every application, return every converted
 provider and application to the default policy: remove `managementPolicy`,
 `match` and `dryRun` from the spec (`Create` is the default; the admission rules
-reject `match` and `dryRun` without `Adopt`), commit that to your manifests, and
+reject `match` and `dryRun` without `Adopt`), commit that to your manifests (a
+converted group has no `match`: remove `managementPolicy` and `dryRun`; it stays
+subject to the identity selector, which gates groups under every policy), and
 confirm each resource stays `Ready` with provenance `Adopted` and that its next
 reconcile writes nothing (no new events, no change in Authentik). Why: adoption
 is a one-time takeover. Afterwards the resources are managed by primary key
