@@ -102,6 +102,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		a := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{
+				Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 				Name:              "App " + name,
 				APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policy, DryRun: dryRun},
 			},
@@ -259,6 +260,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			a := &authentikiov1alpha1.AuthentikApplication{
 				ObjectMeta: metav1.ObjectMeta{Name: "bad-management", Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "Bad",
+					Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: c.policy, DryRun: c.dryRun}},
 			}
 			if c.delete {
@@ -343,6 +345,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			a := &authentikiov1alpha1.AuthentikApplication{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: name, Slug: "raced-app",
+					Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
 			}
 			Expect(k8sClient.Create(ctx, a)).To(Succeed())
@@ -381,6 +384,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 		second := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: "second-claim", Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "Second", Slug: "shared-app",
+				Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 				APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
 		}
 		Expect(k8sClient.Create(ctx, second)).To(Succeed())
@@ -687,6 +691,7 @@ var _ = Describe("AuthentikApplication adoption", func() {
 			a := &authentikiov1alpha1.AuthentikApplication{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 				Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: name, Slug: slug,
+					Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 					APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policyAdopt}},
 			}
 			Expect(k8sClient.Create(ctx, a)).To(Succeed())

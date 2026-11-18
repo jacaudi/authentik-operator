@@ -36,7 +36,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	authentikiov1alpha1 "github.com/jacaudi/authentik-operator/api/v1alpha1"
 	"github.com/jacaudi/authentik-operator/internal/adopt"
@@ -51,6 +53,10 @@ const (
 
 	// indexGroupPK maps an AuthentikGroup to the group pk it tracks (see claims.go).
 	indexGroupPK = ".status.groupPk"
+
+	// indexGroupName maps an AuthentikGroup to its name in Authentik, which
+	// spec.access.groups of an application refers to.
+	indexGroupName = ".spec.name"
 )
 
 // policyBindingApp and policyBindingModel identify a policy binding among the
@@ -86,6 +92,7 @@ type AuthentikGroupReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications,verbs=get;list;watch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikdeployments,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -720,9 +727,46 @@ func (r *AuthentikGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		indexGroupPK, groupPKIndex); err != nil {
 		return err
 	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &authentikiov1alpha1.AuthentikGroup{},
+		indexGroupName, groupNameIndex); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikGroup{}).
+		Watches(&authentikiov1alpha1.AuthentikApplication{}, handler.EnqueueRequestsFromMapFunc(r.groupsForApplication)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikgroup").
 		Complete(r)
+}
+
+// groupNameIndex indexes groups by their name in Authentik.
+func groupNameIndex(o client.Object) []string {
+	g, ok := o.(*authentikiov1alpha1.AuthentikGroup)
+	if !ok {
+		return nil
+	}
+	return []string{groupName(g)}
+}
+
+// groupsForApplication maps an application to the groups its spec.access
+// lists, in any namespace: the group's own reconcile re-checks its deletion
+// guard when a binding of it comes or goes.
+func (r *AuthentikGroupReconciler) groupsForApplication(ctx context.Context, o client.Object) []reconcile.Request {
+	a, ok := o.(*authentikiov1alpha1.AuthentikApplication)
+	if !ok || !wantsGroups(a) {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for _, name := range a.Spec.Access.Groups {
+		var list authentikiov1alpha1.AuthentikGroupList
+		if err := r.List(ctx, &list, client.MatchingFields{indexGroupName: name}); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to list AuthentikGroups for application",
+				"application", client.ObjectKeyFromObject(o), "group", name)
+			continue
+		}
+		for i := range list.Items {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+		}
+	}
+	return reqs
 }

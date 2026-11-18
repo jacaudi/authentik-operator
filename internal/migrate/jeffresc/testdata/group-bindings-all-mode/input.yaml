@@ -5,6 +5,7 @@ metadata:
   namespace: media
 spec:
   name: Immich
+  policyEngineMode: all
   groupBindings: [media-users, media-admins]
   provider:
     authorizationFlow: default-provider-authorization-implicit-consent

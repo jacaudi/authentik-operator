@@ -59,8 +59,8 @@ func goldenCases() []goldenCase {
 		{name: "err-group-kind", opts: dry, wantErr: "AuthentikGroup"},
 		{name: "grant-types-list", opts: dry},
 		{name: "grant-types-empty", opts: dry},
-		{name: "err-group-bindings", opts: dry, wantErr: acceptFlag},
-		{name: "group-bindings-accepted", opts: Options{DryRunAdoption: true, AcceptUnmanagedGroupBindings: true}},
+		{name: "group-bindings", opts: dry},
+		{name: "group-bindings-all-mode", opts: dry},
 		{name: "err-unknown-field", opts: dry, wantErr: "unknown field"},
 		{name: "err-template-construct", opts: dry, wantErr: "range"},
 	}

@@ -19,7 +19,6 @@ AuthentikOAuth2Application media/immich
   files: authentikoauthprovider-immich.yaml, authentikapplication-immich.yaml
   notes:
     - provider.grantTypes copied from JeffResc: [authorization_code, refresh_token]
-    - groupBindings ["media-users", "media-admins"] are left in Authentik but not managed by this operator (accepted with --accept-unmanaged-group-bindings): if they are removed, Authentik allows every user to open the application and nothing re-creates them
     - Secret immich-oauth keeps its name: this operator refuses to overwrite the Secret JeffResc owns (SecretConflict) until the old one is deleted with the old CR; see the runbook, or convert with --secret-suffix
     - JeffResc labels its Secret goauthentik.io/application=<name>; this operator does not set that label
 

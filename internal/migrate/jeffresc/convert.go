@@ -40,11 +40,6 @@ type Options struct {
 	SecretSuffix string
 	// ProviderSuffix is appended to the provider resource names.
 	ProviderSuffix string
-	// AcceptUnmanagedGroupBindings converts objects that list groupBindings.
-	// This operator does not manage group bindings, and Authentik lets every
-	// user in when an application has none, so without it such an object is an
-	// error.
-	AcceptUnmanagedGroupBindings bool
 }
 
 // Input is one YAML file's contents.

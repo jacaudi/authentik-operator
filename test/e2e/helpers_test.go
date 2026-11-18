@@ -62,7 +62,8 @@ func newApplication(name, display, slug, providerName string) *authentikiov1alph
 	return &authentikiov1alpha1.AuthentikApplication{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appsNS},
 		Spec: authentikiov1alpha1.AuthentikApplicationSpec{
-			Name: display, Slug: slug,
+			Access: &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
+			Name:   display, Slug: slug,
 			ProviderRef: &authentikiov1alpha1.ProviderRef{Kind: authentikiov1alpha1.ProviderKindOAuth, Name: providerName},
 		},
 	}

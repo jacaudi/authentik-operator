@@ -30,8 +30,8 @@ import (
 )
 
 const (
-	testSource = "in.yaml"
-	acceptFlag = "--accept-unmanaged-group-bindings"
+	testSource    = "in.yaml"
+	policyModeAll = "all"
 )
 
 const minimalApp = `apiVersion: goauthentik.io/v1alpha1
@@ -318,53 +318,15 @@ func TestGrantTypes(t *testing.T) {
 	}
 }
 
-// groupBindings are not managed by this operator and Authentik allows every
-// user when an application has no bindings, so converting one is refused
-// unless the user accepts that; the notice then travels with the YAML.
+// groupBindings become spec.access: the operator owns the bindings JeffResc
+// created, so nothing is refused and no notice is needed.
 func TestGroupBindings(t *testing.T) {
 	withBindings := func(list string) string {
 		return strings.Replace(app("x", "ns"), "  name: X\n", "  name: X\n  groupBindings: "+list+"\n", 1)
 	}
-	t.Run("refused without the flag, naming the groups and the consequence", func(t *testing.T) {
-		_, err := Convert([]Input{{Source: testSource, Data: []byte(withBindings(`[media-users, admins]`))}}, Options{})
-		if err == nil {
-			t.Fatal("want an error")
-		}
-		for _, want := range []string{
-			"ns/x", `"media-users"`, `"admins"`, "allows every user", acceptFlag,
-		} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error lacks %q: %v", want, err)
-			}
-		}
-	})
-	t.Run("one object's refusal stops the whole conversion", func(t *testing.T) {
-		in := app("a", "ns") + "---\n" + withBindings(`[g]`)
-		if res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{}); err == nil || res != nil {
-			t.Fatalf("want no result and an error, got %v, %v", res, err)
-		}
-	})
-	t.Run("accepted: notice in the application header and in the report", func(t *testing.T) {
-		in := withBindings(`[media-users]`)
-		res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AcceptUnmanagedGroupBindings: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, f := range res.Files {
-			hasNotice := strings.Contains(string(f.Data), `"media-users"`)
-			if want := strings.HasPrefix(f.Name, "authentikapplication-"); hasNotice != want {
-				t.Errorf("%s: notice present = %v, want %v:\n%s", f.Name, hasNotice, want, f.Data)
-			}
-		}
-		for _, want := range []string{`"media-users"`, acceptFlag} {
-			if !strings.Contains(res.Report, want) {
-				t.Errorf("report lacks %q:\n%s", want, res.Report)
-			}
-		}
-	})
-	t.Run("a group name cannot break out of the header comment", func(t *testing.T) {
+	t.Run("a group name cannot break out of the YAML", func(t *testing.T) {
 		in := withBindings(`["a\nspec: injected"]`)
-		res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{AcceptUnmanagedGroupBindings: true})
+		res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -373,13 +335,24 @@ func TestGroupBindings(t *testing.T) {
 				continue
 			}
 			var obj struct {
-				Spec map[string]any `json:"spec"`
+				Spec struct {
+					Access authentikiov1alpha1.ApplicationAccess `json:"access"`
+				} `json:"spec"`
 			}
 			if err := sigsyaml.Unmarshal(f.Data, &obj); err != nil {
 				t.Fatal(err)
 			}
-			if _, bad := obj.Spec["injected"]; bad || strings.Contains(string(f.Data), "\nspec: injected") {
-				t.Errorf("group name reached the YAML body:\n%s", f.Data)
+			if want := []string{"a\nspec: injected"}; !slices.Equal(obj.Spec.Access.Groups, want) {
+				t.Errorf("spec.access.groups = %q, want %q", obj.Spec.Access.Groups, want)
+			}
+			var raw struct {
+				Spec map[string]any `json:"spec"`
+			}
+			if err := sigsyaml.Unmarshal(f.Data, &raw); err != nil {
+				t.Fatal(err)
+			}
+			if _, bad := raw.Spec["injected"]; bad || strings.Contains(string(f.Data), "\nspec: injected") {
+				t.Errorf("group name reached the YAML body as a key:\n%s", f.Data)
 			}
 		}
 	})
@@ -397,6 +370,151 @@ func TestGroupBindings(t *testing.T) {
 					t.Errorf("%s mentions groupBindings:\n%s", f.Name, f.Data)
 				}
 			}
+		}
+	})
+}
+
+// applicationOf converts in and returns the application's file and decoded
+// object, plus the report.
+func applicationOf(t *testing.T, in string, opts Options) (file string, obj authentikiov1alpha1.AuthentikApplication,
+	report string) {
+	t.Helper()
+	res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		if strings.HasPrefix(f.Name, "authentikapplication-") {
+			if err := sigsyaml.UnmarshalStrict(f.Data, &obj); err != nil {
+				t.Fatal(err)
+			}
+			return string(f.Data), obj, res.Report
+		}
+	}
+	t.Fatal("no AuthentikApplication emitted")
+	return "", obj, ""
+}
+
+func withSpecLines(in, lines string) string {
+	return strings.Replace(in, "  name: X\n", "  name: X\n"+lines, 1)
+}
+
+func TestConvertGroupBindingsToAccess(t *testing.T) {
+	in := withSpecLines(app("x", "ns"), "  groupBindings: [media-users, media-admins, media-users]\n")
+	file, obj, report := applicationOf(t, in, Options{})
+	want := authentikiov1alpha1.ApplicationAccess{
+		Type: authentikiov1alpha1.AccessTypeGroups, Groups: []string{"media-users", "media-admins"},
+	}
+	if obj.Spec.Access == nil || obj.Spec.Access.Type != want.Type || !slices.Equal(obj.Spec.Access.Groups, want.Groups) {
+		t.Errorf("spec.access = %+v, want %+v", obj.Spec.Access, want)
+	}
+	if strings.Contains(file, "NOT managed") || strings.Contains(report, "NOT managed") {
+		t.Errorf("the unmanaged notice is gone:\n%s\n%s", file, report)
+	}
+	if !strings.Contains(report, `groupBindings lists "media-users" more than once; kept once`) {
+		t.Errorf("report lacks the duplicate note:\n%s", report)
+	}
+}
+
+// spec.access.groups holds 1 to 64 names of 1 to 255 characters, so an entry the
+// CRD would refuse stops the conversion instead of producing a file that fails
+// admission.
+func TestConvertRefusesGroupBindingsThatSpecAccessCannotHold(t *testing.T) {
+	many := make([]string, 0, 65)
+	for i := range 65 {
+		many = append(many, fmt.Sprintf("g%d", i))
+	}
+	for name, list := range map[string]string{
+		"an empty name":      `[a, ""]`,
+		"a name too long":    `[` + strings.Repeat("a", 256) + `]`,
+		"more than 64 names": "[" + strings.Join(many, ", ") + "]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := withSpecLines(app("x", "ns"), "  groupBindings: "+list+"\n")
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{})
+			if err == nil || res != nil || !strings.Contains(err.Error(), "groupBindings") {
+				t.Fatalf("want a groupBindings error and no result, got %v, %v", res, err)
+			}
+		})
+	}
+	t.Run("64 distinct names are fine, a repeat does not count", func(t *testing.T) {
+		in := withSpecLines(app("x", "ns"), "  groupBindings: ["+strings.Join(many[:64], ", ")+", g0]\n")
+		if _, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestConvertWithoutGroupBindingsIsUnmanaged(t *testing.T) {
+	const (
+		prefix     = "# spec.access is Unmanaged: this application's live bindings are unknown offline; "
+		dryHeader  = prefix + "the adoption dry run lists them.\n"
+		liveHeader = prefix + "status.access.bindings lists them once applied.\n"
+	)
+	for _, tc := range []struct {
+		name       string
+		dry        bool
+		want, deny string
+	}{
+		{"dry run on", true, dryHeader, liveHeader},
+		{"dry run off", false, liveHeader, dryHeader},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file, obj, _ := applicationOf(t, app("x", "ns"), Options{DryRunAdoption: tc.dry})
+			if obj.Spec.Access == nil || obj.Spec.Access.Type != authentikiov1alpha1.AccessTypeUnmanaged ||
+				len(obj.Spec.Access.Groups) != 0 {
+				t.Errorf("spec.access = %+v, want Unmanaged", obj.Spec.Access)
+			}
+			if !strings.Contains(file, tc.want) || strings.Contains(file, tc.deny) {
+				t.Errorf("header wrong, want %q and not %q:\n%s", tc.want, tc.deny, file)
+			}
+		})
+	}
+	t.Run("a Groups application has no Unmanaged header", func(t *testing.T) {
+		file, _, _ := applicationOf(t, withSpecLines(app("x", "ns"), "  groupBindings: [g]\n"), Options{})
+		if strings.Contains(file, "Unmanaged") {
+			t.Errorf("unexpected Unmanaged header:\n%s", file)
+		}
+	})
+}
+
+func TestConvertDropsPolicyEngineModeAllWithSeveralGroups(t *testing.T) {
+	const note = "policyEngineMode all with several groupBindings left unset"
+	t.Run("several groups", func(t *testing.T) {
+		in := withSpecLines(app("x", "ns"), "  policyEngineMode: all\n  groupBindings: [a, b]\n")
+		file, obj, report := applicationOf(t, in, Options{})
+		if obj.Spec.PolicyEngineMode != "" || strings.Contains(file, "policyEngineMode") {
+			t.Errorf("policyEngineMode must be left out:\n%s", file)
+		}
+		if obj.Spec.Access == nil || !slices.Equal(obj.Spec.Access.Groups, []string{"a", "b"}) {
+			t.Errorf("spec.access = %+v, want Groups [a b]", obj.Spec.Access)
+		}
+		if !strings.Contains(report, note) || !strings.Contains(report, "AuthentikApplication ns/x") {
+			t.Errorf("report lacks the note for the application:\n%s", report)
+		}
+	})
+	t.Run("one group keeps all", func(t *testing.T) {
+		in := withSpecLines(app("x", "ns"), "  policyEngineMode: all\n  groupBindings: [a]\n")
+		_, obj, report := applicationOf(t, in, Options{})
+		if obj.Spec.PolicyEngineMode != policyModeAll {
+			t.Errorf("policyEngineMode = %q, want all", obj.Spec.PolicyEngineMode)
+		}
+		if strings.Contains(report, note) {
+			t.Errorf("unexpected note:\n%s", report)
+		}
+	})
+	t.Run("duplicates count once", func(t *testing.T) {
+		in := withSpecLines(app("x", "ns"), "  policyEngineMode: all\n  groupBindings: [a, a]\n")
+		_, obj, report := applicationOf(t, in, Options{})
+		if obj.Spec.PolicyEngineMode != policyModeAll || strings.Contains(report, note) {
+			t.Errorf("one distinct group keeps all, got %q:\n%s", obj.Spec.PolicyEngineMode, report)
+		}
+	})
+	t.Run("any is copied", func(t *testing.T) {
+		in := withSpecLines(app("x", "ns"), "  policyEngineMode: any\n  groupBindings: [a, b]\n")
+		_, obj, _ := applicationOf(t, in, Options{})
+		if obj.Spec.PolicyEngineMode != "any" {
+			t.Errorf("policyEngineMode = %q, want any", obj.Spec.PolicyEngineMode)
 		}
 	})
 }
@@ -435,7 +553,7 @@ func TestExplicitFieldsAreCopied(t *testing.T) {
 		p.IncludeClaimsInIDToken == nil || *p.IncludeClaimsInIDToken {
 		t.Errorf("provider spec does not carry the JeffResc values: %+v", p)
 	}
-	if a := application.Spec; a.PolicyEngineMode != "all" || a.OpenInNewTab == nil || *a.OpenInNewTab {
+	if a := application.Spec; a.PolicyEngineMode != policyModeAll || a.OpenInNewTab == nil || *a.OpenInNewTab {
 		t.Errorf("application spec does not carry the JeffResc values: %+v", a)
 	}
 }

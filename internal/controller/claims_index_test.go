@@ -39,6 +39,8 @@ var testIndexes = map[string]client.IndexerFunc{
 	indexProviderPK:     providerPKIndex,
 	indexApplicationUID: applicationUIDIndex,
 	indexGroupPK:        groupPKIndex,
+	indexAccessGroup:    accessGroupIndex,
+	indexGroupName:      groupNameIndex,
 }
 
 // indexedClient serves List with client.MatchingFields the way the manager's

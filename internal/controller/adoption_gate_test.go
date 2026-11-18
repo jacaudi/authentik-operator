@@ -133,6 +133,7 @@ var _ = Describe("Adoption gate on the default connection", func() {
 		a := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "App " + name,
+				Access:            &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 				APIManagementSpec: authentikiov1alpha1.APIManagementSpec{ManagementPolicy: policy, DryRun: dryRun}},
 		}
 		Expect(k8sClient.Create(ctx, a)).To(Succeed())

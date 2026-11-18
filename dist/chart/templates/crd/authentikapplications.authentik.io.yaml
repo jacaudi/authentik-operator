@@ -60,6 +60,50 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikApplication
             properties:
+              access:
+                description: |-
+                  access says who may open the application: the groups bound to it
+                  (Groups) or left alone by this operator (Unmanaged). It is not the
+                  library section label, which is spec.group. Required unless
+                  managementPolicy is ReadOnly, where it is optional and a Groups value
+                  only reports drift. An application with no enabled binding is open to
+                  every user unless the Authentik instance setting "Applications with no
+                  policies bound can be accessed by any user" (2026.5+) is off; turning it
+                  off is recommended and this operator never changes it. Under Groups the
+                  application is not created, nor taken over, until at least one listed
+                  group exists (Ready=False, reason WaitingForGroups).
+                properties:
+                  groups:
+                    description: |-
+                      groups are Authentik group names, resolved on every reconcile. Required
+                      when type is Groups, not allowed when it is Unmanaged. Under Groups the
+                      operator adds the missing group bindings before it removes the ones of
+                      unlisted groups, and removes nothing while a listed group does not
+                      resolve.
+                    items:
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                  type:
+                    description: |-
+                      type is Groups (the operator binds exactly the listed groups to the
+                      application) or Unmanaged (the operator never writes a binding; status
+                      lists the live ones).
+                    enum:
+                    - Groups
+                    - Unmanaged
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: groups is required when type is Groups and not allowed
+                    when type is Unmanaged
+                  rule: 'self.type == ''Groups'' ? (has(self.groups) && size(self.groups)
+                    > 0) : !has(self.groups)'
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -169,7 +213,9 @@ spec:
               policyEngineMode:
                 description: |-
                   policyEngineMode: any (one passing policy grants access) or all. Unset:
-                  any on create, the live value on an adopted application.
+                  any on create, the live value on an adopted application. With type Groups
+                  and more than one group, all is refused: it would require membership of
+                  every group.
                 enum:
                 - all
                 - any
@@ -211,6 +257,14 @@ spec:
             - message: authentikRef is immutable
               rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
                 || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: spec.access is required unless managementPolicy is ReadOnly
+              rule: has(self.access) || (has(self.managementPolicy) && self.managementPolicy
+                == 'ReadOnly')
+            - message: policyEngineMode all with more than one access group would
+                require membership of every group; use any
+              rule: '!(has(self.policyEngineMode) && self.policyEngineMode == ''all''
+                && has(self.access) && self.access.type == ''Groups'' && size(self.access.groups)
+                > 1)'
             - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
               rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
                 && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
@@ -221,6 +275,23 @@ spec:
           status:
             description: status defines the observed state of AuthentikApplication
             properties:
+              access:
+                description: |-
+                  access is what the operator last read about the application's policy
+                  bindings.
+                properties:
+                  bindings:
+                    description: |-
+                      bindings lists every live policy binding of the application, whoever
+                      created it, as "group <name>", "user <username>" or "policy <name>" with
+                      the suffixes " (negated)", " (expiring)" and " (disabled)" where they
+                      apply. User, policy, expiring and (under policyEngineMode all) negated
+                      bindings are never changed by the operator.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
               applicationUid:
                 description: |-
                   applicationUid is the Authentik primary key (UUID) of the application

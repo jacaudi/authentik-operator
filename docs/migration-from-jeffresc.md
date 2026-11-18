@@ -52,8 +52,8 @@ bin/convert-jeffresc --out out/ jeffresc-backup.yaml          # files and/or dir
 Writes one object per file, `<kind-lowercase>-<name>.yaml`, deterministically
 (no timestamps; `out/` can be committed), and prints a report on stderr.
 It fails, writing nothing, when an object cannot be converted faithfully
-(SAML or `AuthentikGroup` kind, unknown JeffResc field, `groupBindings` without
-`--accept-unmanaged-group-bindings`, template variable or construct this
+(SAML or `AuthentikGroup` kind, unknown JeffResc field, a `groupBindings` entry
+`spec.access.groups` cannot hold, template variable or construct this
 operator does not support, a template that would render differently).
 
 | flag | default | meaning |
@@ -66,25 +66,38 @@ operator does not support, a template that would render differently).
 | `--secret-suffix S` | none | appended to every rendered Secret name, so new and old Secrets can exist side by side (recommended, see step 4) |
 | `--force` | off | write into a non-empty `--out` |
 | `--provider-suffix S` | none | appended to the `AuthentikOAuthProvider` resource names (default: same as the slug) |
-| `--accept-unmanaged-group-bindings` | off | convert objects that list `groupBindings` anyway; see below |
 
-### groupBindings fail open after migration
+### groupBindings become spec.access
 
 JeffResc v0.2.8+ creates a group binding in Authentik for each entry of
 `spec.groupBindings` and deletes the others, so the list is an access
-allowlist. This operator manages no bindings. The ones JeffResc created stay in
-Authentik, but nothing enforces or re-creates them, and **Authentik lets every
-user open an application that has no bindings**. A disaster-recovery re-create,
-a delete and re-apply, deleting a bound group, or an edit in the UI would leave
-the application open to everyone.
+allowlist. `AuthentikApplication.spec.access` is the same allowlist here, and it
+is required, so every converted application carries one:
 
-So the converter refuses a non-empty `groupBindings` per object, naming the
-groups, and writes nothing. Re-run with `--accept-unmanaged-group-bindings` to
-convert anyway; the converted `authentikapplication-*.yaml` then carries a header
-comment naming the groups (so the notice travels with the committed file) and
-the report repeats it. Manage the bindings in Authentik afterwards, for example
-with Authentik's blueprints. An empty or absent list triggers nothing (JeffResc
-ignores an empty one too).
+- A non-empty `groupBindings` becomes `access: {type: Groups, groups: [...]}`,
+  in input order with a name listed twice kept once (the report says so). The
+  operator then binds exactly those Authentik groups and removes the bindings
+  of other groups, adding before removing and removing nothing while a listed
+  group does not exist. The groups must exist in Authentik (they do, JeffResc
+  bound them); manage them with `AuthentikGroup` or leave them where they are.
+- An absent or empty `groupBindings` becomes `access: {type: Unmanaged}`: the
+  operator never writes a binding for that application. Its live bindings are
+  unknown offline, so the converted file carries a header comment saying so;
+  with `--dry-run-adoption` (the default) the adoption dry run in the Ready
+  condition lists them ("also grants access"), without it `status.access.bindings`
+  does once applied.
+- JeffResc `policyEngineMode: all` together with two or more distinct
+  `groupBindings` would require membership of every group, which the CRD
+  refuses for `spec.access`. The converter then leaves `policyEngineMode` out:
+  adoption keeps the live `all`, behaviour is unchanged, and the application
+  reports `AccessInSync=False` with reason `AccessNarrowed`. The report names the
+  application. Set `policyEngineMode: any` after the migration if each group
+  should grant access on its own.
+
+Turn off the Authentik instance setting "Applications with no policies bound can
+be accessed by any user" (2026.5+): without it, an application with no enabled
+binding is open to everyone, and the `AccessOpen` condition says when that is
+the case. The operator never changes the setting.
 
 Emitted per JeffResc object:
 
@@ -94,8 +107,8 @@ Emitted per JeffResc object:
   `deletionPolicy: Retain`, every provider field JeffResc sets, `secret.name`
   and `secret.templateRef`. The converter never emits `AdoptOrCreate`: a
   typo in the name must not create a provider with new credentials.
-- `AuthentikApplication` with `providerRef`, `managementPolicy: Adopt` (same
-  dry-run flag) and `deletionPolicy: Retain`.
+- `AuthentikApplication` with `providerRef`, `access` (see above),
+  `managementPolicy: Adopt` (same dry-run flag) and `deletionPolicy: Retain`.
 - One cluster-scoped `AuthentikCredentialsTemplate` per distinct
   (template body, secret labels, secret annotations). Objects that share all
   three share one template, whose `namespaceSelector` is
@@ -142,7 +155,7 @@ the fields it names. To keep holding a defaulted field, add it to the spec.
 | `spec.secret.template` | `AuthentikCredentialsTemplate.spec.template` | variables below |
 | `spec.secret.labels`, `spec.secret.annotations` | `AuthentikCredentialsTemplate.spec.labels`, `.annotations` | keys under `authentik.io/` are reserved here |
 | `spec.provider.grantTypes` (v0.2.7+; default and empty: `authorization_code, refresh_token`) | `grantTypes` | **always written**: the list copied without duplicates, else `[authorization_code, refresh_token]`; see below |
-| `spec.groupBindings` (v0.2.8+) | none | not managed here: refused unless `--accept-unmanaged-group-bindings`; see "groupBindings fail open" |
+| `spec.groupBindings` (v0.2.8+) | `AuthentikApplication.spec.access.groups` | `access: {type: Groups, groups: [...]}`; `access: {type: Unmanaged}` when absent; see "groupBindings become spec.access" |
 | (none) | `refreshTokenThreshold`, `logoutMethod`, `authenticationFlow`, `encryptionKey`, `logoutUri`, `clientId`, `AuthentikApplication.metaIcon`, `metaHide` | new; left unset, so adoption keeps the live values |
 | `status.*` | n/a | not migrated; rebuilt from Authentik on adoption |
 | `AuthentikSAMLApplication`, `AuthentikGroup` | none | error |

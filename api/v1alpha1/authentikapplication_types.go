@@ -47,8 +47,46 @@ type ProviderRef struct {
 // +kubebuilder:validation:Enum=all;any
 type PolicyEngineMode string
 
+// AccessType selects how the operator treats the policy bindings that decide
+// who may open an application.
+// +kubebuilder:validation:Enum=Groups;Unmanaged
+type AccessType string
+
+const (
+	// AccessTypeGroups makes the application's group bindings exactly the
+	// groups in spec.access.groups.
+	AccessTypeGroups AccessType = "Groups"
+	// AccessTypeUnmanaged leaves every policy binding of the application alone.
+	AccessTypeUnmanaged AccessType = "Unmanaged"
+)
+
+// ApplicationAccess says who may open an application.
+// +kubebuilder:validation:XValidation:rule="self.type == 'Groups' ? (has(self.groups) && size(self.groups) > 0) : !has(self.groups)",message="groups is required when type is Groups and not allowed when type is Unmanaged"
+type ApplicationAccess struct {
+	// type is Groups (the operator binds exactly the listed groups to the
+	// application) or Unmanaged (the operator never writes a binding; status
+	// lists the live ones).
+	// +unionDiscriminator
+	// +required
+	Type AccessType `json:"type"`
+
+	// groups are Authentik group names, resolved on every reconcile. Required
+	// when type is Groups, not allowed when it is Unmanaged. Under Groups the
+	// operator adds the missing group bindings before it removes the ones of
+	// unlisted groups, and removes nothing while a listed group does not
+	// resolve.
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=255
+	// +optional
+	Groups []string `json:"groups,omitempty"`
+}
+
 // AuthentikApplicationSpec defines the desired state of AuthentikApplication.
 // +kubebuilder:validation:XValidation:rule="has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef) || self.authentikRef.name == oldSelf.authentikRef.name)",message="authentikRef is immutable"
+// +kubebuilder:validation:XValidation:rule="has(self.access) || (has(self.managementPolicy) && self.managementPolicy == 'ReadOnly')",message="spec.access is required unless managementPolicy is ReadOnly"
+// +kubebuilder:validation:XValidation:rule="!(has(self.policyEngineMode) && self.policyEngineMode == 'all' && has(self.access) && self.access.type == 'Groups' && size(self.access.groups) > 1)",message="policyEngineMode all with more than one access group would require membership of every group; use any"
 type AuthentikApplicationSpec struct {
 	// APIManagementSpec carries managementPolicy, dryRun and deletionPolicy.
 	// An existing application is matched by slug. Adoption patches the fields
@@ -96,8 +134,23 @@ type AuthentikApplicationSpec struct {
 	// +optional
 	Group string `json:"group,omitempty"`
 
+	// access says who may open the application: the groups bound to it
+	// (Groups) or left alone by this operator (Unmanaged). It is not the
+	// library section label, which is spec.group. Required unless
+	// managementPolicy is ReadOnly, where it is optional and a Groups value
+	// only reports drift. An application with no enabled binding is open to
+	// every user unless the Authentik instance setting "Applications with no
+	// policies bound can be accessed by any user" (2026.5+) is off; turning it
+	// off is recommended and this operator never changes it. Under Groups the
+	// application is not created, nor taken over, until at least one listed
+	// group exists (Ready=False, reason WaitingForGroups).
+	// +optional
+	Access *ApplicationAccess `json:"access,omitempty"`
+
 	// policyEngineMode: any (one passing policy grants access) or all. Unset:
-	// any on create, the live value on an adopted application.
+	// any on create, the live value on an adopted application. With type Groups
+	// and more than one group, all is refused: it would require membership of
+	// every group.
 	// +optional
 	PolicyEngineMode PolicyEngineMode `json:"policyEngineMode,omitempty"`
 
@@ -170,6 +223,23 @@ type AuthentikApplicationStatus struct {
 	// observedGeneration is the spec generation last synced to Authentik.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// access is what the operator last read about the application's policy
+	// bindings.
+	// +optional
+	Access *ApplicationAccessStatus `json:"access,omitempty"`
+}
+
+// ApplicationAccessStatus reports the application's live policy bindings.
+type ApplicationAccessStatus struct {
+	// bindings lists every live policy binding of the application, whoever
+	// created it, as "group <name>", "user <username>" or "policy <name>" with
+	// the suffixes " (negated)", " (expiring)" and " (disabled)" where they
+	// apply. User, policy, expiring and (under policyEngineMode all) negated
+	// bindings are never changed by the operator.
+	// +listType=atomic
+	// +optional
+	Bindings []string `json:"bindings,omitempty"`
 }
 
 // +kubebuilder:object:root=true
