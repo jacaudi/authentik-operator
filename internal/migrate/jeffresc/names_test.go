@@ -73,3 +73,40 @@ spec:
 		})
 	}
 }
+
+// TestConvertNamesGroupFilesFromValidNamesOnly pins the same for groups: the
+// group file name is built from metadata.name, so it must be a Kubernetes name.
+func TestConvertNamesGroupFilesFromValidNamesOnly(t *testing.T) {
+	const manifest = `apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikGroup
+metadata: {name: %q, namespace: ns}
+spec: {name: Team}
+`
+	for _, tc := range []struct {
+		name, metadataName string
+		wantErr            bool
+	}{
+		{name: "plain name", metadataName: "team-a"},
+		{name: "name with a separator", metadataName: "a/b", wantErr: true},
+		{name: "name that climbs", metadataName: "/../../x", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := fmt.Sprintf(manifest, tc.metadataName)
+			res, err := Convert([]Input{{Source: testSource, Data: []byte(in)}}, Options{DryRunAdoption: true})
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "metadata.name") {
+					t.Fatalf("error = %v, want one naming metadata.name", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range res.Files {
+				if f.Name != filepath.Base(f.Name) {
+					t.Errorf("file name %q is not a single path component", f.Name)
+				}
+			}
+		})
+	}
+}

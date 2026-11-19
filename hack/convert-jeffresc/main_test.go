@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jacaudi/authentik-operator/internal/migrate/jeffresc"
 )
 
 const (
@@ -129,5 +131,27 @@ func TestRunRefusesNonEmptyOutWithoutForce(t *testing.T) {
 	}
 	if code = run([]string{flagOut, out, "--force", in}, &stdout, &stderr); code != 0 {
 		t.Fatalf("with --force: exit %d: %s", code, stderr.String())
+	}
+}
+
+func TestWriteFilesKeepsEveryFileInsideOut(t *testing.T) {
+	parent := t.TempDir()
+	out := filepath.Join(parent, "out")
+	if err := os.Mkdir(out, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := writeFiles(out, []jeffresc.File{{Name: "authentikgroup-/../../escape.yaml", Data: []byte("x")}})
+	if err == nil {
+		t.Fatal("writeFiles accepted a name that leaves --out")
+	}
+	if _, err := os.Stat(filepath.Join(parent, "escape.yaml")); err == nil {
+		t.Error("a file was written outside --out")
+	}
+	paths, err := writeFiles(out, []jeffresc.File{{Name: "authentikgroup-team.yaml", Data: []byte("x")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(out, "authentikgroup-team.yaml"); len(paths) != 1 || paths[0] != want {
+		t.Errorf("paths = %q, want [%q]", paths, want)
 	}
 }
