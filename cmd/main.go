@@ -123,7 +123,8 @@ func registerFlags() *options {
 		"Disable TLS verification for the default connection. Testing only.")
 	flag.StringVar(&o.adoptionNamespaces, "default-connection-adoption-namespace-selector", "",
 		"Label selector (e.g. kubernetes.io/metadata.name=team-a) for the namespaces whose resources may use "+
-			"managementPolicy Adopt, AdoptOrCreate or ReadOnly on the default connection. Empty denies every "+
+			"managementPolicy Adopt, AdoptOrCreate or ReadOnly on the default connection; a resource that adopted "+
+			"its object stays gated under every policy. Empty denies every "+
 			"namespace. Resources with spec.authentikRef are not affected.")
 	flag.StringVar(&o.identityNamespaces, "default-connection-identity-namespace-selector", "",
 		"Label selector for the namespaces whose AuthentikGroup and AuthentikUser resources the operator "+

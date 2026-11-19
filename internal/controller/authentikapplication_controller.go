@@ -169,7 +169,7 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, persist func() error) (got *api.Application, access accessState,
 	err error) {
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, a.Namespace,
-		a.Spec.AuthentikRef, a.Spec.ManagementPolicy); err != nil {
+		a.Spec.AuthentikRef, a.Spec.ManagementPolicy, a.Status.Provenance); err != nil {
 		return nil, access, err
 	}
 	providerPK, providerCreated, err := r.providerPK(ctx, a)

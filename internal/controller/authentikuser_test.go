@@ -363,6 +363,25 @@ var _ = Describe("AuthentikUser", func() {
 		Expect(fake.Requests(false)).To(BeEmpty())
 	})
 
+	It("stops an adopted user from writing once its namespace leaves the adoption selector, whatever the policy",
+		func() {
+			fake.SeedUser("revoked-user", nil)
+			u := newUser("revoked-user", policyAdopt, nil)
+			mustReconcile(u)
+			Expect(get(u).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+
+			users.AdoptionNamespaceSelector = labels.Nothing()
+			u = get(u)
+			u.Spec.ManagementPolicy = policyCreate
+			u.Spec.Invitation = invite()
+			u.Spec.FirstName = "Changed"
+			Expect(k8sClient.Update(ctx, u)).To(Succeed())
+			writes := len(fake.Requests(true))
+			mustReconcile(u)
+			Expect(ready(u).Reason).To(Equal(reasonAdoptionNotAllowed))
+			Expect(fake.Requests(true)).To(HaveLen(writes), "a revoked adopted resource must not write to Authentik")
+		})
+
 	It("applies the adoption gate after the identity gate", func() {
 		users.AdoptionNamespaceSelector = labels.Nothing()
 		u := newUser("adoption-gated", policyAdopt, nil)

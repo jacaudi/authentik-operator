@@ -614,6 +614,25 @@ var _ = Describe("AuthentikGroup", func() {
 		Expect(ready(g).Reason).To(Equal(reasonIdentityNotAllowed))
 	})
 
+	It("stops an adopted group from writing once its namespace leaves the adoption selector, whatever the policy",
+		func() {
+			fake.SeedGroup("adopted-then-revoked", nil)
+			g := newGroup("adopted-then-revoked", policyAdopt, nil)
+			mustReconcile(g)
+			Expect(ready(g).Status).To(Equal(metav1.ConditionTrue))
+			Expect(get(g).Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+
+			groups.AdoptionNamespaceSelector = labels.Nothing()
+			g = get(g)
+			g.Spec.ManagementPolicy = policyCreate
+			g.Spec.IsSuperuser = new(true)
+			Expect(k8sClient.Update(ctx, g)).To(Succeed())
+			writes := len(fake.Requests(true))
+			mustReconcile(g)
+			Expect(ready(g).Reason).To(Equal(reasonAdoptionNotAllowed))
+			Expect(fake.Requests(true)).To(HaveLen(writes), "a revoked adopted resource must not write to Authentik")
+		})
+
 	It("applies the adoption gate when the identity gate passes", func() {
 		groups.AdoptionNamespaceSelector = labels.Nothing()
 		g := newGroup("adoption-gated", policyAdopt, nil)

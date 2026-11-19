@@ -159,11 +159,10 @@ may adopt is an administrator's decision, by connection:
   empty selector, the default, denies every namespace. The check runs on every
   reconcile, so removing a namespace stops an adopted resource from writing and
   rendering Secrets; there is no Namespace watch, so a label change takes effect
-  within the 5-minute recheck. `Create` is never gated.
-- Known gap: the gate is by policy. A resource that adopted while its namespace
-  was allowed and is then switched to `Create` keeps managing the object it
-  adopted. Removing the namespace from the selector before switching policy
-  closes it.
+  within the 5-minute recheck. `Create` is not gated, except for a resource
+  whose `status.provenance` is `Adopted`: that resource is checked under every
+  policy, so switching it to `Create` after its namespace leaves the selector
+  still reports `AdoptionNotAllowed` and writes nothing.
 - A least-privilege `authentikRef` token can adopt and update an object but
   needs Authentik's global `add_*` permission to create one; scope the token
   with that in mind (see Authentik's permissions documentation).
@@ -368,7 +367,7 @@ used, configured by flags / environment (compatible with JeffResc):
 | `--authentik-token-file` | `AUTHENTIK_TOKEN` | token from a mounted Secret file, else the env var (set via `valueFrom.secretKeyRef`); never a flag value; read at startup |
 | `--authentik-ca-file` | | optional PEM bundle |
 | `--authentik-insecure-skip-verify` | | testing only |
-| `--default-connection-adoption-namespace-selector` | | label selector for the namespaces that may use `managementPolicy` Adopt, AdoptOrCreate or ReadOnly on the default connection; empty (the default) denies all; objects with `authentikRef` are not affected (see "Adoption trust boundary") |
+| `--default-connection-adoption-namespace-selector` | | label selector for the namespaces that may use `managementPolicy` Adopt, AdoptOrCreate or ReadOnly on the default connection, and that may keep managing an object they adopted under any policy; empty (the default) denies all; objects with `authentikRef` are not affected (see "Adoption trust boundary") |
 | `--default-connection-identity-namespace-selector` | | label selector for the namespaces whose `AuthentikGroup` and `AuthentikUser` resources are reconciled on the default connection, under every `managementPolicy` (`Create` included), checked before the adoption gate (reason `IdentityNotAllowed`); empty (the default) denies all; outside the selector deletion removes only `Created` objects, and adopted or undecided ones are retained with a Warning; objects with `authentikRef` are not affected (see "Identity gate (TASK-10)") |
 
 With neither a ref nor a default, an object is not reconciled and says so in

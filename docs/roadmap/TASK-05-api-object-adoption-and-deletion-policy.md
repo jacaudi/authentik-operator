@@ -88,7 +88,8 @@ credentials are rotated. Adopting the existing provider keeps them.
   "PATCH only the fields the spec sets" criterion was not met while the CRD
   defaulted a dozen fields (now met); resources created before provenance
   existed are not backfilled (scope.md, "Upgrading a dev cluster").
-- Known gap: the adoption gate is by policy; a resource switched from Adopt to
-  Create after its namespace was un-allowed keeps managing what it adopted.
+- Closed in TASK-10: the adoption gate also checks a resource whose provenance
+  is Adopted, whatever its policy, so switching it from Adopt to Create after
+  its namespace was un-allowed no longer keeps it managing what it adopted.
 - Not covered by a real Authentik: the specs run against `fakeauthentik`; the
   e2e suite (TASK-08) is where adoption meets a live instance.

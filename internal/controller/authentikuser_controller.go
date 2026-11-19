@@ -164,7 +164,7 @@ func (r *AuthentikUserReconciler) syncUser(ctx context.Context, u *authentikiov1
 		return nil, false, err
 	}
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, u.Namespace,
-		u.Spec.AuthentikRef, u.Spec.ManagementPolicy); err != nil {
+		u.Spec.AuthentikRef, u.Spec.ManagementPolicy, u.Status.Provenance); err != nil {
 		return nil, false, err
 	}
 	if err := reservedAttributes(u.Spec.Attributes, attrGivenName, attrFamilyName); err != nil {

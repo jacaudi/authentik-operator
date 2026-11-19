@@ -228,6 +228,52 @@ var _ = Describe("Adoption gate on the default connection", func() {
 		Expect(p.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceCreated))
 	})
 
+	It("keeps a Created provider reconciling when its namespace is outside the selector", func() {
+		providers.AdoptionNamespaceSelector = selector(corev1.LabelMetadataName + "=" + namespace)
+		p := newProvider("created-then-gated", authentikiov1alpha1.ManagementPolicyCreate, false, nil)
+		reconcileProvider(p)
+		Expect(providerReady(p).Status).To(Equal(metav1.ConditionTrue))
+		providers.AdoptionNamespaceSelector = selector("")
+		reconcileProvider(p)
+		Expect(providerReady(p).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("stops an adopted provider from writing once its namespace leaves the selector, whatever the policy", func() {
+		fake.SeedProviderWith(map[string]any{jsonName: "adopted-then-revoked"})
+		providers.AdoptionNamespaceSelector = selector(corev1.LabelMetadataName + "=" + namespace)
+		p := newProvider("adopted-then-revoked", authentikiov1alpha1.ManagementPolicyAdopt, false, nil)
+		reconcileProvider(p)
+		Expect(providerReady(p).Status).To(Equal(metav1.ConditionTrue))
+		Expect(p.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+
+		providers.AdoptionNamespaceSelector = selector("")
+		p.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyCreate
+		p.Spec.RedirectURIs = append(p.Spec.RedirectURIs, authentikiov1alpha1.RedirectURI{URL: "https://new.example.com/cb"})
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		writes := len(fake.Requests(true))
+		reconcileProvider(p)
+		Expect(providerReady(p).Reason).To(Equal(reasonAdoptionNotAllowed))
+		Expect(fake.Requests(true)).To(HaveLen(writes), "a revoked adopted resource must not write to Authentik")
+	})
+
+	It("stops an adopted application from writing once its namespace leaves the selector, whatever the policy", func() {
+		fake.SeedApplication("adopted-app-revoked", nil)
+		apps.AdoptionNamespaceSelector = selector(corev1.LabelMetadataName + "=" + namespace)
+		a := newApp("adopted-app-revoked", authentikiov1alpha1.ManagementPolicyAdopt, false)
+		reconcileApp(a)
+		Expect(appReady(a).Status).To(Equal(metav1.ConditionTrue))
+		Expect(a.Status.Provenance).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
+
+		apps.AdoptionNamespaceSelector = selector("")
+		a.Spec.ManagementPolicy = authentikiov1alpha1.ManagementPolicyCreate
+		a.Spec.Name = "Renamed after revocation"
+		Expect(k8sClient.Update(ctx, a)).To(Succeed())
+		writes := len(fake.Requests(true))
+		reconcileApp(a)
+		Expect(appReady(a).Reason).To(Equal(reasonAdoptionNotAllowed))
+		Expect(fake.Requests(true)).To(HaveLen(writes), "a revoked adopted resource must not write to Authentik")
+	})
+
 	It("allows adoption through a same-namespace authentikRef whatever the selector says", func() {
 		sec := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "gate-token", Namespace: namespace, Labels: map[string]string{

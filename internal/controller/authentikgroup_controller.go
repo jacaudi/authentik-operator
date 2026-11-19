@@ -184,7 +184,7 @@ func (r *AuthentikGroupReconciler) syncGroup(ctx context.Context, g *authentikio
 		return nil, err
 	}
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, g.Namespace,
-		g.Spec.AuthentikRef, g.Spec.ManagementPolicy); err != nil {
+		g.Spec.AuthentikRef, g.Spec.ManagementPolicy, g.Status.Provenance); err != nil {
 		return nil, err
 	}
 	if tracked, now := g.Status.Name, groupName(g); g.Status.GroupPK != "" && tracked != "" && tracked != now {

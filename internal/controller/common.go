@@ -214,9 +214,14 @@ type adoptionGate struct {
 // explicit spec.authentikRef is always allowed: it names a same-namespace
 // AuthentikDeployment whose own token bounds what the resource can reach. A
 // nil selector denies every namespace.
+//
+// A resource whose status records provenance Adopted is checked under every
+// policy, Create included: removing its namespace from the selector stops it
+// writing to the object it adopted, and switching the policy does not reopen it.
 func (g adoptionGate) check(ctx context.Context, namespace string, ref *authentikiov1alpha1.AuthentikRef,
-	mp authentikiov1alpha1.ManagementPolicy) error {
-	if ref != nil || !mp.MayAdopt() {
+	mp authentikiov1alpha1.ManagementPolicy, prov authentikiov1alpha1.Provenance) error {
+	adopted := prov == authentikiov1alpha1.ProvenanceAdopted
+	if ref != nil || (!mp.MayAdopt() && !adopted) {
 		return nil
 	}
 	ok, err := selectorMatches(ctx, g.reader, g.selector, namespace)
@@ -225,6 +230,12 @@ func (g adoptionGate) check(ctx context.Context, namespace string, ref *authenti
 	}
 	if ok {
 		return nil
+	}
+	if !mp.MayAdopt() {
+		return condErrf(reasonAdoptionNotAllowed, "this resource adopted its Authentik object, and namespace %q "+
+			"is not allowed to manage adopted objects on the operator's default connection; ask an administrator "+
+			"to allow the namespace with --default-connection-adoption-namespace-selector, or set "+
+			"spec.authentikRef", namespace)
 	}
 	return condErrf(reasonAdoptionNotAllowed, "managementPolicy %s is not allowed for namespace %q on the "+
 		"operator's default connection; ask an administrator to allow the namespace with "+
