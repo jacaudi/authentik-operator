@@ -152,7 +152,7 @@ func (r *AuthentikOAuthProviderReconciler) Reconcile(ctx context.Context, req ct
 func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, persist func() error) (ctrl.Result, error) {
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, p.Namespace,
-		p.Spec.AuthentikRef, p.Spec.ManagementPolicy); err != nil {
+		p.Spec.AuthentikRef, p.Spec.ManagementPolicy, p.Status.Provenance); err != nil {
 		return r.failed(p, err)
 	}
 	resolved, err := resolve(ctx, r.Connections, p.Namespace, p.Spec.AuthentikRef)

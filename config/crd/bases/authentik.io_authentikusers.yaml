@@ -14,7 +14,24 @@ spec:
     singular: authentikuser
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.username
+      name: Username
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.provenance
+      name: Provenance
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: AuthentikUser is the Schema for the authentikusers API.
@@ -39,6 +56,20 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikUser
             properties:
+              attributes:
+                additionalProperties:
+                  x-kubernetes-preserve-unknown-fields: true
+                description: |-
+                  attributes are the account's attributes. The operator owns only the
+                  keys listed here: it sets them, removes a key it set earlier that is no
+                  longer listed, and keeps every other key. An empty map removes the keys
+                  the operator set; omitting the field releases them without deleting
+                  them. Values are strings, numbers, booleans or lists. Keys starting
+                  with goauthentik.io/, and authentik_operator, settings, given_name and
+                  family_name (firstName and lastName own the last two), are reserved: the
+                  resource reports InvalidSpec and writes nothing.
+                maxProperties: 64
+                type: object
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -56,25 +87,170 @@ spec:
                 required:
                 - name
                 type: object
-              foo:
-                description: foo is an example field of AuthentikUser. Edit authentikuser_types.go
-                  to remove/update
+              deletionPolicy:
+                description: |-
+                  deletionPolicy is what happens to the object in Authentik when this
+                  resource is deleted: Delete or Retain. When unset the per-kind default
+                  applies: by provenance for providers, applications and groups (Delete
+                  for an object this resource created, Retain for an adopted one or one of
+                  undecided provenance); Retain for every AuthentikUser. An explicit
+                  Delete wins, so it can remove an object this resource did not create; a
+                  Warning event is emitted when it does so for undecided provenance.
+                  ReadOnly never deletes (Delete is rejected). The kind's Secret, if it
+                  renders one, is a Kubernetes object owned by this resource and is
+                  garbage-collected with it under either policy.
+                enum:
+                - Delete
+                - Retain
                 type: string
+              dryRun:
+                description: |-
+                  dryRun finds the existing object and reports, in the Ready condition
+                  (reason AdoptionDryRun) and an event, which fields adoption would
+                  change. Nothing is written to Authentik, and the kind's Secret (if it
+                  has one) is not rendered. Set it back to false to adopt for real. Only with
+                  managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
+                  takeover (and the decision to create under AdoptOrCreate): once the
+                  object is adopted, spec edits are applied live whatever dryRun says.
+                type: boolean
+              email:
+                description: email is the person's email address. Unset keeps the
+                  live value.
+                maxLength: 254
+                type: string
+              firstName:
+                description: |-
+                  firstName is written to the account's given_name attribute, which the
+                  OIDC profile scope hands to applications. Unset keeps the live value.
+                maxLength: 255
+                type: string
+              invitation:
+                description: |-
+                  invitation is how a new person is invited. Required when
+                  managementPolicy may create (Create, AdoptOrCreate), and not allowed
+                  under Adopt and ReadOnly.
+                properties:
+                  attempt:
+                    description: |-
+                      attempt numbers the invitation, from 1. Increase it to get a new link
+                      after the last one was lost, opened and abandoned, or expired: the
+                      operator never reissues on its own. Increasing it once the person has an
+                      account does nothing.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  expiresAfter:
+                    description: |-
+                      expiresAfter is how long the invitation stays valid, from the moment it
+                      is issued. Defaults to 168h (seven days).
+                    type: string
+                    x-kubernetes-validations:
+                    - message: expiresAfter must be positive
+                      rule: duration(self) > duration('0s')
+                  flow:
+                    description: |-
+                      flow is the slug of the enrolment flow the invitation is bound to. The
+                      flow's username prompt must be read-only (text_read_only) so the account
+                      is created under spec.username.
+                    maxLength: 50
+                    pattern: ^[-a-zA-Z0-9_]+$
+                    type: string
+                  secretName:
+                    description: |-
+                      secretName is the Secret, in this resource's namespace, that receives
+                      the sign-up link (keys url and expires). Defaults to
+                      <metadata.name>-invitation.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - flow
+                type: object
+              isActive:
+                description: |-
+                  isActive says whether the account may sign in; false is offboarding.
+                  Unset keeps the live value. The operator never deactivates its own
+                  token's user.
+                type: boolean
+              lastName:
+                description: |-
+                  lastName is written to the account's family_name attribute. Unset keeps
+                  the live value.
+                maxLength: 255
+                type: string
+              managementPolicy:
+                default: Create
+                description: |-
+                  managementPolicy is how this resource relates to the object in
+                  Authentik. Create (the default) creates it and treats an existing one as
+                  a Conflict. Adopt takes over an existing object and never creates one.
+                  AdoptOrCreate adopts if the object exists and creates it if not.
+                  ReadOnly finds the existing object, renders the kind's Secret (if it has
+                  one) and reports drift in the Drifted condition, and never writes to
+                  Authentik (an AuthentikUser switched to it while inviting deletes its
+                  live invitation) or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+                  operator's default connection need an administrator to allow the
+                  namespace (--default-connection-adoption-namespace-selector); with
+                  spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
+                  temporary choice for a disaster-recovery re-bootstrap: it removes the
+                  protection against minting new client credentials through a typo in a
+                  name, slug or pk.
+                enum:
+                - Create
+                - Adopt
+                - AdoptOrCreate
+                - ReadOnly
+                type: string
+              name:
+                description: name is the person's display name. Unset keeps the live
+                  value.
+                maxLength: 255
+                type: string
+              path:
+                description: path is the account's path in Authentik. Unset keeps
+                  the live value.
+                maxLength: 255
+                type: string
+              type:
+                description: type is internal or external. Unset keeps the live value.
+                enum:
+                - internal
+                - external
+                type: string
+              username:
+                description: username is the account's username in Authentik. It cannot
+                  change.
+                maxLength: 150
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: username is immutable
+                  rule: self == oldSelf
+            required:
+            - username
             type: object
+            x-kubernetes-validations:
+            - message: authentikRef is immutable
+              rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
+                || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: invitation is required when managementPolicy may create (Create,
+                AdoptOrCreate) and not allowed under Adopt and ReadOnly
+              rule: '(has(self.managementPolicy) && self.managementPolicy in [''Adopt'',
+                ''ReadOnly'']) ? !has(self.invitation) : has(self.invitation)'
+            - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
+              rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
+                && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
+            - message: managementPolicy ReadOnly never deletes; deletionPolicy Delete
+                is not allowed
+              rule: '!(has(self.managementPolicy) && self.managementPolicy == ''ReadOnly''
+                && has(self.deletionPolicy) && self.deletionPolicy == ''Delete'')'
           status:
             description: status defines the observed state of AuthentikUser
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the AuthentikUser resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state of the resource. "Ready" is
+                  True once the account in Authentik matches the spec.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -133,6 +309,62 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              invitation:
+                description: invitation is set while the person has no account yet.
+                properties:
+                  attempt:
+                    description: attempt is the spec.invitation.attempt this invitation
+                      answers.
+                    format: int32
+                    type: integer
+                  expires:
+                    description: expires is when the invitation stops being valid.
+                    format: date-time
+                    type: string
+                  name:
+                    description: 'name is the invitation''s name in Authentik: k8s-<metadata.uid>-<attempt>.'
+                    type: string
+                  pending:
+                    description: |-
+                      pending is true from before the invitation is created until its
+                      creation is confirmed, so a response lost in flight is recovered by name.
+                    type: boolean
+                  secretName:
+                    description: secretName is the Secret that holds the sign-up link.
+                    type: string
+                required:
+                - attempt
+                - expires
+                - name
+                - secretName
+                type: object
+              managedAttributes:
+                description: |-
+                  managedAttributes lists the attribute keys the operator owns: the keys it
+                  set from spec.attributes. It removes one from the account when the spec
+                  stops listing it. given_name and family_name are never listed here.
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                description: observedGeneration is the spec generation last synced
+                  to Authentik.
+                format: int64
+                type: integer
+              provenance:
+                description: |-
+                  provenance is Created (the person enrolled through this resource's
+                  invitation) or Adopted once decided; empty means not yet decided.
+                enum:
+                - Created
+                - Adopted
+                type: string
+              userPk:
+                description: |-
+                  userPk is the Authentik primary key of the account this resource
+                  manages, whether it adopted it or the person enrolled it.
+                format: int32
+                type: integer
             type: object
         required:
         - spec

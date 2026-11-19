@@ -47,6 +47,8 @@ authentik:
   ## --authentik-url (env AUTHENTIK_URL)
   url: ""
   ## --authentik-external-url: browser-facing URL used in rendered credential Secrets
+  ## and in the sign-up links of AuthentikUser invitations (required for them:
+  ## without it an invitation reports ExternalURLRequired)
   externalUrl: ""
   ## API token from an EXISTING Secret, mounted as a file and passed via
   ## --authentik-token-file. The token never appears in values or in the pod spec.
@@ -77,6 +79,21 @@ adoption:
   ##   kubernetes.io/metadata.name in (team-a, team-b)
   ## Empty (default) denies every namespace: such resources report
   ## AdoptionNotAllowed. Resources with a same-namespace spec.authentikRef are not
+  ## affected. Read at startup; changing it restarts the pod.
+  defaultConnectionNamespaceSelector: ""
+
+## AuthentikGroup and AuthentikUser on the default connection, under every
+## managementPolicy. The default connection's token is the operator's own and
+## spans every team, so which namespaces may create, change or delete groups
+## and users with it is an administrator decision.
+identity:
+  ## --default-connection-identity-namespace-selector: a Kubernetes label selector
+  ## matched against the resource's Namespace labels. The recommended value is
+  ##   kubernetes.io/metadata.name in (authentik)
+  ## and others are e.g.
+  ##   kubernetes.io/metadata.name=team-a
+  ## Empty (default) denies every namespace: such resources report
+  ## IdentityNotAllowed. Resources with a same-namespace spec.authentikRef are not
   ## affected. Read at startup; changing it restarts the pod.
   defaultConnectionNamespaceSelector: ""
 

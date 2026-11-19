@@ -1,0 +1,38 @@
+convert-jeffresc report
+=======================
+
+Every converted object adopts the group JeffResc created (managementPolicy: Adopt).
+Adoption writes only the fields in the spec: a field JeffResc left unset is left unset
+here, so the live value stays.
+Before turning dryRun off, read each object's Ready condition (reason AdoptionDryRun lists
+`field: old -> new`) and edit the spec until the only listed changes are ones you intend.
+
+AuthentikGroup media/media-admins
+  files: authentikgroup-media-admins.yaml
+  notes:
+    - members are not managed: JeffResc never managed membership, so spec.members is absent
+
+AuthentikGroup media/media-users
+  files: authentikgroup-media-users.yaml
+  notes:
+    - attribute "goauthentik.io/x" is reserved for Authentik or this operator; left in Authentik, unmanaged
+    - attribute "nested" has an object or null value, which this operator cannot own per key; left in Authentik, unmanaged
+    - attribute "settings" is reserved for Authentik or this operator; left in Authentik, unmanaged
+    - parents ["p"] and roles ["r"] are not converted; they stay as they are in Authentik, unmanaged
+    - members are not managed: JeffResc never managed membership, so spec.members is absent
+
+Adoption gate: these objects use the operator's default connection, where Adopt is refused
+(reason AdoptionNotAllowed) unless the operator admin allows their namespaces. Set the flag
+--default-connection-adoption-namespace-selector, or the Helm value
+adoption.defaultConnectionNamespaceSelector, to:
+  kubernetes.io/metadata.name in (media)
+
+Identity gate: groups on the default connection are refused (reason IdentityNotAllowed)
+unless the operator admin allows their namespaces with
+--default-connection-identity-namespace-selector, or the Helm value
+identity.defaultConnectionNamespaceSelector, set to:
+  kubernetes.io/metadata.name in (media)
+
+Adopt mode: a missing group is reported as AdoptionTargetNotFound and nothing is created.
+Once every group is migrated, leave adopt mode: remove managementPolicy and dryRun from
+every converted group (final runbook step in docs/migration-from-jeffresc.md).

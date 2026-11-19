@@ -40,7 +40,7 @@ func goldenCases() []goldenCase {
 	dry := Options{DryRunAdoption: true}
 	return []goldenCase{
 		{name: "v1-gitlab", opts: dry},
-		{name: "v1-gitlab-live", opts: Options{DryRunAdoption: false, Namespace: "sso", AuthentikRef: "main"}},
+		{name: "v1-gitlab-live", opts: Options{DryRunAdoption: false, Namespace: namespaceSSO, AuthentikRef: refMain}},
 		{name: "four-shared-template", opts: dry},
 		{name: "two-templates", opts: dry},
 		{name: "v2-oauth2", opts: dry},
@@ -56,11 +56,11 @@ func goldenCases() []goldenCase {
 		{name: "err-launch-url", opts: dry, wantErr: "keep the live launch URL"},
 		{name: "err-unknown-variable", opts: dry, wantErr: ".Namespace"},
 		{name: "err-saml", opts: dry, wantErr: "unsupported: SAML"},
-		{name: "err-group-kind", opts: dry, wantErr: "AuthentikGroup"},
+		{name: "group-adopt", opts: dry},
 		{name: "grant-types-list", opts: dry},
 		{name: "grant-types-empty", opts: dry},
-		{name: "err-group-bindings", opts: dry, wantErr: acceptFlag},
-		{name: "group-bindings-accepted", opts: Options{DryRunAdoption: true, AcceptUnmanagedGroupBindings: true}},
+		{name: "group-bindings", opts: dry},
+		{name: "group-bindings-all-mode", opts: dry},
 		{name: "err-unknown-field", opts: dry, wantErr: "unknown field"},
 		{name: "err-template-construct", opts: dry, wantErr: "range"},
 	}

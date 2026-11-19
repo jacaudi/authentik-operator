@@ -46,6 +46,14 @@ const (
 	// helm install passes it: an upgrade without --reuse-values resets values.
 	adoptionSelector = "kubernetes.io/metadata.name in (" + appsNS + ", " + migratedNS + ")"
 
+	// identitySelector is the chart value identity.defaultConnectionNamespaceSelector:
+	// the namespaces whose AuthentikGroup and AuthentikUser may reconcile on the
+	// default connection (the chart default, empty, denies every namespace). The
+	// identity specs live in appsNS and the migrated group in migratedNS, the same
+	// two namespaces the adoption specs use. Passed on every helm install, like
+	// adoptionSelector.
+	identitySelector = adoptionSelector
+
 	bootstrapUser     = "akadmin"
 	bootstrapPassword = "e2e-bootstrap-password-not-a-secret"
 	bootstrapToken    = "e2e-bootstrap-token-not-a-secret-0123456789"

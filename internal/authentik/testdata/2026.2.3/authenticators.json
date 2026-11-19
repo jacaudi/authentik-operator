@@ -1,0 +1,16 @@
+[
+  {
+    "verbose_name": "Static Device",
+    "verbose_name_plural": "Static Devices",
+    "meta_model_name": "authentik_stages_authenticator_static.staticdevice",
+    "pk": "1",
+    "name": "rec-device",
+    "type": "authentik_stages_authenticator_static.StaticDevice",
+    "confirmed": true,
+    "created": "2026-11-18T07:42:02.625877Z",
+    "last_updated": "2026-11-18T07:42:02.625893Z",
+    "last_used": null,
+    "extra_description": null,
+    "external_id": null
+  }
+]
