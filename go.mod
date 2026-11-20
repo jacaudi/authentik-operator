@@ -8,7 +8,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	go.yaml.in/yaml/v4 v4.0.0
-	goauthentik.io/api/v3 v3.2026080.5
+	goauthentik.io/api/v3 v3.2026080.6
 	golang.org/x/time v0.16.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
