@@ -8,7 +8,6 @@ tasks:
       - task: actions
       - task: yaml
       - task: docker
-      - task: helm
 
   actions:
     desc: Lint GitHub Actions workflows (only when they changed)
@@ -84,46 +83,3 @@ tasks:
         command -v hadolint >/dev/null \
           || { echo "hadolint not installed: brew install hadolint" >&2; exit 1; }
         echo "${files}" | xargs hadolint
-
-  chart:deps:
-    desc: Register classic dependency repos and build chart dependencies
-    cmds:
-      # Single source of truth for dependency resolution — ci-chart.yml calls this
-      # too. Without it `helm template` fails once the vendored .tgz is deleted, as
-      # the migration instructs.
-      - |
-        set -eu
-        for c in $(find . -name Chart.yaml -not -path './.git/*' -not -path '*/charts/*'); do
-          d=$(dirname "${c}")
-          count=$(yq '.dependencies | length // 0' "${c}")
-          [ "${count}" -gt 0 ] || continue
-          i=0
-          while [ "${i}" -lt "${count}" ]; do
-            name=$(yq ".dependencies[${i}].name" "${c}")
-            repo=$(yq ".dependencies[${i}].repository" "${c}")
-            case "${repo}" in
-              oci://*|""|null) : ;;
-              *) echo "helm repo add ${name} ${repo}"; helm repo add "${name}" "${repo}" >/dev/null ;;
-            esac
-            i=$((i + 1))
-          done
-          echo "helm dependency build ${d}"
-          helm dependency build "${d}"   # build, NOT update — honours Chart.lock
-        done
-
-  helm:
-    desc: helm lint + template, when a chart is present
-    cmds:
-      - task: chart:deps
-      - |
-        set -eu
-        charts=$(find . -name Chart.yaml -not -path './.git/*' -not -path '*/charts/*')
-        [ -n "${charts}" ] || { echo "no chart — skipping helm lint"; exit 0; }
-        command -v helm >/dev/null \
-          || { echo "helm not installed: brew install helm" >&2; exit 1; }
-        for c in ${charts}; do
-          d=$(dirname "${c}")
-          echo "linting ${d}"
-          helm lint "${d}"
-          helm template release-test "${d}" >/dev/null
-        done
