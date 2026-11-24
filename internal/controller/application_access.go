@@ -410,8 +410,9 @@ func (r *AuthentikApplicationReconciler) accessReadFailed(a *authentikiov1alpha1
 	err = fmt.Errorf("list policy bindings: %w", err)
 	switch {
 	case st.created:
-		r.setReady(a, metav1.ConditionFalse, reasonAccessPending, "the policy bindings of the new application could "+
-			"not be read yet; until they can be, every user may open it unless the instance setting is off")
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonAccessPending,
+			"the policy bindings of the new application could "+
+				"not be read yet; until they can be, every user may open it unless the instance setting is off")
 	case wantsGroups(a):
 		setAccessCondition(a, ConditionAccessInSync, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 	}
@@ -428,12 +429,12 @@ func (r *AuthentikApplicationReconciler) finishAccess(a *authentikiov1alpha1.Aut
 	switch {
 	case (st.created || a.Status.Provenance == authentikiov1alpha1.ProvenanceCreated) &&
 		len(st.groups.pks) > 0 && !holdsManagedBinding(live, st.groups):
-		r.setReady(a, metav1.ConditionFalse, reasonAccessPending, accessPendingMessage)
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonAccessPending, accessPendingMessage)
 		if w.err == nil {
 			return ctrl.Result{RequeueAfter: userErrorRecheck}, true, nil
 		}
 		setAccessCondition(a, ConditionAccessInSync, metav1.ConditionFalse, reasonAuthentikError, w.err.Error())
-		r.event(a, corev1.EventTypeWarning, "AccessBindingFailed", "Bind",
+		emit(r.Recorder, a, corev1.EventTypeWarning, "AccessBindingFailed", "Bind",
 			"Could not bind the groups of spec.access to the application: %v", w.err)
 		return ctrl.Result{}, true, w.err
 	case w.err != nil:
@@ -514,8 +515,9 @@ func (r *AuthentikApplicationReconciler) applyBindings(ctx context.Context,
 	w := writeBindings(ctx, st, appPK, plan)
 	if len(w.bound)+len(w.unbound) > 0 {
 		logf.FromContext(ctx).Info("Updated Application access", "bound", w.bound, "unbound", w.unbound)
-		r.event(a, corev1.EventTypeNormal, "AccessUpdated", "Update", "Updated application access: bound groups [%s]; "+
-			"unbound groups [%s]", quoted(w.bound), quoted(w.unbound))
+		emit(r.Recorder, a, corev1.EventTypeNormal, "AccessUpdated", "Update",
+			"Updated application access: bound groups [%s]; "+
+				"unbound groups [%s]", quoted(w.bound), quoted(w.unbound))
 	}
 	return w
 }

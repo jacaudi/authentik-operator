@@ -102,7 +102,7 @@ func TestDecodesAuthentik20262Application(t *testing.T) {
 
 func TestDecodesAuthentik20262ApplicationList(t *testing.T) {
 	c := serveRecorded(t)
-	res, resp, err := c.API().CoreAPI.CoreApplicationsList(t.Context()).Slug("e2e-oidc").Execute()
+	res, resp, err := c.api.CoreAPI.CoreApplicationsList(t.Context()).Slug("e2e-oidc").Execute()
 	if err := Check(resp, err); err != nil {
 		t.Fatalf("list applications: %v", err)
 	}
