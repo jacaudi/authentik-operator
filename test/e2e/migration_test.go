@@ -453,9 +453,18 @@ stringData:
 		var app authentikiov1alpha1.AuthentikApplication
 		Expect(k8s.Get(ctx, newKey(jrApp), &app)).To(Succeed())
 		pokeAndWait(ctx, &prov, &app)
+		before := objectWrites(ctx, Default, &prov, &app)
 		_, err = kubectl(ctx, "-n", appsNS, "annotate", jrCRD, jrApp, "--overwrite",
 			pokeAnnotation+"="+strconv.FormatInt(time.Now().UnixNano(), 10))
 		Expect(err).NotTo(HaveOccurred())
+		// JeffResc saves the provider and then the application on every
+		// reconcile, changed or not, and nothing here waits for its reconcile
+		// otherwise: wait for both saves of the one the poke started, so the
+		// window below cannot open between them.
+		Eventually(func(g Gomega) {
+			g.Expect(objectWrites(ctx, g, &prov, &app)).To(BeNumerically(">=", before+2),
+				"the old operator's reconcile has not saved both objects yet")
+		}).WithContext(ctx).WithTimeout(waitTimeout).WithPolling(2 * time.Second).Should(Succeed())
 		pokeAndWait(ctx, &prov, &app)
 		writes := objectWrites(ctx, Default, &prov, &app)
 		updates := operatorUpdates(ctx, Default)
