@@ -37,6 +37,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -248,21 +249,50 @@ func (p *portForward) Stop() {
 	}
 }
 
-// waitDeployment blocks until the Deployment is fully available.
+// waitDeployment blocks until the Deployment is fully available. On failure
+// the error carries the namespace's pods and recent events, so a CI log shows
+// why (an image pull, a crash loop, a pending pod) and not only that it timed out.
 func waitDeployment(ctx context.Context, ns, name string, timeout time.Duration) error {
 	_, err := kubectl(ctx, "-n", ns, "rollout", "status", "deploy/"+name, "--timeout="+timeout.String())
-	return err
+	if err == nil {
+		return nil
+	}
+	pods, _ := kubectl(ctx, "-n", ns, "get", "pods", "-o", "wide")
+	events, _ := kubectl(ctx, "-n", ns, "get", "events", "--sort-by=.lastTimestamp")
+	return fmt.Errorf("%w\npods:\n%s\nevents:\n%s", err, pods, events)
 }
 
-// ensureNamespace creates ns if needed, with extra labels.
+// ensureNamespace creates ns if needed, with extra labels. A namespace that is
+// still terminating is waited out and then created afresh: two containers of
+// specs may delete and create the same one (e2e-migrated).
 func ensureNamespace(ctx context.Context, name string, labels map[string]string) error {
-	ns := &corev1.Namespace{}
-	ns.Name = name
-	ns.Labels = labels
-	if err := k8s.Create(ctx, ns); err != nil && !isAlreadyExists(err) {
-		return err
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		ns := &corev1.Namespace{}
+		ns.Name = name
+		ns.Labels = labels
+		err := k8s.Create(ctx, ns)
+		if err == nil || !isAlreadyExists(err) {
+			return err
+		}
+		var cur corev1.Namespace
+		switch err := k8s.Get(ctx, client.ObjectKey{Name: name}, &cur); {
+		case apierrors.IsNotFound(err):
+			continue // gone between the two calls: create it
+		case err != nil:
+			return err
+		case cur.DeletionTimestamp.IsZero():
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("namespace %s is still terminating", name)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
-	return nil
 }
 
 func isAlreadyExists(err error) bool {

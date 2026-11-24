@@ -1,9 +1,39 @@
+# An access group. The operator creates it (marked with an ownership proof in
+# its attributes) and deletes it with this resource unless a policy binding
+# still uses it; the deletion then waits, see status.conditions (DeletionBlocked).
 apiVersion: authentik.io/v1alpha1
 kind: AuthentikGroup
 metadata:
   labels:
     app.kubernetes.io/name: authentik-operator
     app.kubernetes.io/managed-by: kustomize
-  name: authentikgroup-sample
+  name: immich-users
 spec:
-  # TODO(user): Add fields here
+  # name defaults to metadata.name and cannot change once the group exists.
+  name: immich-users
+  # Authentik usernames. Absent: membership is never read or written. Present,
+  # including []: exactly these members, so everyone else is removed (the
+  # operator token's own user never is). A username that does not exist, or that
+  # now belongs to another account than the first time, is reported in the
+  # MembersInSync condition; the other members are still applied.
+  members: [alice, bob]
+  # Attributes are inherited by members in claims. The operator owns only the
+  # keys listed here and keeps every other key. Values are strings, numbers,
+  # booleans or lists. goauthentik.io/*, authentik_operator and settings are
+  # reserved (InvalidSpec). An empty map removes the keys the operator set.
+  # attributes:
+  #   immich_role: admin
+  #   teams: [photos, family]
+  #
+  # Unset: false on a group this resource created, the live value on an
+  # adopted group.
+  # isSuperuser: false
+  #
+  # Take over a group that already exists with this name instead of failing
+  # with a Conflict. Only the fields set here are patched. Adopt, AdoptOrCreate
+  # and ReadOnly on the operator's default connection need an administrator to
+  # allow this namespace (--default-connection-adoption-namespace-selector).
+  # Start with dryRun: true.
+  # managementPolicy: Adopt   # Create | Adopt | AdoptOrCreate | ReadOnly
+  # dryRun: true              # only with Adopt or AdoptOrCreate
+  # deletionPolicy: Retain    # default for an adopted group

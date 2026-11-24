@@ -1,0 +1,37 @@
+{
+  "pk": "fda25c73-0f93-409f-b15f-626809780c92",
+  "num_pk": 33713,
+  "name": "rec-group",
+  "is_superuser": false,
+  "parents": [],
+  "parents_obj": null,
+  "users": [
+    5
+  ],
+  "users_obj": [
+    {
+      "pk": 5,
+      "username": "rec-user",
+      "name": "Rec User",
+      "is_active": true,
+      "last_login": null,
+      "email": "",
+      "attributes": {
+        "authentik_operator": {
+          "owner_uid": "rec-uid"
+        }
+      },
+      "uid": "164430b48f3d4d024cb9c33197ad99e298765585c70f6f6612d7f2a9da26fdd0"
+    }
+  ],
+  "attributes": {
+    "authentik_operator": {
+      "owner_uid": "rec-uid"
+    }
+  },
+  "roles": [],
+  "roles_obj": [],
+  "inherited_roles_obj": null,
+  "children": [],
+  "children_obj": null
+}

@@ -82,7 +82,7 @@ type options struct {
 	probeAddr                                                     string
 	enableLeaderElection, secureMetrics, enableHTTP2              bool
 	defaultConn                                                   connection.DefaultOptions
-	adoptionNamespaces                                            string
+	adoptionNamespaces, identityNamespaces                        string
 	zap                                                           zap.Options
 }
 
@@ -123,8 +123,13 @@ func registerFlags() *options {
 		"Disable TLS verification for the default connection. Testing only.")
 	flag.StringVar(&o.adoptionNamespaces, "default-connection-adoption-namespace-selector", "",
 		"Label selector (e.g. kubernetes.io/metadata.name=team-a) for the namespaces whose resources may use "+
-			"managementPolicy Adopt, AdoptOrCreate or ReadOnly on the default connection. Empty denies every "+
+			"managementPolicy Adopt, AdoptOrCreate or ReadOnly on the default connection; a resource that adopted "+
+			"its object stays gated under every policy. Empty denies every "+
 			"namespace. Resources with spec.authentikRef are not affected.")
+	flag.StringVar(&o.identityNamespaces, "default-connection-identity-namespace-selector", "",
+		"Label selector for the namespaces whose AuthentikGroup and AuthentikUser resources the operator "+
+			"reconciles on the default connection, under every managementPolicy. Empty denies every namespace. "+
+			"Resources with spec.authentikRef are not affected.")
 	o.zap.BindFlags(flag.CommandLine)
 	return o
 }
@@ -244,11 +249,15 @@ func run(o *options) error {
 	connections := &connection.Resolver{Reader: mgr.GetAPIReader(), Default: defaultCfg,
 		DefaultExternalURL: o.defaultConn.ExternalURL}
 
-	adoptionNamespaces, err := controller.ParseAdoptionNamespaceSelector(o.adoptionNamespaces)
+	adoptionNamespaces, err := controller.ParseNamespaceSelector(o.adoptionNamespaces)
 	if err != nil {
 		return fmt.Errorf("--default-connection-adoption-namespace-selector: %w", err)
 	}
-	if err := setupControllers(mgr, connections, adoptionNamespaces); err != nil {
+	identityNamespaces, err := controller.ParseNamespaceSelector(o.identityNamespaces)
+	if err != nil {
+		return fmt.Errorf("--default-connection-identity-namespace-selector: %w", err)
+	}
+	if err := setupControllers(mgr, connections, adoptionNamespaces, identityNamespaces); err != nil {
 		return err
 	}
 	// +kubebuilder:scaffold:builder
@@ -267,7 +276,8 @@ func run(o *options) error {
 }
 
 // setupControllers registers every reconciler with the manager.
-func setupControllers(mgr ctrl.Manager, connections *connection.Resolver, adoptionNamespaces labels.Selector) error {
+func setupControllers(mgr ctrl.Manager, connections *connection.Resolver,
+	adoptionNamespaces, identityNamespaces labels.Selector) error {
 	controllers := []struct {
 		name       string
 		reconciler interface{ SetupWithManager(ctrl.Manager) error }
@@ -286,14 +296,22 @@ func setupControllers(mgr ctrl.Manager, connections *connection.Resolver, adopti
 			AdoptionNamespaceSelector: adoptionNamespaces,
 		}},
 		{"authentikuser", &controller.AuthentikUserReconciler{
-			Client:      mgr.GetClient(),
-			Scheme:      mgr.GetScheme(),
-			Connections: connections,
+			Client:                    mgr.GetClient(),
+			Scheme:                    mgr.GetScheme(),
+			Connections:               connections,
+			Recorder:                  mgr.GetEventRecorder("authentikuser"),
+			APIReader:                 mgr.GetAPIReader(),
+			AdoptionNamespaceSelector: adoptionNamespaces,
+			IdentityNamespaceSelector: identityNamespaces,
 		}},
 		{"authentikgroup", &controller.AuthentikGroupReconciler{
-			Client:      mgr.GetClient(),
-			Scheme:      mgr.GetScheme(),
-			Connections: connections,
+			Client:                    mgr.GetClient(),
+			Scheme:                    mgr.GetScheme(),
+			Connections:               connections,
+			Recorder:                  mgr.GetEventRecorder("authentikgroup"),
+			APIReader:                 mgr.GetAPIReader(),
+			AdoptionNamespaceSelector: adoptionNamespaces,
+			IdentityNamespaceSelector: identityNamespaces,
 		}},
 		{"authentikoauthprovider", &controller.AuthentikOAuthProviderReconciler{
 			Client:                    mgr.GetClient(),

@@ -24,6 +24,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,10 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	force := fs.Bool("force", false, "write into a non-empty --out directory")
 	out := fs.String("out", "", "directory to write the converted objects to (required)")
 	fs.BoolVar(&opts.DryRunAdoption, "dry-run-adoption", true,
-		"set spec.dryRun on every converted provider and application")
-	fs.BoolVar(&opts.AcceptUnmanagedGroupBindings, "accept-unmanaged-group-bindings", false,
-		"convert objects that list groupBindings although this operator does not manage or enforce them "+
-			"(Authentik then lets every user open the application)")
+		"set spec.dryRun on every converted provider, application and group")
 	fs.StringVar(&opts.Namespace, "namespace", "",
 		"namespace for the converted objects (default: each source's namespace)")
 	fs.StringVar(&opts.AuthentikRef, "authentik-ref", "", "name of an AuthentikDeployment to reference as authentikRef")
@@ -80,14 +78,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := os.MkdirAll(*out, 0o750); err != nil {
 		return fail(stderr, err)
 	}
-	for _, f := range res.Files {
-		if err := os.WriteFile(filepath.Join(*out, f.Name), f.Data, 0o600); err != nil {
-			return fail(stderr, err)
-		}
-		write(stdout, filepath.Join(*out, f.Name)+"\n")
+	paths, err := writeFiles(*out, res.Files)
+	for _, p := range paths {
+		write(stdout, p+"\n")
+	}
+	if err != nil {
+		return fail(stderr, err)
 	}
 	write(stderr, res.Report)
 	return 0
+}
+
+// writeFiles writes each file into dir through an os.Root, so no file name can
+// reach outside dir, and returns the paths it wrote.
+func writeFiles(dir string, files []jeffresc.File) (paths []string, err error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	for _, f := range files {
+		if err := root.WriteFile(f.Name, f.Data, 0o600); err != nil {
+			return paths, fmt.Errorf("write %s: %w", f.Name, err)
+		}
+		paths = append(paths, filepath.Join(dir, f.Name))
+	}
+	return paths, nil
 }
 
 // fail reports err and returns the exit code for a failure.

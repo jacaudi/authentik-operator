@@ -60,6 +60,50 @@ spec:
           spec:
             description: spec defines the desired state of AuthentikApplication
             properties:
+              access:
+                description: |-
+                  access says who may open the application: the groups bound to it
+                  (Groups) or left alone by this operator (Unmanaged). It is not the
+                  library section label, which is spec.group. Required unless
+                  managementPolicy is ReadOnly, where it is optional and a Groups value
+                  only reports drift. An application with no enabled binding is open to
+                  every user unless the Authentik instance setting "Applications with no
+                  policies bound can be accessed by any user" (2026.5+) is off; turning it
+                  off is recommended and this operator never changes it. Under Groups the
+                  application is not created, nor taken over, until at least one listed
+                  group exists (Ready=False, reason WaitingForGroups).
+                properties:
+                  groups:
+                    description: |-
+                      groups are Authentik group names, resolved on every reconcile. Required
+                      when type is Groups, not allowed when it is Unmanaged. Under Groups the
+                      operator adds the missing group bindings before it removes the ones of
+                      unlisted groups, and removes nothing while a listed group does not
+                      resolve.
+                    items:
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: set
+                  type:
+                    description: |-
+                      type is Groups (the operator binds exactly the listed groups to the
+                      application) or Unmanaged (the operator never writes a binding; status
+                      lists the live ones).
+                    enum:
+                    - Groups
+                    - Unmanaged
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: groups is required when type is Groups and not allowed
+                    when type is Unmanaged
+                  rule: 'self.type == ''Groups'' ? (has(self.groups) && size(self.groups)
+                    > 0) : !has(self.groups)'
               authentikRef:
                 description: |-
                   authentikRef names the AuthentikDeployment (same namespace) whose
@@ -81,13 +125,15 @@ spec:
               deletionPolicy:
                 description: |-
                   deletionPolicy is what happens to the object in Authentik when this
-                  resource is deleted: Delete or Retain. When unset: Delete for an object
-                  this resource created, Retain for an adopted one or one of undecided
-                  provenance. An explicit Delete always wins, so it can remove an object
-                  this resource did not create; a Warning event is emitted when it does so
-                  for undecided provenance. ReadOnly never deletes (Delete is rejected).
-                  The rendered credentials Secret is a Kubernetes object owned by this
-                  resource and is garbage-collected with it under either policy.
+                  resource is deleted: Delete or Retain. When unset the per-kind default
+                  applies: by provenance for providers, applications and groups (Delete
+                  for an object this resource created, Retain for an adopted one or one of
+                  undecided provenance); Retain for every AuthentikUser. An explicit
+                  Delete wins, so it can remove an object this resource did not create; a
+                  Warning event is emitted when it does so for undecided provenance.
+                  ReadOnly never deletes (Delete is rejected). The kind's Secret, if it
+                  renders one, is a Kubernetes object owned by this resource and is
+                  garbage-collected with it under either policy.
                 enum:
                 - Delete
                 - Retain
@@ -96,8 +142,8 @@ spec:
                 description: |-
                   dryRun finds the existing object and reports, in the Ready condition
                   (reason AdoptionDryRun) and an event, which fields adoption would
-                  change. Nothing is written to Authentik, and no credentials Secret is
-                  rendered. Set it back to false to adopt for real. Only with
+                  change. Nothing is written to Authentik, and the kind's Secret (if it
+                  has one) is not rendered. Set it back to false to adopt for real. Only with
                   managementPolicy Adopt or AdoptOrCreate. dryRun gates only the initial
                   takeover (and the decision to create under AdoptOrCreate): once the
                   object is adopted, spec edits are applied live whatever dryRun says.
@@ -113,9 +159,10 @@ spec:
                   Authentik. Create (the default) creates it and treats an existing one as
                   a Conflict. Adopt takes over an existing object and never creates one.
                   AdoptOrCreate adopts if the object exists and creates it if not.
-                  ReadOnly finds the existing object, renders the credentials Secret and
-                  reports drift in the Drifted condition, and never writes to Authentik
-                  or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
+                  ReadOnly finds the existing object, renders the kind's Secret (if it has
+                  one) and reports drift in the Drifted condition, and never writes to
+                  Authentik (an AuthentikUser switched to it while inviting deletes its
+                  live invitation) or deletes the object. Adopt, AdoptOrCreate and ReadOnly on the
                   operator's default connection need an administrator to allow the
                   namespace (--default-connection-adoption-namespace-selector); with
                   spec.authentikRef they are always allowed. Treat AdoptOrCreate as a
@@ -169,7 +216,9 @@ spec:
               policyEngineMode:
                 description: |-
                   policyEngineMode: any (one passing policy grants access) or all. Unset:
-                  any on create, the live value on an adopted application.
+                  any on create, the live value on an adopted application. With type Groups
+                  and more than one group, all is refused: it would require membership of
+                  every group.
                 enum:
                 - all
                 - any
@@ -211,6 +260,14 @@ spec:
             - message: authentikRef is immutable
               rule: has(self.authentikRef) == has(oldSelf.authentikRef) && (!has(self.authentikRef)
                 || self.authentikRef.name == oldSelf.authentikRef.name)
+            - message: spec.access is required unless managementPolicy is ReadOnly
+              rule: has(self.access) || (has(self.managementPolicy) && self.managementPolicy
+                == 'ReadOnly')
+            - message: policyEngineMode all with more than one access group would
+                require membership of every group; use any
+              rule: '!(has(self.policyEngineMode) && self.policyEngineMode == ''all''
+                && has(self.access) && self.access.type == ''Groups'' && size(self.access.groups)
+                > 1)'
             - message: dryRun requires managementPolicy Adopt or AdoptOrCreate
               rule: '!has(self.dryRun) || !self.dryRun || (has(self.managementPolicy)
                 && self.managementPolicy in [''Adopt'', ''AdoptOrCreate''])'
@@ -221,6 +278,23 @@ spec:
           status:
             description: status defines the observed state of AuthentikApplication
             properties:
+              access:
+                description: |-
+                  access is what the operator last read about the application's policy
+                  bindings.
+                properties:
+                  bindings:
+                    description: |-
+                      bindings lists every live policy binding of the application, whoever
+                      created it, as "group <name>", "user <username>" or "policy <name>" with
+                      the suffixes " (negated)", " (expiring)" and " (disabled)" where they
+                      apply. User, policy, expiring and (under policyEngineMode all) negated
+                      bindings are never changed by the operator.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
               applicationUid:
                 description: |-
                   applicationUid is the Authentik primary key (UUID) of the application
