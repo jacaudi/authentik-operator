@@ -157,10 +157,12 @@ func (r *AuthentikGroupReconciler) sync(ctx context.Context, g *authentikiov1alp
 	g.Status.Name = groupName(g)
 	g.Status.ObservedGeneration = g.Generation
 	if readOnly(g.Spec.ManagementPolicy) {
-		r.setReady(g, metav1.ConditionTrue, reasonReadOnly, fmt.Sprintf("Group %q found; observed read only", got.Name))
+		setReady(&g.Status.Conditions, g.Generation, metav1.ConditionTrue, reasonReadOnly,
+			fmt.Sprintf("Group %q found; observed read only", got.Name))
 	} else {
 		meta.RemoveStatusCondition(&g.Status.Conditions, ConditionDrifted)
-		r.setReady(g, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Group %q is in sync", got.Name))
+		setReady(&g.Status.Conditions, g.Generation, metav1.ConditionTrue, reasonSynced,
+			fmt.Sprintf("Group %q is in sync", got.Name))
 	}
 	return ctrl.Result{RequeueAfter: recheckAfter(g)}, nil
 }
@@ -282,7 +284,7 @@ func (r *AuthentikGroupReconciler) act(ctx context.Context, c *authentik.Client,
 		return r.createGroup(ctx, c, g, work.want, persist)
 	case adopt.ActionRecoverOwnCreate:
 		logf.FromContext(ctx).Info("Recovered Group from a create whose outcome was lost", "name", name)
-		r.event(g, corev1.EventTypeNormal, "Recovered", "Create",
+		emit(r.Recorder, g, corev1.EventTypeNormal, "Recovered", "Create",
 			"Recovered group %q created by an earlier reconcile", name)
 		recordGroup(g, authentikiov1alpha1.ProvenanceCreated, work.target)
 		return r.syncFields(ctx, c, g, work.target, work.want)
@@ -313,10 +315,10 @@ func (r *AuthentikGroupReconciler) announceCreate(g *authentikiov1alpha1.Authent
 	name := groupName(g)
 	switch {
 	case action == adopt.ActionRecreate:
-		r.event(g, corev1.EventTypeWarning, "GroupMissing", "Recreate",
+		emit(r.Recorder, g, corev1.EventTypeWarning, "GroupMissing", "Recreate",
 			"Group %q no longer exists in Authentik; recreating it", name)
 	case g.Spec.ManagementPolicy.Resolve() == authentikiov1alpha1.ManagementPolicyAdoptOrCreate:
-		r.event(g, corev1.EventTypeNormal, "NothingToAdopt", "Create",
+		emit(r.Recorder, g, corev1.EventTypeNormal, "NothingToAdopt", "Create",
 			"Creating a new group because nothing was found to adopt (name %q)", name)
 	}
 }
@@ -424,9 +426,10 @@ func (r *AuthentikGroupReconciler) adoptGroup(ctx context.Context, g *authentiki
 		return err
 	}
 	if readOnly(g.Spec.ManagementPolicy) {
-		r.event(g, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing group %q read only", target.Name)
+		emit(r.Recorder, g, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing group %q read only",
+			target.Name)
 	} else {
-		r.event(g, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing group %q", target.Name)
+		emit(r.Recorder, g, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing group %q", target.Name)
 	}
 	return nil
 }
@@ -467,7 +470,7 @@ func (r *AuthentikGroupReconciler) dryRunAdopt(ctx context.Context, c *authentik
 	// announce is judged against the whole message, members included.
 	msg, announce := dryRunMessage(g.Status.Conditions, changes)
 	if announce {
-		r.event(g, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
+		emit(r.Recorder, g, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 	}
 	return condErr(reasonAdoptionDryRun, errors.New(msg))
 }
@@ -491,7 +494,7 @@ func (r *AuthentikGroupReconciler) createGroup(ctx context.Context, c *authentik
 	recordGroup(g, authentikiov1alpha1.ProvenanceCreated, created)
 	g.Status.ManagedAttributes = ownedKeys(g, want)
 	logf.FromContext(ctx).Info("Created Group", "name", created.Name, "pk", created.Pk)
-	r.event(g, corev1.EventTypeNormal, "Created", "Create", "Created group %q", created.Name)
+	emit(r.Recorder, g, corev1.EventTypeNormal, "Created", "Create", "Created group %q", created.Name)
 	return created, nil
 }
 
@@ -524,7 +527,7 @@ func (r *AuthentikGroupReconciler) syncFields(ctx context.Context, c *authentik.
 		}
 		got = updated
 		logf.FromContext(ctx).Info("Updated Group", "name", live.Name, "pk", live.Pk, "fields", plan.changed)
-		r.event(g, corev1.EventTypeNormal, "Updated", "Update", "Updated group fields: %s",
+		emit(r.Recorder, g, corev1.EventTypeNormal, "Updated", "Update", "Updated group fields: %s",
 			strings.Join(plan.changed, ", "))
 	}
 	g.Status.ManagedAttributes = nil
@@ -575,20 +578,20 @@ func (r *AuthentikGroupReconciler) decideDeletion(ctx context.Context,
 	switch fin {
 	case adopt.FinalizeRetain:
 		logf.FromContext(ctx).Info("Retaining Group in Authentik", "name", name)
-		r.event(g, corev1.EventTypeNormal, "Retained", "Delete", "Group %q left in Authentik", name)
+		emit(r.Recorder, g, corev1.EventTypeNormal, "Retained", "Delete", "Group %q left in Authentik", name)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeRetainUndecided:
-		r.event(g, corev1.EventTypeWarning, "Retained", "Delete",
+		emit(r.Recorder, g, corev1.EventTypeWarning, "Retained", "Delete",
 			"Group %q left in Authentik: provenance unknown; retaining", name)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeRetainNotAllowed:
-		r.event(g, corev1.EventTypeWarning, "Retained", "Delete",
+		emit(r.Recorder, g, corev1.EventTypeWarning, "Retained", "Delete",
 			"Group %q left in Authentik: it was not created by this resource, and this namespace is outside "+
 				"--default-connection-identity-namespace-selector, which confines deletion to groups the resource "+
 				"created", name)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeDeleteUndecided:
-		r.event(g, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+		emit(r.Recorder, g, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
 			"Deleting group %q on an explicit deletionPolicy Delete although this resource's provenance is "+
 				"undecided: it may not have created it", name)
 		return r.deleteGroup(ctx, g)
@@ -611,7 +614,7 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 	case connectionGone(err):
 		log.Info("Could not reach Authentik to delete Group; leaving it in place", "name", name,
 			"reason", err.Error())
-		r.event(g, corev1.EventTypeWarning, "Orphaned", "Delete", "Group %q left in Authentik: %v", name, err)
+		emit(r.Recorder, g, corev1.EventTypeWarning, "Orphaned", "Delete", "Group %q left in Authentik: %v", name, err)
 		return ctrl.Result{}, true, nil
 	case err != nil:
 		return r.deletionFailed(g, err)
@@ -626,7 +629,7 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 		case err != nil:
 			return r.deletionFailed(g, err)
 		case !authentik.HasOwnerProof(live.Attributes, string(g.UID)):
-			r.event(g, corev1.EventTypeWarning, "Retained", "Delete", "Group %q left in Authentik: it does not carry "+
+			emit(r.Recorder, g, corev1.EventTypeWarning, "Retained", "Delete", "Group %q left in Authentik: it does not carry "+
 				"this resource's ownership proof, so this resource did not create it", name)
 			return ctrl.Result{}, true, nil
 		}
@@ -637,7 +640,7 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 	}
 	if !me.IsSuperuser {
 		log.Info("Retaining Group in Authentik: the token user is not a superuser", "name", name)
-		r.event(g, corev1.EventTypeWarning, "RetainedUnverifiable", "Delete",
+		emit(r.Recorder, g, corev1.EventTypeWarning, "RetainedUnverifiable", "Delete",
 			"Group %q left in Authentik: the operator's token user is not a superuser, so it cannot see every "+
 				"binding that uses the group; delete it in Authentik after checking its bindings", name)
 		return ctrl.Result{}, true, nil
@@ -653,8 +656,8 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 		msg := fmt.Sprintf("deletion blocked: the group is still used by %d policy binding(s): %s; remove the "+
 			"binding in Authentik or the group from the application's spec.access.groups, or set "+
 			"spec.deletionPolicy: Retain on this resource", len(bindings), strings.Join(bindings, ", "))
-		if r.setReady(g, metav1.ConditionFalse, reasonDeletionBlocked, msg) {
-			r.event(g, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete", "%s", msg)
+		if setReady(&g.Status.Conditions, g.Generation, metav1.ConditionFalse, reasonDeletionBlocked, msg) {
+			emit(r.Recorder, g, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete", "%s", msg)
 		}
 		return ctrl.Result{RequeueAfter: userErrorRecheck}, false, nil
 	}
@@ -662,7 +665,7 @@ func (r *AuthentikGroupReconciler) deleteGroup(ctx context.Context,
 		return r.deletionFailed(g, err)
 	}
 	log.Info("Deleted Group", "name", name, "pk", pk)
-	r.event(g, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted group %q", name)
+	emit(r.Recorder, g, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted group %q", name)
 	return ctrl.Result{}, true, nil
 }
 
@@ -681,8 +684,9 @@ func policyBindings(used []api.UsedBy) []string {
 // deleted, and the error returned makes the controller retry with backoff.
 func (r *AuthentikGroupReconciler) deletionFailed(g *authentikiov1alpha1.AuthentikGroup,
 	err error) (ctrl.Result, bool, error) {
-	if r.setReady(g, metav1.ConditionFalse, conditionReason(err, reasonAuthentikError), "Deletion blocked: "+err.Error()) {
-		r.event(g, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete",
+	if setReady(&g.Status.Conditions, g.Generation, metav1.ConditionFalse, conditionReason(err, reasonAuthentikError),
+		"Deletion blocked: "+err.Error()) {
+		emit(r.Recorder, g, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete",
 			"Cannot delete group %q yet: %v", g.Status.Name, err)
 	}
 	return ctrl.Result{}, false, err
@@ -691,24 +695,10 @@ func (r *AuthentikGroupReconciler) deletionFailed(g *authentikiov1alpha1.Authent
 // failed records why sync stopped; see classifyFailure.
 func (r *AuthentikGroupReconciler) failed(g *authentikiov1alpha1.AuthentikGroup, err error) (ctrl.Result, error) {
 	reason, result, retErr, warn := classifyFailure(err)
-	if r.setReady(g, metav1.ConditionFalse, reason, err.Error()) && warn {
-		r.event(g, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the group: %v", err)
+	if setReady(&g.Status.Conditions, g.Generation, metav1.ConditionFalse, reason, err.Error()) && warn {
+		emit(r.Recorder, g, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the group: %v", err)
 	}
 	return result, retErr
-}
-
-// setReady records the Ready condition and reports whether it changed.
-func (r *AuthentikGroupReconciler) setReady(g *authentikiov1alpha1.AuthentikGroup,
-	status metav1.ConditionStatus, reason, msg string) bool {
-	return meta.SetStatusCondition(&g.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: g.Generation,
-	})
-}
-
-//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
-func (r *AuthentikGroupReconciler) event(g *authentikiov1alpha1.AuthentikGroup,
-	eventType, reason, action, note string, args ...any) {
-	emit(r.Recorder, g, eventType, reason, action, note, args...)
 }
 
 func (r *AuthentikGroupReconciler) patchStatus(ctx context.Context,

@@ -230,7 +230,8 @@ func (r *AuthentikUserReconciler) createInvitation(ctx context.Context, resolved
 	if err := r.ensureInvitationSecret(ctx, resolved, u, created); err != nil {
 		return err
 	}
-	r.event(u, corev1.EventTypeNormal, "InvitationIssued", "Invite", "Issued invitation %q; the link is in Secret %q",
+	emit(r.Recorder, u, corev1.EventTypeNormal, "InvitationIssued", "Invite",
+		"Issued invitation %q; the link is in Secret %q",
 		inv.Name, inv.SecretName)
 	return invitationPending(inv)
 }
@@ -384,7 +385,7 @@ func (r *AuthentikUserReconciler) withdrawInvitation(ctx context.Context,
 	u.Status.Invitation = nil
 	logf.FromContext(ctx).Info("Withdrew Invitation after the managementPolicy stopped creating", "name", inv.Name,
 		"policy", u.Spec.ManagementPolicy.Resolve())
-	r.event(u, corev1.EventTypeNormal, "InvitationWithdrawn", "Withdraw",
+	emit(r.Recorder, u, corev1.EventTypeNormal, "InvitationWithdrawn", "Withdraw",
 		"Withdrew invitation %q: managementPolicy %s does not create accounts", inv.Name, u.Spec.ManagementPolicy.Resolve())
 	return nil
 }
@@ -424,7 +425,7 @@ func (r *AuthentikUserReconciler) deleteLiveInvitation(ctx context.Context,
 	case connectionGone(err):
 		logf.FromContext(ctx).Info("Could not reach Authentik to delete Invitation; leaving it in place", "name", name,
 			"reason", err.Error())
-		r.event(u, corev1.EventTypeWarning, "Orphaned", "Delete", "Invitation %q left in Authentik: %v", name, err)
+		emit(r.Recorder, u, corev1.EventTypeWarning, "Orphaned", "Delete", "Invitation %q left in Authentik: %v", name, err)
 		return nil
 	case err != nil:
 		return err
