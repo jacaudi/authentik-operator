@@ -314,22 +314,6 @@ helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify
 		--timeout 5m \
 		$(HELM_EXTRA_ARGS)
 
-.PHONY: helm-uninstall
-helm-uninstall: ## Uninstall the Helm release from the K8s cluster.
-	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
-
-.PHONY: helm-status
-helm-status: ## Show Helm release status.
-	$(HELM) status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
-
-.PHONY: helm-history
-helm-history: ## Show Helm release history.
-	$(HELM) history $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
-
-.PHONY: helm-rollback
-helm-rollback: ## Rollback to previous Helm release.
-	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
-
 .PHONY: chart-regen
 chart-regen: kubebuilder ## Regenerate the plugin-owned parts of dist/chart (CRDs, RBAC, metrics, ServiceMonitor, NetworkPolicy).
 	KUBEBUILDER="$(KUBEBUILDER)" hack/chart-regen.sh

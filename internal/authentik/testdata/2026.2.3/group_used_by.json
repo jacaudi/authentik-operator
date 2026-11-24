@@ -1,0 +1,16 @@
+[
+  {
+    "app": "authentik_policies",
+    "model_name": "policybinding",
+    "pk": "5b70462f-996c-41aa-a1c4-47ee38da1cc5",
+    "name": "Binding from rec-app #0 to Group rec-group",
+    "action": "cascade"
+  },
+  {
+    "app": "authentik_core",
+    "model_name": "user",
+    "pk": "5",
+    "name": "rec-user",
+    "action": "cascade_many"
+  }
+]

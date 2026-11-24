@@ -76,6 +76,8 @@ func TestOutputDecodesStrictly(t *testing.T) {
 					err = sigsyaml.UnmarshalStrict(f.Data, &authentikiov1alpha1.AuthentikOAuthProvider{})
 				case "AuthentikApplication":
 					err = sigsyaml.UnmarshalStrict(f.Data, &authentikiov1alpha1.AuthentikApplication{})
+				case "AuthentikGroup":
+					err = sigsyaml.UnmarshalStrict(f.Data, &authentikiov1alpha1.AuthentikGroup{})
 				case "AuthentikCredentialsTemplate":
 					err = sigsyaml.UnmarshalStrict(f.Data, &authentikiov1alpha1.AuthentikCredentialsTemplate{})
 				default:

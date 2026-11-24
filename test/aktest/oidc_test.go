@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -276,6 +277,35 @@ func TestLoginRejectsForgedStateAudienceAndNonce(t *testing.T) {
 			_, err := AuthorizationCodeLogin(t.Context(), f.params())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want an error mentioning %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// Authentik answers a signed-in user a policy refuses with an HTML page and
+// status 200, which the walker must tell apart from any other unexpected page.
+func TestLoginReportsPermissionDenied(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body       string
+		wantDenied bool
+		want       string
+	}{
+		"permission denied page": {"<html><h1>Permission denied</h1></html>", true, "permission denied"},
+		"another 200 page":       {"<html>welcome</html>", false, "expected a redirect"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			p := OIDCParams{AuthURL: srv.URL + "/application/o/authorize/", RedirectURI: fakeRedirect,
+				ClientID: fakeClient, Username: fakeUser, Password: "pw"}
+			_, err := AuthorizationCodeLogin(t.Context(), p)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error mentioning %q, got %v", tc.want, err)
+			}
+			if got := errors.Is(err, ErrPermissionDenied); got != tc.wantDenied {
+				t.Fatalf("errors.Is(err, ErrPermissionDenied) = %t, want %t (%v)", got, tc.wantDenied, err)
 			}
 		})
 	}

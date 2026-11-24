@@ -25,7 +25,6 @@ import (
 
 	api "goauthentik.io/api/v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,6 +78,7 @@ type AuthentikApplicationReconciler struct {
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikapplications/finalizers,verbs=update
 // +kubebuilder:rbac:groups=authentik.io,resources=authentikoauthproviders,verbs=get;list;watch
+// +kubebuilder:rbac:groups=authentik.io,resources=authentikgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile makes the application in Authentik match the spec.
@@ -131,7 +131,7 @@ func (r *AuthentikApplicationReconciler) Reconcile(ctx context.Context, req ctrl
 // the create request is sent.
 func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentikiov1alpha1.AuthentikApplication,
 	persist func() error) (ctrl.Result, error) {
-	got, err := r.syncApplication(ctx, a, persist)
+	got, access, err := r.syncApplication(ctx, a, persist)
 	if err != nil {
 		return r.failed(a, err)
 	}
@@ -140,40 +140,62 @@ func (r *AuthentikApplicationReconciler) sync(ctx context.Context, a *authentiki
 	a.Status.Slug = got.Slug
 	a.Status.ProviderPK = int32OrZero(got.Provider.Get())
 	a.Status.ObservedGeneration = a.Generation
-	if readOnly(a.Spec.ManagementPolicy) {
-		r.setReady(a, metav1.ConditionTrue, reasonReadOnly,
-			fmt.Sprintf("Application %q found; observed read only", got.Slug))
-	} else {
+	// Ready is set once: syncAccess says when it holds Ready at False
+	// (AccessPending), and setting True first would flip the condition twice in
+	// one reconcile.
+	res, readyHeld, accessErr := r.syncAccess(ctx, a, got, access)
+	observing := readOnly(a.Spec.ManagementPolicy)
+	if !observing {
 		meta.RemoveStatusCondition(&a.Status.Conditions, ConditionDrifted)
-		r.setReady(a, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("Application %q is in sync", got.Slug))
+	}
+	switch {
+	case readyHeld:
+	case observing:
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionTrue, reasonReadOnly,
+			fmt.Sprintf("Application %q found; observed read only", got.Slug))
+	default:
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionTrue, reasonSynced,
+			fmt.Sprintf("Application %q is in sync", got.Slug))
+	}
+	if accessErr != nil || !res.IsZero() {
+		return res, accessErr
 	}
 	return ctrl.Result{RequeueAfter: syncedRecheck}, nil
 }
 
 // syncApplication makes the application in Authentik match the spec and
-// returns it as Authentik now has it.
+// returns it as Authentik now has it, with what the access sync needs.
 func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication, persist func() error) (*api.Application, error) {
+	a *authentikiov1alpha1.AuthentikApplication, persist func() error) (got *api.Application, access accessState,
+	err error) {
 	if err := (adoptionGate{r.APIReader, r.AdoptionNamespaceSelector}).check(ctx, a.Namespace,
-		a.Spec.AuthentikRef, a.Spec.ManagementPolicy); err != nil {
-		return nil, err
+		a.Spec.AuthentikRef, a.Spec.ManagementPolicy, a.Status.Provenance); err != nil {
+		return nil, access, err
 	}
 	providerPK, providerCreated, err := r.providerPK(ctx, a)
 	if err != nil {
-		return nil, err
+		return nil, access, err
 	}
 	resolved, err := resolve(ctx, r.Connections, a.Namespace, a.Spec.AuthentikRef)
 	if err != nil {
-		return nil, err
+		return nil, access, err
 	}
 	c := resolved.Client
+	access.client = c
+	if wantsGroups(a) {
+		// Under every policy, ReadOnly included: these are reads.
+		if access.groups, err = resolveAccessGroups(ctx, c, a.Spec.Access.Groups); err != nil {
+			return nil, access, err
+		}
+	}
 	want := desiredApplication(a, providerPK)
-	got, err := r.observeApplication(ctx, c, a, desiredApp{want, providerCreated}, persist)
-	if err != nil {
-		return nil, err
+	dw := desiredApp{want, providerCreated, &access}
+	if got, err = r.observeApplication(ctx, c, a, dw, persist); err != nil {
+		return nil, access, err
 	}
 	if got == nil {
-		return r.createApplication(ctx, c, a, want, persist)
+		got, err = r.createApplication(ctx, c, a, dw, persist)
+		return got, access, err
 	}
 	// An adopted application, and any application a ReadOnly resource
 	// observes, is compared on the fields the spec sets only.
@@ -184,9 +206,10 @@ func (r *AuthentikApplicationReconciler) syncApplication(ctx context.Context,
 	if observing {
 		patch, changed := applicationPatch(want, got)
 		recordDrift(&a.Status.Conditions, a.Generation, patch, got, changed)
-		return got, nil
+		return got, access, nil
 	}
-	return r.updateApplication(ctx, c, a, want, got)
+	got, err = r.updateApplication(ctx, c, a, want, got)
+	return got, access, err
 }
 
 // observeTracked looks up the application recorded in status. It returns it
@@ -218,11 +241,14 @@ func (r *AuthentikApplicationReconciler) observeTracked(ctx context.Context, c *
 // desiredApp is the request an application should match plus what is known
 // about its provider: whether this resource's providerRef names a provider
 // that this resource created, which is half the proof that an application
-// found after a lost create is ours.
+// found after a lost create is ours. access is the access state of this
+// reconcile: createApplication records in it that it created the application,
+// and the two write entry points consult it before they write.
 type desiredApp struct {
 	*api.ApplicationRequest
 
 	providerCreated bool
+	access          *accessState
 }
 
 // observeApplication finds the application this resource manages: by
@@ -241,7 +267,7 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 		if gone && a.Status.Slug == slug {
 			// Authentik just said 404 for this very slug (it is immutable): asking
 			// again would only repeat the question.
-			return nil, r.missingApplication(a, slug)
+			return nil, r.missingApplication(a, want)
 		}
 	}
 
@@ -250,7 +276,7 @@ func (r *AuthentikApplicationReconciler) observeApplication(ctx context.Context,
 	case err == nil:
 		return r.observeExisting(ctx, a, want, existing, persist)
 	case authentik.IsNotFound(err):
-		return nil, r.missingApplication(a, slug)
+		return nil, r.missingApplication(a, want)
 	default:
 		return nil, err
 	}
@@ -268,7 +294,7 @@ func (r *AuthentikApplicationReconciler) observeExisting(ctx context.Context,
 	case a.Status.PendingCreate == want.Slug && r.recoverOwnCreate(ctx, a, want, existing):
 		return existing, nil
 	case a.Spec.ManagementPolicy.MayAdopt():
-		return r.adoptApplication(ctx, a, want.ApplicationRequest, existing, persist)
+		return r.adoptApplication(ctx, a, want, existing, persist)
 	default:
 		return nil, condErrf(reasonConflict, "an application with slug %q already exists in Authentik and was not "+
 			"created by this resource; set spec.managementPolicy to Adopt, AdoptOrCreate or ReadOnly to take it "+
@@ -291,12 +317,12 @@ func (r *AuthentikApplicationReconciler) recoverOwnCreate(ctx context.Context,
 	wantPK := int32OrZero(want.Provider.Get())
 	if want.providerCreated && wantPK != 0 && int32OrZero(existing.Provider.Get()) == wantPK {
 		logf.FromContext(ctx).Info("Recovered Application from a create whose outcome was lost", "slug", existing.Slug)
-		r.event(a, corev1.EventTypeNormal, "Recovered", "Create",
+		emit(r.Recorder, a, corev1.EventTypeNormal, "Recovered", "Create",
 			"Recovered application %q created by an earlier reconcile", existing.Slug)
 		a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
 		return true
 	}
-	r.event(a, corev1.EventTypeWarning, "CreateUnproven", "Create",
+	emit(r.Recorder, a, corev1.EventTypeWarning, "CreateUnproven", "Create",
 		"A create of application %q was sent but its outcome is unproven: the existing application does not link "+
 			"to a provider this resource created, so it is not treated as created by this resource", existing.Slug)
 	a.Status.PendingCreate = ""
@@ -307,8 +333,8 @@ func (r *AuthentikApplicationReconciler) recoverOwnCreate(ctx context.Context,
 // application this resource created that vanished, or AdoptOrCreate),
 // otherwise an error that writes nothing.
 func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alpha1.AuthentikApplication,
-	slug string) error {
-	policy := a.Spec.ManagementPolicy
+	want desiredApp) error {
+	policy, slug := a.Spec.ManagementPolicy, want.Slug
 	switch {
 	case a.Status.Provenance == authentikiov1alpha1.ProvenanceAdopted && a.Status.ApplicationUID != "":
 		// Whatever the policy now says: an adopted application that vanished
@@ -330,7 +356,10 @@ func (r *AuthentikApplicationReconciler) missingApplication(a *authentikiov1alph
 		return condErrf(reasonAdoptionDryRun, "dry run: no existing application with slug %q; a new one would be "+
 			"created; nothing was written", slug)
 	}
-	r.event(a, corev1.EventTypeNormal, "NothingToAdopt", "Create",
+	if err := requireGroup(a, want.access); err != nil {
+		return err // before the event: nothing is created while no listed group exists
+	}
+	emit(r.Recorder, a, corev1.EventTypeNormal, "NothingToAdopt", "Create",
 		"Creating a new application because nothing was found to adopt (slug %q)", slug)
 	return nil
 }
@@ -389,7 +418,7 @@ func (r *AuthentikApplicationReconciler) yieldIfOutranked(ctx context.Context, r
 // adoptApplication takes over target: in dry-run mode it only reports what
 // would change; otherwise it records the decision in status first.
 func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
-	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest, target *api.Application,
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, target *api.Application,
 	persist func() error) (*api.Application, error) {
 	// Any other holder, terminating ones included, refuses the adoption. This
 	// read may be served by a lagging cache; the re-check after the claim is
@@ -401,15 +430,13 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 			"two resources cannot manage one application", target.Slug, others[0])
 	}
 	if a.Spec.DryRun {
-		view := *want
-		adoptionViewApplication(a, &view, target)
-		patch, changed := applicationPatch(&view, target)
-		msg, announce := dryRunReport(a.Status.Conditions, fmt.Sprintf("application %q", target.Slug),
-			patch, target, changed)
-		if announce {
-			r.event(a, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
+		return nil, r.dryRunAdoption(ctx, a, want, target)
+	}
+	if !readOnly(a.Spec.ManagementPolicy) {
+		// ReadOnly observation also passes through here and writes nothing.
+		if err := requireGroup(a, want.access); err != nil {
+			return nil, err
 		}
-		return nil, condErr(reasonAdoptionDryRun, errors.New(msg))
 	}
 	a.Status.Provenance = authentikiov1alpha1.ProvenanceAdopted
 	a.Status.ApplicationUID = target.Pk
@@ -425,38 +452,66 @@ func (r *AuthentikApplicationReconciler) adoptApplication(ctx context.Context,
 		return nil, err
 	}
 	if readOnly(a.Spec.ManagementPolicy) {
-		r.event(a, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing application %q read only", target.Slug)
+		emit(r.Recorder, a, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing application %q read only",
+			target.Slug)
 	} else {
-		r.event(a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)
+		emit(r.Recorder, a, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing application %q", target.Slug)
 	}
 	return target, nil
 }
 
+// dryRunAdoption reports what adopting target would change, its access
+// bindings included, and writes nothing. The error it returns is the report.
+func (r *AuthentikApplicationReconciler) dryRunAdoption(ctx context.Context,
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, target *api.Application) error {
+	view := *want.ApplicationRequest
+	adoptionViewApplication(a, &view, target)
+	patch, changed := applicationPatch(&view, target)
+	changes := dryRunChanges(fmt.Sprintf("application %q", target.Slug), patch, target, changed)
+	if a.Spec.Access != nil {
+		live, err := want.access.client.ListBindings(ctx, target.Pk)
+		if err != nil {
+			return err
+		}
+		changes += accessDryRun(a, want.access, live, view.GetPolicyEngineMode())
+	}
+	msg, announce := dryRunMessage(a.Status.Conditions, changes)
+	if announce {
+		emit(r.Recorder, a, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
+	}
+	return condErr(reasonAdoptionDryRun, errors.New(msg))
+}
+
 // createApplication creates the application, recording status.pendingCreate
-// first so a lost response can be recovered.
+// first so a lost response can be recovered. Under access type Groups it
+// refuses, before anything else, while no listed group exists: a new
+// application with no binding is open to every user.
 func (r *AuthentikApplicationReconciler) createApplication(ctx context.Context, c *authentik.Client,
-	a *authentikiov1alpha1.AuthentikApplication, want *api.ApplicationRequest,
-	persist func() error) (*api.Application, error) {
+	a *authentikiov1alpha1.AuthentikApplication, want desiredApp, persist func() error) (*api.Application, error) {
+	if err := requireGroup(a, want.access); err != nil {
+		return nil, err
+	}
 	log := logf.FromContext(ctx)
 	if a.Status.ApplicationUID != "" {
 		log.Info("Application was deleted outside the operator; recreating", "slug", want.Slug)
-		r.event(a, corev1.EventTypeWarning, "ApplicationMissing", "Recreate",
+		emit(r.Recorder, a, corev1.EventTypeWarning, "ApplicationMissing", "Recreate",
 			"Application %q no longer exists in Authentik; recreating it", want.Slug)
 	}
 	a.Status.PendingCreate = want.Slug
 	if err := persist(); err != nil {
 		return nil, err
 	}
-	created, err := c.CreateApplication(ctx, *want)
+	created, err := c.CreateApplication(ctx, *want.ApplicationRequest)
 	if err != nil {
 		if code := authentik.StatusCode(err); code >= 400 && code < 500 {
 			a.Status.PendingCreate = "" // definitely not created
 		}
 		return nil, err
 	}
+	want.access.created = true
 	a.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
 	log.Info("Created Application", "slug", created.Slug, "pk", created.Pk)
-	r.event(a, corev1.EventTypeNormal, "Created", "Create", "Created application %q", created.Slug)
+	emit(r.Recorder, a, corev1.EventTypeNormal, "Created", "Create", "Created application %q", created.Slug)
 	return created, nil
 }
 
@@ -473,7 +528,8 @@ func (r *AuthentikApplicationReconciler) updateApplication(ctx context.Context, 
 		return nil, err
 	}
 	logf.FromContext(ctx).Info("Updated Application", "slug", got.Slug, "fields", changed)
-	r.event(a, corev1.EventTypeNormal, "Updated", "Update", "Updated application fields: %s", strings.Join(changed, ", "))
+	emit(r.Recorder, a, corev1.EventTypeNormal, "Updated", "Update", "Updated application fields: %s",
+		strings.Join(changed, ", "))
 	return updated, nil
 }
 
@@ -527,17 +583,17 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 		a.Spec.ManagementPolicy, a.Spec.DeletionPolicy, a.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining Application in Authentik", "slug", a.Status.Slug)
 		if a.Status.Provenance == "" && a.Spec.DeletionPolicy == "" {
-			r.event(a, corev1.EventTypeWarning, "Retained", "Delete",
+			emit(r.Recorder, a, corev1.EventTypeWarning, "Retained", "Delete",
 				"Application %q left in Authentik: provenance unknown; retaining", a.Status.Slug)
 		} else {
-			r.event(a, corev1.EventTypeNormal, "Retained", "Delete",
+			emit(r.Recorder, a, corev1.EventTypeNormal, "Retained", "Delete",
 				"Application %q left in Authentik (deletionPolicy Retain)", a.Status.Slug)
 		}
 	} else if a.Status.ApplicationUID != "" {
 		if a.Status.Provenance == "" {
 			// Undecided provenance resolves to Retain unless the spec says
 			// Delete, so reaching here means an explicit Delete.
-			r.event(a, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+			emit(r.Recorder, a, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
 				"Deleting application %q on an explicit deletionPolicy Delete although this resource's provenance "+
 					"is undecided: it may not have created it", a.Status.Slug)
 		}
@@ -545,8 +601,8 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 		switch {
 		case err == nil:
 			if err := r.deleteOwnedApplication(ctx, resolved.Client, a); err != nil {
-				if r.setReady(a, metav1.ConditionFalse, "DeletionFailed", err.Error()) {
-					r.event(a, corev1.EventTypeWarning, "DeletionFailed", "Delete",
+				if setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, "DeletionFailed", err.Error()) {
+					emit(r.Recorder, a, corev1.EventTypeWarning, "DeletionFailed", "Delete",
 						"Could not delete application %q: %v", a.Status.Slug, err)
 				}
 				return err
@@ -554,12 +610,12 @@ func (r *AuthentikApplicationReconciler) finalize(ctx context.Context,
 		case connectionGone(err):
 			log.Info("Could not reach Authentik to delete Application; leaving it in place",
 				"slug", a.Status.Slug, "reason", err.Error())
-			r.event(a, corev1.EventTypeWarning, "Orphaned", "Delete",
+			emit(r.Recorder, a, corev1.EventTypeWarning, "Orphaned", "Delete",
 				"Application %q left in Authentik: %v", a.Status.Slug, err)
 		default:
 			reason := conditionReason(err, reasonAuthentikError)
-			if r.setReady(a, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
-				r.event(a, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
+			if setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
+				emit(r.Recorder, a, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
 					"Cannot delete application %q yet: %v", a.Status.Slug, err)
 			}
 			return err
@@ -582,7 +638,7 @@ func (r *AuthentikApplicationReconciler) deleteOwnedApplication(ctx context.Cont
 	case err != nil:
 		return err
 	case got.Pk != a.Status.ApplicationUID:
-		r.event(a, corev1.EventTypeWarning, "NotDeleted", "Delete",
+		emit(r.Recorder, a, corev1.EventTypeWarning, "NotDeleted", "Delete",
 			"Application %q now has a different pk than this resource created; left in place", a.Status.Slug)
 		return nil
 	}
@@ -590,7 +646,7 @@ func (r *AuthentikApplicationReconciler) deleteOwnedApplication(ctx context.Cont
 		return err
 	}
 	logf.FromContext(ctx).Info("Deleted Application", "slug", a.Status.Slug)
-	r.event(a, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted application %q", a.Status.Slug)
+	emit(r.Recorder, a, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted application %q", a.Status.Slug)
 	return nil
 }
 
@@ -602,28 +658,29 @@ func (r *AuthentikApplicationReconciler) failed(a *authentikiov1alpha1.Authentik
 	err error) (ctrl.Result, error) {
 	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
 	if ce, ok := errors.AsType[*conditionError](err); ok {
-		r.setReady(a, metav1.ConditionFalse, ce.reason, err.Error())
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, ce.reason, err.Error())
 		return retryLater, nil
 	}
 	switch {
 	case staleProviderPK(err):
 		// The provider resource still reports a pk that Authentik no longer
 		// has (it is being recreated); its watch re-triggers this reconcile.
-		r.setReady(a, metav1.ConditionFalse, reasonProviderNotReady,
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonProviderNotReady,
 			"provider's Authentik object does not exist (yet); waiting for the provider to be recreated")
 		return retryLater, nil
 	case authentik.IsConflict(err):
 		// Includes "application with this provider already exists": the
 		// provider is attached to another application.
-		r.setReady(a, metav1.ConditionFalse, reasonConflict, err.Error())
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonConflict, err.Error())
 		return retryLater, nil
 	case authentik.IsValidation(err):
-		if r.setReady(a, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
-			r.event(a, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the application: %v", err)
+		if setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
+			emit(r.Recorder, a, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the application: %v",
+				err)
 		}
 		return retryLater, nil
 	default:
-		r.setReady(a, metav1.ConditionFalse, reasonAuthentikError, err.Error())
+		setReady(&a.Status.Conditions, a.Generation, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 		return ctrl.Result{}, err
 	}
 }
@@ -636,32 +693,11 @@ func staleProviderPK(err error) bool {
 		strings.Contains(apiErr.Body, `"provider"`) && strings.Contains(apiErr.Body, "does not exist")
 }
 
-// setReady records the Ready condition and reports whether it changed.
-func (r *AuthentikApplicationReconciler) setReady(a *authentikiov1alpha1.AuthentikApplication,
-	status metav1.ConditionStatus, reason, msg string) bool {
-	return meta.SetStatusCondition(&a.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: a.Generation,
-	})
-}
-
-//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
-func (r *AuthentikApplicationReconciler) event(a *authentikiov1alpha1.AuthentikApplication,
-	eventType, reason, action, note string, args ...any) {
-	emit(r.Recorder, a, eventType, reason, action, note, args...)
-}
-
 func (r *AuthentikApplicationReconciler) patchStatus(ctx context.Context,
 	a *authentikiov1alpha1.AuthentikApplication, orig *authentikiov1alpha1.AuthentikApplicationStatus) error {
-	if equality.Semantic.DeepEqual(orig, &a.Status) {
-		return nil
-	}
 	base := a.DeepCopy()
 	base.Status = *orig
-	err := r.Status().Patch(ctx, a, client.MergeFrom(base))
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
+	return patchStatus(ctx, r.Status(), a, base)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -673,10 +709,15 @@ func (r *AuthentikApplicationReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	if err := indexApplicationUIDs(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &authentikiov1alpha1.AuthentikApplication{},
+		indexAccessGroup, accessGroupIndex); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&authentikiov1alpha1.AuthentikApplication{}).
 		Watches(&authentikiov1alpha1.AuthentikOAuthProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.applicationsForProvider)).
+		Watches(&authentikiov1alpha1.AuthentikGroup{}, handler.EnqueueRequestsFromMapFunc(r.applicationsForGroup)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Named("authentikapplication").
 		Complete(r)

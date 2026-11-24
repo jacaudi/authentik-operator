@@ -1,1 +1,0 @@
-input.yaml: AuthentikOAuth2Application media/immich: groupBindings ["media-users", "media-admins"] would no longer be enforced after migration: this operator does not manage group bindings, and Authentik allows every user to open an application that has none; re-run with --accept-unmanaged-group-bindings to convert anyway
