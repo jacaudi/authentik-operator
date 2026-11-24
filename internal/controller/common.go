@@ -168,21 +168,36 @@ func emit(rec events.EventRecorder, obj runtime.Object, eventType, reason, actio
 	rec.Eventf(obj, nil, eventType, reason, action, "%s", truncateNote(fmt.Sprintf(note, args...), maxEventNoteBytes))
 }
 
-// ParseAdoptionNamespaceSelector parses the value of
-// --default-connection-adoption-namespace-selector. An empty value selects no
-// namespace: adoption on the default connection is denied unless an
-// administrator allows namespaces explicitly.
+// ParseNamespaceSelector parses the value of
+// --default-connection-adoption-namespace-selector or
+// --default-connection-identity-namespace-selector. An empty value selects no
+// namespace: the default connection is denied unless an administrator allows
+// namespaces explicitly.
 //
 //nolint:ireturn // labels.Selector is the Kubernetes selector type the reconcilers match namespaces with.
-func ParseAdoptionNamespaceSelector(s string) (labels.Selector, error) {
+func ParseNamespaceSelector(s string) (labels.Selector, error) {
 	if strings.TrimSpace(s) == "" {
 		return labels.Nothing(), nil
 	}
 	sel, err := labels.Parse(s)
 	if err != nil {
-		return nil, fmt.Errorf("parse adoption namespace selector %q: %w", s, err)
+		return nil, fmt.Errorf("parse namespace selector %q: %w", s, err)
 	}
 	return sel, nil
+}
+
+// selectorMatches reports whether the labels of the named Namespace match sel.
+// A nil selector matches nothing and reads nothing. rd should be uncached: the
+// operator has get, not list or watch, on Namespaces.
+func selectorMatches(ctx context.Context, rd client.Reader, sel labels.Selector, namespace string) (bool, error) {
+	if sel == nil {
+		return false, nil
+	}
+	var ns corev1.Namespace
+	if err := rd.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
+		return false, fmt.Errorf("get Namespace %s: %w", namespace, err)
+	}
+	return sel.Matches(labels.Set(ns.Labels)), nil
 }
 
 // adoptionGate decides which namespaces may adopt on the default connection.
@@ -199,19 +214,28 @@ type adoptionGate struct {
 // explicit spec.authentikRef is always allowed: it names a same-namespace
 // AuthentikDeployment whose own token bounds what the resource can reach. A
 // nil selector denies every namespace.
+//
+// A resource whose status records provenance Adopted is checked under every
+// policy, Create included: removing its namespace from the selector stops it
+// writing to the object it adopted, and switching the policy does not reopen it.
 func (g adoptionGate) check(ctx context.Context, namespace string, ref *authentikiov1alpha1.AuthentikRef,
-	mp authentikiov1alpha1.ManagementPolicy) error {
-	if ref != nil || !mp.MayAdopt() {
+	mp authentikiov1alpha1.ManagementPolicy, prov authentikiov1alpha1.Provenance) error {
+	adopted := prov == authentikiov1alpha1.ProvenanceAdopted
+	if ref != nil || (!mp.MayAdopt() && !adopted) {
 		return nil
 	}
-	if g.selector != nil {
-		var ns corev1.Namespace
-		if err := g.reader.Get(ctx, types.NamespacedName{Name: namespace}, &ns); err != nil {
-			return fmt.Errorf("get Namespace %s: %w", namespace, err)
-		}
-		if g.selector.Matches(labels.Set(ns.Labels)) {
-			return nil
-		}
+	ok, err := selectorMatches(ctx, g.reader, g.selector, namespace)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	if !mp.MayAdopt() {
+		return condErrf(reasonAdoptionNotAllowed, "this resource adopted its Authentik object, and namespace %q "+
+			"is not allowed to manage adopted objects on the operator's default connection; ask an administrator "+
+			"to allow the namespace with --default-connection-adoption-namespace-selector, or set "+
+			"spec.authentikRef", namespace)
 	}
 	return condErrf(reasonAdoptionNotAllowed, "managementPolicy %s is not allowed for namespace %q on the "+
 		"operator's default connection; ask an administrator to allow the namespace with "+
@@ -240,13 +264,24 @@ func adoptVerb(mp authentikiov1alpha1.ManagementPolicy) string {
 // event is emitted once per change rather than on every retry.
 func dryRunReport(conds []metav1.Condition, subject string, patch, live any,
 	changed []string) (msg string, announce bool) {
-	msg = fmt.Sprintf("dry run: would adopt %s; ", subject)
+	return dryRunMessage(conds, dryRunChanges(subject, patch, live, changed))
+}
+
+// dryRunChanges is the AdoptionDryRun message up to what adopting subject would
+// change; a kind with more to report appends it before dryRunMessage closes
+// the message.
+func dryRunChanges(subject string, patch, live any, changed []string) string {
+	msg := fmt.Sprintf("dry run: would adopt %s; ", subject)
 	if len(changed) == 0 {
-		msg += "would change no fields"
-	} else {
-		msg += "would change " + describeChanges(patch, live)
+		return msg + "would change no fields"
 	}
-	msg += "; nothing was written. Set spec.dryRun to false to adopt"
+	return msg + "would change " + describeChanges(patch, live)
+}
+
+// dryRunMessage closes changes into the whole AdoptionDryRun message.
+// announce is true when the Ready condition does not already carry exactly it.
+func dryRunMessage(conds []metav1.Condition, changes string) (msg string, announce bool) {
+	msg = changes + "; nothing was written. Set spec.dryRun to false to adopt"
 	cond := meta.FindStatusCondition(conds, ConditionReady)
 	return msg, cond == nil || cond.Reason != reasonAdoptionDryRun || cond.Message != msg
 }
@@ -255,13 +290,23 @@ func dryRunReport(conds []metav1.Condition, subject string, patch, live any,
 // would apply: True with the differing fields (as "field: live -> spec"), or
 // False when there is none.
 func recordDrift(conds *[]metav1.Condition, generation int64, patch, live any, changed []string) {
+	var diffs []string
+	if len(changed) > 0 {
+		diffs = append(diffs, describeChanges(patch, live))
+	}
+	setDrift(conds, generation, diffs...)
+}
+
+// setDrift sets the Drifted condition: True naming every difference, or False
+// when diffs is empty.
+func setDrift(conds *[]metav1.Condition, generation int64, diffs ...string) {
 	cond := metav1.Condition{
 		Type: ConditionDrifted, Status: metav1.ConditionFalse, Reason: reasonInSync,
 		Message: "the object in Authentik matches the spec", ObservedGeneration: generation,
 	}
-	if len(changed) > 0 {
+	if len(diffs) > 0 {
 		cond.Status, cond.Reason = metav1.ConditionTrue, reasonDriftDetected
-		cond.Message = "the object in Authentik differs from the spec: " + describeChanges(patch, live)
+		cond.Message = "the object in Authentik differs from the spec: " + strings.Join(diffs, "; ")
 	}
 	meta.SetStatusCondition(conds, cond)
 }

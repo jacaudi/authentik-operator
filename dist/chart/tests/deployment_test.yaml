@@ -286,6 +286,22 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --default-connection-adoption-namespace-selector=kubernetes.io/metadata.name in (team-a, team-b)
 
+  - it: passes identity.defaultConnectionNamespaceSelector as the identity selector flag
+    set:
+      identity.defaultConnectionNamespaceSelector: kubernetes.io/metadata.name=authentik
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --default-connection-identity-namespace-selector=kubernetes.io/metadata.name=authentik
+
+  - it: renders a set-based identity selector as a single argument
+    set:
+      identity.defaultConnectionNamespaceSelector: kubernetes.io/metadata.name in (authentik)
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --default-connection-identity-namespace-selector=kubernetes.io/metadata.name in (authentik)
+
   - it: mounts the token Secret as a file and passes --authentik-token-file
     set:
       authentik.url: https://authentik.example.com

@@ -14,6 +14,17 @@ spec:
     name: authentikoauthprovider-sample
   metaLaunchUrl: https://grafana.example.com
   group: Monitoring
+  # Who may open the application (not the library section label, which is
+  # group above). Required unless managementPolicy is ReadOnly. Groups binds
+  # exactly the listed Authentik groups, by name; the application is not
+  # created until one of them exists. Use `access: {type: Unmanaged}` to leave
+  # the application's policy bindings alone (status.access.bindings lists them).
+  # An application with no enabled binding is open to every user: turn off the
+  # Authentik instance setting "Applications with no policies bound can be
+  # accessed by any user" (2026.5+); the operator never changes it.
+  access:
+    type: Groups
+    groups: [immich-users]
   # Defaults when the application is created (an adopted application keeps its
   # live values for any field left unset): policyEngineMode: any,
   # openInNewTab: true, metaHide: false

@@ -380,3 +380,45 @@ func TestDefaultConfigExternalURL(t *testing.T) {
 		t.Fatal("external URL without URL accepted")
 	}
 }
+
+// internalAK is the in-cluster URL the default connection's client talks to.
+const internalAK = "https://internal.example.com"
+
+func TestResolvedExternalURLSet(t *testing.T) {
+	t.Parallel()
+	ext := conn("tok")
+	ext.ExternalURL = ssoURL + "/"
+	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(deployment("ext", ext), deployment("plain", conn("tok")),
+			secret("tok", map[string]string{tokenKey: "x"})).Build()
+	r := &Resolver{Reader: reader, Default: &authentik.Config{URL: internalAK, Token: "t"}}
+	ctx := t.Context()
+
+	cases := []struct {
+		name         string
+		ref          *authentikiov1alpha1.AuthentikRef
+		external     string
+		wantSet      bool
+		wantExternal string
+	}{
+		{"default without an external URL", nil, "", false, internalAK},
+		{"default with an external URL", nil, ssoURL + "/", true, ssoURL},
+		{"deployment with an external URL", ref("ext"), "", true, ssoURL},
+		{"deployment without an external URL", ref("plain"), "", false, akExample},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r.DefaultExternalURL = c.external
+			res, err := r.ForRef(ctx, ns, c.ref)
+			if err != nil {
+				t.Fatalf("ForRef: %v", err)
+			}
+			if res.ExternalURLSet != c.wantSet {
+				t.Errorf("ExternalURLSet = %t, want %t", res.ExternalURLSet, c.wantSet)
+			}
+			if res.ExternalURL != c.wantExternal {
+				t.Errorf("ExternalURL = %q, want %q", res.ExternalURL, c.wantExternal)
+			}
+		})
+	}
+}

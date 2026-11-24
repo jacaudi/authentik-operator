@@ -39,6 +39,7 @@ const (
 	FlowAuthorizationPK  = "00000000-0000-0000-0000-00000000f001"
 	FlowInvalidationPK   = "00000000-0000-0000-0000-00000000f002"
 	FlowAuthenticationPK = "00000000-0000-0000-0000-00000000f003"
+	FlowEnrollmentPK     = "00000000-0000-0000-0000-00000000f004"
 	SigningKeyPK         = "00000000-0000-0000-0000-00000000c001"
 	EncryptionKeyPK      = "00000000-0000-0000-0000-00000000c002"
 	ScopeOpenIDPK        = "00000000-0000-0000-0000-00000000a001"
@@ -49,11 +50,19 @@ const (
 	FlowAuthorizationSlug  = "default-provider-authorization-implicit-consent"
 	FlowInvalidationSlug   = "default-provider-invalidation-flow"
 	FlowAuthenticationSlug = "default-authentication-flow"
+	FlowEnrollmentSlug     = "default-enrollment-flow"
 
 	SigningKeyName    = "authentik Self-signed Certificate"
 	EncryptionKeyName = "jwe-key"
 	MappingCustomName = "custom-groups"
+
+	// TokenUsername is the username of the user that owns the API token.
+	TokenUsername = "akadmin"
 )
+
+// TokenUserPK is the pk of the user that owns the API token (a stored user,
+// seeded by New).
+const TokenUserPK int32 = 1
 
 const (
 	fieldName      = "name"
@@ -69,7 +78,9 @@ const (
 type Request struct {
 	Method string
 	Path   string
-	Body   map[string]any
+	// Query is the raw (still URL-encoded) query string.
+	Query string
+	Body  map[string]any
 }
 
 // Server is a fake Authentik.
@@ -95,11 +106,34 @@ type Server struct {
 	apps              map[string]map[string]any // by slug
 	nextApp           int
 	loseNextAppCreate bool
+
+	failOn []failOnRule
+
+	groups                   map[string]map[string]any // by pk
+	nextGroup                int
+	loseNextGroupCreate      bool
+	users                    map[int32]map[string]any
+	nextUser                 int32
+	ignoreUserAttrFilter     bool
+	devices                  []userDevice
+	bindings                 map[string]map[string]any // by pk
+	nextBinding              int
+	invitations              map[string]map[string]any // by pk
+	nextInvitation           int
+	issuedInvitations        []string
+	loseNextInvitationCreate bool
 }
 
 type failure struct {
 	status int
 	body   map[string]any
+}
+
+// failOnRule is a one-shot failure for the first request whose method is
+// method and whose path contains pathContains.
+type failOnRule struct {
+	method, pathContains string
+	fail                 failure
 }
 
 // New starts a fake Authentik seeded with the default flows, scopes and
@@ -111,12 +145,22 @@ func New(token string) *Server {
 		apps:      map[string]map[string]any{},
 		nextPK:    1,
 		failNext:  map[string]failure{},
+
+		groups:      map[string]map[string]any{},
+		users:       map[int32]map[string]any{},
+		nextUser:    TokenUserPK,
+		bindings:    map[string]map[string]any{},
+		invitations: map[string]map[string]any{},
 	}
+	enrollment := flow(FlowEnrollmentPK, FlowEnrollmentSlug)
+	enrollment["designation"] = "enrollment"
 	s.flows = []map[string]any{
 		flow(FlowAuthorizationPK, FlowAuthorizationSlug),
 		flow(FlowInvalidationPK, FlowInvalidationSlug),
 		flow(FlowAuthenticationPK, FlowAuthenticationSlug),
+		enrollment,
 	}
+	s.addUser(map[string]any{"username": TokenUsername, fieldName: "admin", fieldSuperuser: true})
 	s.scopes = []map[string]any{
 		scope(ScopeOpenIDPK, "openid"),
 		scope(ScopeProfilePK, "profile"),
@@ -232,6 +276,15 @@ func (s *Server) SeedApplication(slug string, provider any) {
 func (s *Server) DeleteApplication(slug string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deleteApplicationLocked(slug)
+}
+
+// deleteApplicationLocked deletes an application and, like Authentik, the
+// policy bindings that target it.
+func (s *Server) deleteApplicationLocked(slug string) {
+	if a, ok := s.apps[slug]; ok {
+		s.dropBindings(func(b map[string]any) bool { return b[fieldTarget] == a["pk"] })
+	}
 	delete(s.apps, slug)
 }
 
@@ -282,6 +335,32 @@ func (s *Server) FailNextWith(method string, status int, body map[string]any) {
 	s.failNext[method] = failure{status: status, body: body}
 }
 
+// FailNextOn makes the first later request whose method is method and whose
+// path contains pathContains fail with status and an {"detail":"injected
+// failure"} body. It fires once.
+func (s *Server) FailNextOn(method, pathContains string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failOn = append(s.failOn, failOnRule{
+		method: method, pathContains: pathContains,
+		fail: failure{status: status, body: map[string]any{fieldDetail: "injected failure"}},
+	})
+}
+
+// takeFailure consumes and returns the failure injected for r, if any. A
+// FailNextOn rule is checked before FailNext.
+func (s *Server) takeFailure(r *http.Request) (failure, bool) {
+	for i, rule := range s.failOn {
+		if rule.method == r.Method && strings.Contains(r.URL.Path, rule.pathContains) {
+			s.failOn = slices.Delete(s.failOn, i, i+1)
+			return rule.fail, true
+		}
+	}
+	f, ok := s.failNext[r.Method]
+	delete(s.failNext, r.Method)
+	return f, ok
+}
+
 // LoseNextCreate makes the next provider create succeed server-side but
 // answer 504, as if the response were lost (proxy timeout).
 func (s *Server) LoseNextCreate() {
@@ -312,18 +391,21 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Body: body})
-	if f, ok := s.failNext[r.Method]; ok {
-		delete(s.failNext, r.Method)
+	s.requests = append(s.requests, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: body})
+	if f, ok := s.takeFailure(r); ok {
 		writeJSON(w, f.status, f.body)
 		return
 	}
+	s.route(w, r, body)
+}
 
+// route dispatches an authenticated, recorded request that was not failed.
+func (s *Server) route(w http.ResponseWriter, r *http.Request, body map[string]any) {
 	q := r.URL.Query()
 	path := strings.TrimPrefix(r.URL.Path, "/api/v3")
 	switch {
 	case path == "/core/users/me/":
-		writeJSON(w, 200, me())
+		writeJSON(w, 200, s.me())
 	case strings.HasPrefix(path, "/flows/"), strings.HasPrefix(path, "/propertymappings/"),
 		strings.HasPrefix(path, "/crypto/"):
 		s.handleLookups(w, path, q)
@@ -331,8 +413,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleApplications(w, r, path, body)
 	case strings.HasPrefix(path, "/providers/oauth2/"):
 		s.handleProviders(w, r, path, body)
+	case strings.HasPrefix(path, "/core/groups/"):
+		s.handleGroups(w, r, path, body)
+	case strings.HasPrefix(path, "/core/users/"):
+		s.handleUsers(w, r, path, body)
+	case strings.HasPrefix(path, "/policies/bindings/"):
+		s.handleBindings(w, r, path, body)
+	case strings.HasPrefix(path, "/stages/invitation/invitations/"):
+		s.handleInvitations(w, r, path, body)
+	case path == "/authenticators/admin/all/":
+		s.handleAuthenticators(w, q)
 	default:
-		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
+		writeNotFound(w)
 	}
 }
 
@@ -358,14 +450,6 @@ func (s *Server) handleLookups(w http.ResponseWriter, path string, q url.Values)
 	default:
 		writeJSON(w, 404, map[string]any{fieldDetail: notFound})
 	}
-}
-
-// me is the token owner returned by /core/users/me/.
-func me() map[string]any {
-	u := map[string]any{"pk": 1, "username": "akadmin", fieldName: "admin", "is_active": true, "is_superuser": true,
-		"is_current": true, "groups": []any{}, "roles": []any{}, "avatar": "", "uid": "u",
-		"settings": map[string]any{}, "system_permissions": []string{}}
-	return map[string]any{"user": u, "users": []any{u}}
 }
 
 func (s *Server) mappingByPK(id string) map[string]any {
@@ -488,7 +572,7 @@ func (s *Server) createProvider(w http.ResponseWriter, body map[string]any) {
 	missing := map[string]any{}
 	for _, f := range []string{fieldName, fieldAuthz, fieldInval, "redirect_uris"} {
 		if _, ok := body[f]; !ok {
-			missing[f] = []string{"This field is required."}
+			missing[f] = []string{msgRequired}
 		}
 	}
 	if len(missing) > 0 {
@@ -505,7 +589,7 @@ func (s *Server) createProvider(w http.ResponseWriter, body map[string]any) {
 	s.providers[pk] = p
 	if s.loseNextCreate {
 		s.loseNextCreate = false
-		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: "upstream timed out"})
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: msgTimeout})
 		return
 	}
 	writeJSON(w, 201, p)
@@ -599,7 +683,7 @@ func (s *Server) handleApplications(w http.ResponseWriter, r *http.Request, path
 			}
 			writeJSON(w, 200, a)
 		case http.MethodDelete:
-			delete(s.apps, slug)
+			s.deleteApplicationLocked(slug)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -613,7 +697,7 @@ func (s *Server) createApplication(w http.ResponseWriter, body map[string]any) {
 	missing := map[string]any{}
 	for _, f := range []string{fieldName, "slug"} {
 		if _, ok := body[f]; !ok {
-			missing[f] = []string{"This field is required."}
+			missing[f] = []string{msgRequired}
 		}
 	}
 	if len(missing) > 0 {
@@ -629,7 +713,7 @@ func (s *Server) createApplication(w http.ResponseWriter, body map[string]any) {
 	s.apps[slug] = a
 	if s.loseNextAppCreate {
 		s.loseNextAppCreate = false
-		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: "upstream timed out"})
+		writeJSON(w, http.StatusGatewayTimeout, map[string]any{fieldDetail: msgTimeout})
 		return
 	}
 	writeJSON(w, 201, a)
@@ -707,9 +791,9 @@ func (s *Server) completeProvider(pk int32, in map[string]any) map[string]any {
 	p["assigned_application_name"] = nil
 	p["assigned_backchannel_application_slug"] = nil
 	p["assigned_backchannel_application_name"] = nil
-	p["verbose_name"] = "OAuth2/OpenID Provider"
-	p["verbose_name_plural"] = "OAuth2/OpenID Providers"
-	p["meta_model_name"] = "authentik_providers_oauth2.oauth2provider"
+	p[fieldVerbose] = "OAuth2/OpenID Provider"
+	p[fieldVerbosePlural] = "OAuth2/OpenID Providers"
+	p[fieldMetaModel] = "authentik_providers_oauth2.oauth2provider"
 	return p
 }
 
@@ -724,8 +808,8 @@ func flow(pk, slug string) map[string]any {
 func scope(pk, scopeName string) map[string]any {
 	return map[string]any{
 		"pk": pk, fieldName: "authentik default OAuth Mapping: OpenID '" + scopeName + "'", "expression": "return {}",
-		"component": "ak-property-mapping-provider-scope-form", "verbose_name": "Scope Mapping",
-		"verbose_name_plural": "Scope Mappings", "meta_model_name": "authentik_providers_oauth2.scopemapping",
+		"component": "ak-property-mapping-provider-scope-form", fieldVerbose: "Scope Mapping",
+		fieldVerbosePlural: "Scope Mappings", fieldMetaModel: "authentik_providers_oauth2.scopemapping",
 		"scope_name": scopeName, "managed": "goauthentik.io/providers/oauth2/scope-" + scopeName,
 	}
 }
@@ -733,8 +817,8 @@ func scope(pk, scopeName string) map[string]any {
 func mapping(pk, name string) map[string]any {
 	return map[string]any{
 		"pk": pk, fieldName: name, "expression": "return {}", "component": "ak-property-mapping-provider-scope-form",
-		"verbose_name": "Scope Mapping", "verbose_name_plural": "Scope Mappings",
-		"meta_model_name": "authentik_providers_oauth2.scopemapping",
+		fieldVerbose: "Scope Mapping", fieldVerbosePlural: "Scope Mappings",
+		fieldMetaModel: "authentik_providers_oauth2.scopemapping",
 	}
 }
 
