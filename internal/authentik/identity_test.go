@@ -525,7 +525,7 @@ func TestFakeAttributeFilter(t *testing.T) {
 	fake.SeedUser("b", map[string]any{keyAttributes: map[string]any{"x": map[string]any{"y": "2"}}})
 
 	list := func(filter string) ([]api.User, error) {
-		res, resp, err := c.API().CoreAPI.CoreUsersList(t.Context()).Attributes(filter).Execute()
+		res, resp, err := c.api.CoreAPI.CoreUsersList(t.Context()).Attributes(filter).Execute()
 		if err := Check(resp, err); err != nil {
 			return nil, err
 		}
@@ -586,7 +586,7 @@ func TestFakeBindingsListedByTarget(t *testing.T) {
 		t.Errorf("Bindings(app-a) = %v, want ordered by order", b)
 	}
 	// An unfiltered request returns every binding, as django-filter does.
-	res, resp, err := c.API().PoliciesAPI.PoliciesBindingsList(t.Context()).Execute()
+	res, resp, err := c.api.PoliciesAPI.PoliciesBindingsList(t.Context()).Execute()
 	if err := Check(resp, err); err != nil || len(res.Results) != 3 {
 		t.Errorf("unfiltered list = %+v, %v; want all 3 bindings", res, err)
 	}
