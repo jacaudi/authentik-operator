@@ -256,6 +256,21 @@ func oauthWrites(ctx context.Context, g Gomega) int {
 	return total
 }
 
+// objectWrites is oauthWrites for one provider and one application, by pk.
+// Saves to any other object in the instance (another spec's resource on its
+// requeue, a background task) are not counted, so a "nothing was written"
+// check is about these two objects only.
+func objectWrites(ctx context.Context, g Gomega, prov *authentikiov1alpha1.AuthentikOAuthProvider,
+	app *authentikiov1alpha1.AuthentikApplication) int {
+	actions := []string{"model_created", "model_updated", "model_deleted"}
+	p, err := ak.ObjectWriteCount(ctx, "authentik_providers_oauth2", "oauth2provider",
+		strconv.Itoa(int(prov.Status.ProviderPK)), actions...)
+	g.Expect(err).NotTo(HaveOccurred())
+	a, err := ak.ObjectWriteCount(ctx, "authentik_core", "application", app.Status.ApplicationUID, actions...)
+	g.Expect(err).NotTo(HaveOccurred())
+	return p + a
+}
+
 // resetTestResources removes what an earlier run on the same cluster left
 // behind (custom resources and the objects the operator created for them),
 // so the suite can be re-run without recreating the cluster. Objects a run

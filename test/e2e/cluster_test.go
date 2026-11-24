@@ -249,10 +249,17 @@ func (p *portForward) Stop() {
 	}
 }
 
-// waitDeployment blocks until the Deployment is fully available.
+// waitDeployment blocks until the Deployment is fully available. On failure
+// the error carries the namespace's pods and recent events, so a CI log shows
+// why (an image pull, a crash loop, a pending pod) and not only that it timed out.
 func waitDeployment(ctx context.Context, ns, name string, timeout time.Duration) error {
 	_, err := kubectl(ctx, "-n", ns, "rollout", "status", "deploy/"+name, "--timeout="+timeout.String())
-	return err
+	if err == nil {
+		return nil
+	}
+	pods, _ := kubectl(ctx, "-n", ns, "get", "pods", "-o", "wide")
+	events, _ := kubectl(ctx, "-n", ns, "get", "events", "--sort-by=.lastTimestamp")
+	return fmt.Errorf("%w\npods:\n%s\nevents:\n%s", err, pods, events)
 }
 
 // ensureNamespace creates ns if needed, with extra labels. A namespace that is

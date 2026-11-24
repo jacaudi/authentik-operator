@@ -42,6 +42,31 @@ func TestModelWriteCountFiltersAndSumsServerSide(t *testing.T) {
 	}
 }
 
+// ObjectWriteCount narrows the count to one object by its pk, so writes to
+// other providers or applications in the instance are not counted; an empty
+// pk would count every object of the model and is refused.
+func TestObjectWriteCountFiltersByPK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("context_model_app") != "authentik_core" || q.Get("context_model_name") != "application" ||
+			q.Get("context_model_pk") != "app-1" {
+			http.Error(w, "unfiltered", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"pagination":{"count":2},"results":[]}`))
+	}))
+	defer srv.Close()
+	api := NewAPI(srv.URL, "t", nil)
+	if _, err := api.ObjectWriteCount(t.Context(), "authentik_core", "application", "", "model_updated"); err == nil {
+		t.Fatal("want an error for an empty pk")
+	}
+	n, err := api.ObjectWriteCount(t.Context(), "authentik_core", "application", "app-1",
+		"model_created", "model_updated")
+	if err != nil || n != 4 {
+		t.Fatalf("got %d, %v; want 4", n, err)
+	}
+}
+
 // An empty application pk would list every binding in Authentik; it is an
 // error, never a query. A real one returns the pks sorted.
 func TestBindingPKsRefusesAnEmptyTargetAndSorts(t *testing.T) {

@@ -278,7 +278,7 @@ func (r *AuthentikGroupReconciler) syncMembers(ctx context.Context, c *authentik
 	if len(added)+len(removed) > 0 {
 		logf.FromContext(ctx).Info("Updated Group members", "name", group.Name, "pk", group.Pk,
 			"added", added, "removed", removed)
-		r.event(g, corev1.EventTypeNormal, "MembersUpdated", "Update",
+		emit(r.Recorder, g, corev1.EventTypeNormal, "MembersUpdated", "Update",
 			"Updated members of group %q: added [%s], removed [%s]", group.Name,
 			strings.Join(added, ", "), strings.Join(removed, ", "))
 	}

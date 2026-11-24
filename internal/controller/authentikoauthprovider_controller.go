@@ -26,8 +26,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -168,11 +166,11 @@ func (r *AuthentikOAuthProviderReconciler) sync(ctx context.Context,
 	p.Status.ClientID = got.GetClientId()
 	p.Status.ObservedGeneration = p.Generation
 	if readOnly(p.Spec.ManagementPolicy) {
-		r.setReady(p, metav1.ConditionTrue, reasonReadOnly,
+		setReady(&p.Status.Conditions, p.Generation, metav1.ConditionTrue, reasonReadOnly,
 			fmt.Sprintf("OAuth2 provider %q (pk %d) found; observed read only", got.Name, got.Pk))
 	} else {
 		meta.RemoveStatusCondition(&p.Status.Conditions, ConditionDrifted)
-		r.setReady(p, metav1.ConditionTrue, reasonSynced,
+		setReady(&p.Status.Conditions, p.Generation, metav1.ConditionTrue, reasonSynced,
 			fmt.Sprintf("OAuth2 provider %q (pk %d) is in sync", got.Name, got.Pk))
 	}
 
@@ -320,7 +318,7 @@ func (r *AuthentikOAuthProviderReconciler) observeTracked(ctx context.Context, c
 					"writes to Authentik, so it is not recreated", pk)
 		}
 		log.Info("OAuth2 provider was deleted outside the operator; recreating", "pk", pk)
-		r.event(p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
+		emit(r.Recorder, p, corev1.EventTypeWarning, "ProviderMissing", "Recreate",
 			"OAuth2 provider pk %d no longer exists in Authentik; recreating it (clients get a new secret)", pk)
 		p.Status.ProviderPK = 0
 		p.Status.ClientID = ""
@@ -363,7 +361,7 @@ func (r *AuthentikOAuthProviderReconciler) missingProvider(p *authentikiov1alpha
 		return condErrf(reasonAdoptionDryRun, "dry run: no existing OAuth2 provider %s; a new one would be "+
 			"created; nothing was written", which)
 	}
-	r.event(p, corev1.EventTypeNormal, "NothingToAdopt", "Create",
+	emit(r.Recorder, p, corev1.EventTypeNormal, "NothingToAdopt", "Create",
 		"Creating a new OAuth2 provider because nothing was found to adopt (%s)", which)
 	return nil
 }
@@ -430,7 +428,7 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 		msg, announce := dryRunReport(p.Status.Conditions,
 			fmt.Sprintf("OAuth2 provider %q (pk %d)", target.Name, target.Pk), patch, target, changed)
 		if announce {
-			r.event(p, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
+			emit(r.Recorder, p, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 		}
 		return nil, condErr(reasonAdoptionDryRun, errors.New(msg))
 	}
@@ -449,10 +447,11 @@ func (r *AuthentikOAuthProviderReconciler) adoptProvider(ctx context.Context,
 		return nil, err
 	}
 	if readOnly(p.Spec.ManagementPolicy) {
-		r.event(p, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing OAuth2 provider %q (pk %d) read only",
+		emit(r.Recorder, p, corev1.EventTypeNormal, "Observing", "Adopt",
+			"Observing existing OAuth2 provider %q (pk %d) read only",
 			target.Name, target.Pk)
 	} else {
-		r.event(p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
+		emit(r.Recorder, p, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing OAuth2 provider %q (pk %d)",
 			target.Name, target.Pk)
 	}
 	return target, nil
@@ -539,7 +538,7 @@ func (r *AuthentikOAuthProviderReconciler) createProvider(ctx context.Context, c
 	p.Status.ClientID = created.GetClientId()
 	p.Status.Provenance = authentikiov1alpha1.ProvenanceCreated
 	logf.FromContext(ctx).Info("Created OAuth2 provider", "name", created.Name, "pk", created.Pk)
-	r.event(p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)",
+	emit(r.Recorder, p, corev1.EventTypeNormal, "Created", "Create", "Created OAuth2 provider %q (pk %d)",
 		created.Name, created.Pk)
 	return created, nil
 }
@@ -557,7 +556,7 @@ func (r *AuthentikOAuthProviderReconciler) updateProvider(ctx context.Context, c
 		return nil, err
 	}
 	logf.FromContext(ctx).Info("Updated OAuth2 provider", "pk", got.Pk, "fields", changed)
-	r.event(p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s",
+	emit(r.Recorder, p, corev1.EventTypeNormal, "Updated", "Update", "Updated OAuth2 provider fields: %s",
 		strings.Join(changed, ", "))
 	return updated, nil
 }
@@ -583,17 +582,17 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 		p.Spec.ManagementPolicy, p.Spec.DeletionPolicy, p.Status.Provenance) == authentikiov1alpha1.DeletionPolicyRetain {
 		log.Info("Retaining OAuth2 provider in Authentik", "pk", pk)
 		if p.Status.Provenance == "" && p.Spec.DeletionPolicy == "" {
-			r.event(p, corev1.EventTypeWarning, "Retained", "Delete",
+			emit(r.Recorder, p, corev1.EventTypeWarning, "Retained", "Delete",
 				"OAuth2 provider pk %d left in Authentik: provenance unknown; retaining", pk)
 		} else {
-			r.event(p, corev1.EventTypeNormal, "Retained", "Delete",
+			emit(r.Recorder, p, corev1.EventTypeNormal, "Retained", "Delete",
 				"OAuth2 provider pk %d left in Authentik (deletionPolicy Retain)", pk)
 		}
 	} else if pk != 0 {
 		if p.Status.Provenance == "" {
 			// Undecided provenance resolves to Retain unless the spec says
 			// Delete, so reaching here means an explicit Delete.
-			r.event(p, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+			emit(r.Recorder, p, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
 				"Deleting OAuth2 provider pk %d on an explicit deletionPolicy Delete although this resource's "+
 					"provenance is undecided: it may not have created it", pk)
 		}
@@ -601,20 +600,20 @@ func (r *AuthentikOAuthProviderReconciler) finalize(ctx context.Context,
 		switch {
 		case err == nil:
 			if err := r.deleteOwnedProvider(ctx, resolved.Client, p, pk); err != nil {
-				if r.setReady(p, metav1.ConditionFalse, "DeletionFailed", err.Error()) {
-					r.event(p, corev1.EventTypeWarning, "DeletionFailed", "Delete",
+				if setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, "DeletionFailed", err.Error()) {
+					emit(r.Recorder, p, corev1.EventTypeWarning, "DeletionFailed", "Delete",
 						"Could not delete OAuth2 provider pk %d: %v", pk, err)
 				}
 				return err
 			}
 		case connectionGone(err):
 			log.Info("Could not reach Authentik to delete OAuth2 provider; leaving it in place", "pk", pk, "reason", err.Error())
-			r.event(p, corev1.EventTypeWarning, "Orphaned", "Delete",
+			emit(r.Recorder, p, corev1.EventTypeWarning, "Orphaned", "Delete",
 				"OAuth2 provider pk %d left in Authentik: %v", pk, err)
 		default:
 			reason := conditionReason(err, reasonAuthentikError)
-			if r.setReady(p, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
-				r.event(p, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
+			if setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, reason, "Deletion blocked: "+err.Error()) {
+				emit(r.Recorder, p, corev1.EventTypeWarning, "DeletionBlocked", "Delete",
 					"Cannot delete OAuth2 provider pk %d yet: %v", pk, err)
 			}
 			return err
@@ -640,7 +639,7 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 		return err
 	case !ownsProvider(p, got):
 		log.Info("OAuth2 provider pk no longer belongs to this resource; not deleting it", "pk", pk)
-		r.event(p, corev1.EventTypeWarning, "NotDeleted", "Delete",
+		emit(r.Recorder, p, corev1.EventTypeWarning, "NotDeleted", "Delete",
 			"OAuth2 provider pk %d has a different client ID than this resource created; left in place", pk)
 		return nil
 	}
@@ -648,7 +647,7 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedProvider(ctx context.Conte
 		return err
 	}
 	log.Info("Deleted OAuth2 provider", "pk", pk)
-	r.event(p, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted OAuth2 provider pk %d", pk)
+	emit(r.Recorder, p, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted OAuth2 provider pk %d", pk)
 	return nil
 }
 
@@ -659,51 +658,29 @@ func (r *AuthentikOAuthProviderReconciler) failed(p *authentikiov1alpha1.Authent
 	err error) (ctrl.Result, error) {
 	retryLater := ctrl.Result{RequeueAfter: userErrorRecheck}
 	if ce, ok := errors.AsType[*conditionError](err); ok {
-		r.setReady(p, metav1.ConditionFalse, ce.reason, err.Error())
+		setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, ce.reason, err.Error())
 		return retryLater, nil
 	}
 	switch {
 	case authentik.IsConflict(err):
-		r.setReady(p, metav1.ConditionFalse, reasonConflict, err.Error())
+		setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, reasonConflict, err.Error())
 		return retryLater, nil
 	case authentik.IsValidation(err):
-		if r.setReady(p, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
-			r.event(p, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the provider: %v", err)
+		if setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, reasonInvalidSpec, err.Error()) {
+			emit(r.Recorder, p, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the provider: %v", err)
 		}
 		return retryLater, nil
 	default:
-		r.setReady(p, metav1.ConditionFalse, reasonAuthentikError, err.Error())
+		setReady(&p.Status.Conditions, p.Generation, metav1.ConditionFalse, reasonAuthentikError, err.Error())
 		return ctrl.Result{}, err
 	}
 }
 
-// setReady records the Ready condition and reports whether it changed, so
-// Warning events can be emitted once per change instead of on every retry.
-func (r *AuthentikOAuthProviderReconciler) setReady(p *authentikiov1alpha1.AuthentikOAuthProvider,
-	status metav1.ConditionStatus, reason, msg string) bool {
-	return meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: p.Generation,
-	})
-}
-
-//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
-func (r *AuthentikOAuthProviderReconciler) event(p *authentikiov1alpha1.AuthentikOAuthProvider,
-	eventType, reason, action, note string, args ...any) {
-	emit(r.Recorder, p, eventType, reason, action, note, args...)
-}
-
 func (r *AuthentikOAuthProviderReconciler) patchStatus(ctx context.Context,
 	p *authentikiov1alpha1.AuthentikOAuthProvider, orig *authentikiov1alpha1.AuthentikOAuthProviderStatus) error {
-	if equality.Semantic.DeepEqual(orig, &p.Status) {
-		return nil
-	}
 	base := p.DeepCopy()
 	base.Status = *orig
-	err := r.Status().Patch(ctx, p, client.MergeFrom(base))
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
+	return patchStatus(ctx, r.Status(), p, base)
 }
 
 // SetupWithManager sets up the controller with the Manager.
