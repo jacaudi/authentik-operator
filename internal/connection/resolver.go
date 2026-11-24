@@ -219,13 +219,6 @@ func (r *Resolver) LastKnown(namespace string, ref *authentikiov1alpha1.Authenti
 	return &Resolved{Client: c.client}, true
 }
 
-// Forget drops the cached client of a deleted AuthentikDeployment.
-func (r *Resolver) Forget(key types.NamespacedName) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.clients, key.String())
-}
-
 func (r *Resolver) configFor(ctx context.Context,
 	d *authentikiov1alpha1.AuthentikDeployment) (authentik.Config, error) {
 	conn := d.Spec.Connection

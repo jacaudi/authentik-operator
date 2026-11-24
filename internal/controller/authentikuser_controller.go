@@ -128,10 +128,12 @@ func (r *AuthentikUserReconciler) sync(ctx context.Context, u *authentikiov1alph
 	u.Status.UserPK = got.Pk
 	u.Status.ObservedGeneration = u.Generation
 	if readOnly(u.Spec.ManagementPolicy) {
-		r.setReady(u, metav1.ConditionTrue, reasonReadOnly, fmt.Sprintf("User %q found; observed read only", got.Username))
+		setReady(&u.Status.Conditions, u.Generation, metav1.ConditionTrue, reasonReadOnly,
+			fmt.Sprintf("User %q found; observed read only", got.Username))
 	} else {
 		meta.RemoveStatusCondition(&u.Status.Conditions, ConditionDrifted)
-		r.setReady(u, metav1.ConditionTrue, reasonSynced, fmt.Sprintf("User %q is in sync", got.Username))
+		setReady(&u.Status.Conditions, u.Generation, metav1.ConditionTrue, reasonSynced,
+			fmt.Sprintf("User %q is in sync", got.Username))
 	}
 	if authenticatorsUnknown {
 		return ctrl.Result{RequeueAfter: userErrorRecheck}, nil
@@ -217,7 +219,8 @@ func (r *AuthentikUserReconciler) syncAuthenticators(ctx context.Context, c *aut
 		Type: ConditionAuthenticatorMissing, Status: metav1.ConditionTrue, Reason: reasonNoAuthenticator,
 		Message: msg, ObservedGeneration: u.Generation,
 	}) {
-		r.event(u, corev1.EventTypeWarning, ConditionAuthenticatorMissing, "Sync", "User %q has no authenticator: %s",
+		emit(r.Recorder, u, corev1.EventTypeWarning, ConditionAuthenticatorMissing, "Sync",
+			"User %q has no authenticator: %s",
 			got.Username, msg)
 	}
 	return false
@@ -359,7 +362,7 @@ func (r *AuthentikUserReconciler) recognise(ctx context.Context, c *authentik.Cl
 	recordUser(u, authentikiov1alpha1.ProvenanceCreated, work.target)
 	u.Status.Invitation = nil
 	logf.FromContext(ctx).Info("Recognised enrolled User", "username", work.target.Username, "pk", work.target.Pk)
-	r.event(u, corev1.EventTypeNormal, "Enrolled", "Enrol", "Recognised account %q enrolled from the invitation",
+	emit(r.Recorder, u, corev1.EventTypeNormal, "Enrolled", "Enrol", "Recognised account %q enrolled from the invitation",
 		work.target.Username)
 	return r.syncFields(ctx, c, u, work.target, work.want)
 }
@@ -470,9 +473,10 @@ func (r *AuthentikUserReconciler) adoptUser(ctx context.Context, u *authentikiov
 		return err
 	}
 	if readOnly(u.Spec.ManagementPolicy) {
-		r.event(u, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing user %q read only", target.Username)
+		emit(r.Recorder, u, corev1.EventTypeNormal, "Observing", "Adopt", "Observing existing user %q read only",
+			target.Username)
 	} else {
-		r.event(u, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing user %q", target.Username)
+		emit(r.Recorder, u, corev1.EventTypeNormal, "Adopted", "Adopt", "Adopted existing user %q", target.Username)
 	}
 	return nil
 }
@@ -504,7 +508,7 @@ func (r *AuthentikUserReconciler) dryRunAdopt(ctx context.Context, u *authentiki
 	patch, live := plan.reportView(target)
 	msg, announce := dryRunReport(u.Status.Conditions, fmt.Sprintf("user %q", target.Username), patch, live, plan.changed)
 	if announce {
-		r.event(u, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
+		emit(r.Recorder, u, corev1.EventTypeNormal, reasonAdoptionDryRun, "Adopt", "%s", msg)
 	}
 	return condErr(reasonAdoptionDryRun, errors.New(msg))
 }
@@ -535,7 +539,7 @@ func (r *AuthentikUserReconciler) syncFields(ctx context.Context, c *authentik.C
 		}
 		got = updated
 		logf.FromContext(ctx).Info("Updated User", "username", live.Username, "pk", live.Pk, "fields", plan.changed)
-		r.event(u, corev1.EventTypeNormal, "Updated", "Update", "Updated user fields: %s",
+		emit(r.Recorder, u, corev1.EventTypeNormal, "Updated", "Update", "Updated user fields: %s",
 			strings.Join(plan.changed, ", "))
 	}
 	u.Status.ManagedAttributes = nil
@@ -616,20 +620,20 @@ func (r *AuthentikUserReconciler) decideDeletion(ctx context.Context,
 	switch fin {
 	case adopt.FinalizeRetain:
 		logf.FromContext(ctx).Info("Retaining User in Authentik", "username", name)
-		r.event(u, corev1.EventTypeNormal, "Retained", "Delete", "User %q left in Authentik: %s", name, retainNote)
+		emit(r.Recorder, u, corev1.EventTypeNormal, "Retained", "Delete", "User %q left in Authentik: %s", name, retainNote)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeRetainUndecided:
-		r.event(u, corev1.EventTypeWarning, "Retained", "Delete",
+		emit(r.Recorder, u, corev1.EventTypeWarning, "Retained", "Delete",
 			"User %q left in Authentik: provenance unknown; retaining", name)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeRetainNotAllowed:
-		r.event(u, corev1.EventTypeWarning, "Retained", "Delete",
+		emit(r.Recorder, u, corev1.EventTypeWarning, "Retained", "Delete",
 			"User %q left in Authentik: it was not created by this resource, and this namespace is outside "+
 				"--default-connection-identity-namespace-selector, which confines deletion to accounts the resource "+
 				"created", name)
 		return ctrl.Result{}, true, nil
 	case adopt.FinalizeDeleteUndecided:
-		r.event(u, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
+		emit(r.Recorder, u, corev1.EventTypeWarning, "DeletingUndecided", "Delete",
 			"Deleting user %q on an explicit deletionPolicy Delete although this resource's provenance is "+
 				"undecided: it may not have created it", name)
 		return r.deleteUser(ctx, u)
@@ -650,7 +654,7 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 	case connectionGone(err):
 		log.Info("Could not reach Authentik to delete User; leaving it in place", "username", name,
 			"reason", err.Error())
-		r.event(u, corev1.EventTypeWarning, "Orphaned", "Delete", "User %q left in Authentik: %v", name, err)
+		emit(r.Recorder, u, corev1.EventTypeWarning, "Orphaned", "Delete", "User %q left in Authentik: %v", name, err)
 		return ctrl.Result{}, true, nil
 	case err != nil:
 		return r.deletionFailed(u, err)
@@ -665,7 +669,7 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 		case err != nil:
 			return r.deletionFailed(u, err)
 		case !authentik.HasOwnerProof(live.Attributes, string(u.UID)):
-			r.event(u, corev1.EventTypeWarning, "Retained", "Delete", "User %q left in Authentik: it does not carry "+
+			emit(r.Recorder, u, corev1.EventTypeWarning, "Retained", "Delete", "User %q left in Authentik: it does not carry "+
 				"this resource's ownership proof, so this resource did not create it", name)
 			return ctrl.Result{}, true, nil
 		}
@@ -675,7 +679,7 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 		return r.deletionFailed(u, err)
 	}
 	if me.Pk == pk {
-		r.event(u, corev1.EventTypeWarning, "NotDeleted", "Delete",
+		emit(r.Recorder, u, corev1.EventTypeWarning, "NotDeleted", "Delete",
 			"User %q left in Authentik: it is the operator's own token user, which is never deleted", name)
 		return ctrl.Result{}, true, nil
 	}
@@ -683,7 +687,7 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 		return r.deletionFailed(u, err)
 	}
 	log.Info("Deleted User", "username", name, "pk", pk)
-	r.event(u, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted user %q", name)
+	emit(r.Recorder, u, corev1.EventTypeNormal, "Deleted", "Delete", "Deleted user %q", name)
 	return ctrl.Result{}, true, nil
 }
 
@@ -691,8 +695,9 @@ func (r *AuthentikUserReconciler) deleteUser(ctx context.Context,
 // deleted, and the error returned makes the controller retry with backoff.
 func (r *AuthentikUserReconciler) deletionFailed(u *authentikiov1alpha1.AuthentikUser,
 	err error) (ctrl.Result, bool, error) {
-	if r.setReady(u, metav1.ConditionFalse, conditionReason(err, reasonAuthentikError), "Deletion blocked: "+err.Error()) {
-		r.event(u, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete",
+	if setReady(&u.Status.Conditions, u.Generation, metav1.ConditionFalse, conditionReason(err, reasonAuthentikError),
+		"Deletion blocked: "+err.Error()) {
+		emit(r.Recorder, u, corev1.EventTypeWarning, reasonDeletionBlocked, "Delete",
 			"Cannot delete user %q yet: %v", u.Spec.Username, err)
 	}
 	return ctrl.Result{}, false, err
@@ -701,29 +706,15 @@ func (r *AuthentikUserReconciler) deletionFailed(u *authentikiov1alpha1.Authenti
 // failed records why sync stopped; see classifyFailure.
 func (r *AuthentikUserReconciler) failed(u *authentikiov1alpha1.AuthentikUser, err error) (ctrl.Result, error) {
 	reason, result, retErr, warn := classifyFailure(err)
-	if r.setReady(u, metav1.ConditionFalse, reason, err.Error()) {
+	if setReady(&u.Status.Conditions, u.Generation, metav1.ConditionFalse, reason, err.Error()) {
 		switch {
 		case warn:
-			r.event(u, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the user: %v", err)
+			emit(r.Recorder, u, corev1.EventTypeWarning, reasonInvalidSpec, "Sync", "Authentik rejected the user: %v", err)
 		case reason == reasonInvitationAmbiguous:
-			r.event(u, corev1.EventTypeWarning, reasonInvitationAmbiguous, "Sync", "%v", err)
+			emit(r.Recorder, u, corev1.EventTypeWarning, reasonInvitationAmbiguous, "Sync", "%v", err)
 		}
 	}
 	return result, retErr
-}
-
-// setReady records the Ready condition and reports whether it changed.
-func (r *AuthentikUserReconciler) setReady(u *authentikiov1alpha1.AuthentikUser,
-	status metav1.ConditionStatus, reason, msg string) bool {
-	return meta.SetStatusCondition(&u.Status.Conditions, metav1.Condition{
-		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: u.Generation,
-	})
-}
-
-//nolint:revive // argument-limit: mirrors events.EventRecorder.Eventf, guarded for a nil Recorder.
-func (r *AuthentikUserReconciler) event(u *authentikiov1alpha1.AuthentikUser,
-	eventType, reason, action, note string, args ...any) {
-	emit(r.Recorder, u, eventType, reason, action, note, args...)
 }
 
 func (r *AuthentikUserReconciler) patchStatus(ctx context.Context,
