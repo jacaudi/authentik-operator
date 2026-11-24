@@ -22,8 +22,8 @@ spec:
     spec:
       containers:
         - name: postgres
-          # renovate: datasource=docker depName=public.ecr.aws/docker/library/postgres
-          image: public.ecr.aws/docker/library/postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+          # renovate: datasource=docker depName=mirror.gcr.io/library/postgres
+          image: mirror.gcr.io/library/postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
           env:
             - name: POSTGRES_DB
               value: authentik
