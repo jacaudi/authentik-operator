@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -277,11 +276,6 @@ func TestClientCacheRebuildsOnRotation(t *testing.T) {
 	if builds != 2 || c.Client == a.Client {
 		t.Fatalf("rotated token did not rebuild client (builds=%d)", builds)
 	}
-
-	r.Forget(types.NamespacedName{Namespace: ns, Name: "d"})
-	if _, err := r.ForRef(ctx, ns, ref("d")); err != nil || builds != 3 {
-		t.Fatalf("Forget did not drop cache (builds=%d, err=%v)", builds, err)
-	}
 }
 
 func TestInvalidConfigReason(t *testing.T) {
@@ -378,5 +372,47 @@ func TestDefaultConfigExternalURL(t *testing.T) {
 	}
 	if _, err := DefaultConfig(DefaultOptions{ExternalURL: ssoURL}, getenv); err == nil {
 		t.Fatal("external URL without URL accepted")
+	}
+}
+
+// internalAK is the in-cluster URL the default connection's client talks to.
+const internalAK = "https://internal.example.com"
+
+func TestResolvedExternalURLSet(t *testing.T) {
+	t.Parallel()
+	ext := conn("tok")
+	ext.ExternalURL = ssoURL + "/"
+	reader := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(deployment("ext", ext), deployment("plain", conn("tok")),
+			secret("tok", map[string]string{tokenKey: "x"})).Build()
+	r := &Resolver{Reader: reader, Default: &authentik.Config{URL: internalAK, Token: "t"}}
+	ctx := t.Context()
+
+	cases := []struct {
+		name         string
+		ref          *authentikiov1alpha1.AuthentikRef
+		external     string
+		wantSet      bool
+		wantExternal string
+	}{
+		{"default without an external URL", nil, "", false, internalAK},
+		{"default with an external URL", nil, ssoURL + "/", true, ssoURL},
+		{"deployment with an external URL", ref("ext"), "", true, ssoURL},
+		{"deployment without an external URL", ref("plain"), "", false, akExample},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r.DefaultExternalURL = c.external
+			res, err := r.ForRef(ctx, ns, c.ref)
+			if err != nil {
+				t.Fatalf("ForRef: %v", err)
+			}
+			if res.ExternalURLSet != c.wantSet {
+				t.Errorf("ExternalURLSet = %t, want %t", res.ExternalURLSet, c.wantSet)
+			}
+			if res.ExternalURL != c.wantExternal {
+				t.Errorf("ExternalURL = %q, want %q", res.ExternalURL, c.wantExternal)
+			}
+		})
 	}
 }

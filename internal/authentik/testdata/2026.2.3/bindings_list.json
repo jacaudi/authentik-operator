@@ -1,0 +1,39 @@
+{
+  "pagination": {
+    "next": 0,
+    "previous": 0,
+    "count": 1,
+    "current": 1,
+    "total_pages": 1,
+    "start_index": 1,
+    "end_index": 1
+  },
+  "results": [
+    {
+      "pk": "5b70462f-996c-41aa-a1c4-47ee38da1cc5",
+      "policy": null,
+      "group": "fda25c73-0f93-409f-b15f-626809780c92",
+      "user": null,
+      "policy_obj": null,
+      "group_obj": {
+        "pk": "fda25c73-0f93-409f-b15f-626809780c92",
+        "num_pk": 33713,
+        "name": "rec-group",
+        "is_superuser": false,
+        "attributes": {
+          "authentik_operator": {
+            "owner_uid": "rec-uid"
+          }
+        }
+      },
+      "user_obj": null,
+      "target": "69ebe384-c9a1-4a1f-91f6-a529b0c1bf13",
+      "negate": false,
+      "enabled": true,
+      "order": 0,
+      "timeout": 30,
+      "failure_result": false
+    }
+  ],
+  "autocomplete": {}
+}

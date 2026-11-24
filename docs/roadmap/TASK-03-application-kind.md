@@ -25,6 +25,9 @@ name.
       `metaIcon` (managed only when set), `openInNewTab` (default true),
       `metaHide` (default false)
 - [ ] `backchannelProviders` (beyond parity) -- deferred
+- [x] `access` (added by TASK-10, required except under `managementPolicy: ReadOnly`):
+      `Groups` binds exactly the listed Authentik groups, `Unmanaged` writes no
+      binding. Existing manifests need it. scope.md, "Application access (TASK-10)"
 - [x] Status: `applicationUid`, `slug`, `providerPk`, `observedGeneration`, Ready
 
 ### Phase 2: behaviour

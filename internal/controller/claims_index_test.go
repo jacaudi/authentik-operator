@@ -38,6 +38,12 @@ import (
 var testIndexes = map[string]client.IndexerFunc{
 	indexProviderPK:     providerPKIndex,
 	indexApplicationUID: applicationUIDIndex,
+	indexGroupPK:        groupPKIndex,
+	indexAccessGroup:    accessGroupIndex,
+	indexGroupName:      groupNameIndex,
+	indexUserPK:         userPKIndex,
+	indexUserUsername:   userUsernameIndex,
+	indexGroupMember:    groupMemberIndex,
 }
 
 // indexedClient serves List with client.MatchingFields the way the manager's
@@ -106,6 +112,40 @@ func TestIndexFuncs(t *testing.T) {
 	if got := applicationUIDIndex(a); len(got) != 1 || got[0] != "uid-1" {
 		t.Errorf("applicationUIDIndex = %v, want [uid-1]", got)
 	}
+	g := &authentikiov1alpha1.AuthentikGroup{}
+	if got := groupPKIndex(g); got != nil {
+		t.Errorf("a group that tracks nothing must not be indexed, got %v", got)
+	}
+	g.Status.GroupPK = "pk-1"
+	if got := groupPKIndex(g); len(got) != 1 || got[0] != "pk-1" {
+		t.Errorf("groupPKIndex = %v, want [pk-1]", got)
+	}
+	u := &authentikiov1alpha1.AuthentikUser{}
+	if got := userPKIndex(u); got != nil {
+		t.Errorf("a user that tracks nothing must not be indexed, got %v", got)
+	}
+	u.Status.UserPK = 7
+	if got := userPKIndex(u); len(got) != 1 || got[0] != "7" {
+		t.Errorf("userPKIndex = %v, want [7]", got)
+	}
+	if got := userUsernameIndex(u); got != nil {
+		t.Errorf("a user with no username must not be indexed, got %v", got)
+	}
+	u.Spec.Username = usernameDave
+	if got := userUsernameIndex(u); !slices.Equal(got, []string{usernameDave}) {
+		t.Errorf("userUsernameIndex = %v, want [dave]", got)
+	}
+	if got := groupMemberIndex(g); got != nil {
+		t.Errorf("a group that lists no members must not be indexed, got %v", got)
+	}
+	g.Spec.Members = &[]string{"bob", "alice"}
+	if got := groupMemberIndex(g); !slices.Equal(got, []string{"bob", "alice"}) {
+		t.Errorf("groupMemberIndex = %v, want one key per listed username [bob alice]", got)
+	}
+	g.Spec.Members = &[]string{}
+	if got := groupMemberIndex(g); len(got) != 0 {
+		t.Errorf("a group with an empty members list has no keys, got %v", got)
+	}
 }
 
 var _ = Describe("Claim field indexes", func() {
@@ -149,6 +189,56 @@ var _ = Describe("Claim field indexes", func() {
 				names = append(names, it.Name)
 			}
 			g.Expect(names).To(ConsistOf("index-a", "index-b"))
+		}).Should(Succeed())
+	})
+
+	It("index users by username and groups by each listed member, across namespaces", func() {
+		c, err := cache.New(cfg, cache.Options{Scheme: scheme.Scheme})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(registerMemberIndexes(ctx, c)).To(Succeed())
+
+		mkUser := func(name, username string) {
+			u := &authentikiov1alpha1.AuthentikUser{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: authentikiov1alpha1.AuthentikUserSpec{Username: username,
+					Invitation: &authentikiov1alpha1.InvitationSpec{Flow: "enrol"}},
+			}
+			Expect(k8sClient.Create(ctx, u)).To(Succeed())
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, u))).To(Succeed()) })
+		}
+		mkGroup := func(ns, name string, members *[]string) {
+			g := &authentikiov1alpha1.AuthentikGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec:       authentikiov1alpha1.AuthentikGroupSpec{Members: members},
+			}
+			Expect(k8sClient.Create(ctx, g)).To(Succeed())
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, g))).To(Succeed()) })
+		}
+		const idxAlice, idxBob = "idx-alice", "idx-bob"
+		mkUser("member-idx-a", idxAlice)
+		mkUser("member-idx-b", idxBob)
+		mkGroup(namespace, "member-idx-g1", &[]string{idxAlice, idxBob})
+		mkGroup("kube-system", "member-idx-g2", &[]string{idxBob})
+		mkGroup(namespace, "member-idx-g3", nil)
+
+		cacheCtx, cancel := context.WithCancel(ctx)
+		DeferCleanup(cancel)
+		go func() { _ = c.Start(cacheCtx) }()
+		Expect(c.WaitForCacheSync(cacheCtx)).To(BeTrue())
+
+		Eventually(func(g Gomega) {
+			var found authentikiov1alpha1.AuthentikUserList
+			g.Expect(c.List(ctx, &found, client.MatchingFields{indexUserUsername: idxBob})).To(Succeed())
+			g.Expect(found.Items).To(HaveLen(1))
+			g.Expect(found.Items[0].Name).To(Equal("member-idx-b"))
+
+			var listing authentikiov1alpha1.AuthentikGroupList
+			g.Expect(c.List(ctx, &listing, client.MatchingFields{indexGroupMember: idxBob})).To(Succeed())
+			names := make([]string, 0, len(listing.Items))
+			for _, it := range listing.Items {
+				names = append(names, it.Name)
+			}
+			g.Expect(names).To(ConsistOf("member-idx-g1", "member-idx-g2"))
 		}).Should(Succeed())
 	})
 })

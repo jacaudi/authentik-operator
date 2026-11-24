@@ -17,6 +17,8 @@ authentik:
       key: ca-bundle.pem
 adoption:
   defaultConnectionNamespaceSelector: kubernetes.io/metadata.name in (team-a, team-b)
+identity:
+  defaultConnectionNamespaceSelector: kubernetes.io/metadata.name in (authentik)
 extraArgs:
   - --enable-http2
 extraEnv:

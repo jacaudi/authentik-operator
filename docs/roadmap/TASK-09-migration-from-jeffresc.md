@@ -16,7 +16,8 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
       field -> provider/application field, defaults that differ, dropped fields
 - [x] Converter: `hack/convert-jeffresc` (Go, testable) reading
       AuthentikApplication / AuthentikOAuth2Application / AuthentikSAMLApplication
-      YAML and emitting AuthentikOAuthProvider + AuthentikApplication (one object
+      (refused) / AuthentikGroup (TASK-10) YAML and emitting
+      AuthentikOAuthProvider + AuthentikApplication, or AuthentikGroup (one object
       per file, `<kind>-<name>.yaml`), plus one cluster-scoped
       AuthentikCredentialsTemplate per distinct (template, labels,
       annotations) tuple, with a `namespaceSelector` on
@@ -52,16 +53,22 @@ hold either. Target: existing JeffResc OAuth2 users (chart 0.1.x and 0.2.x).
   adoption would keep an empty live value, which Authentik 2026.5+ rejects every
   login for. Providers back-filled with all 7 grant types (Authentik migration
   0032) are narrowed to the pair, as JeffResc v0.2.7+ does itself.
-- Input range: JeffResc 0.1.8 through v0.2.10, decoded strictly. A non-empty
-  `groupBindings` (v0.2.8+) is refused unless `--accept-unmanaged-group-bindings`
-  (Authentik lets everyone in when an application has no bindings); the
-  `AuthentikGroup` kind gets a tailored error.
+- Input range: JeffResc 0.1.8 through v0.2.10, decoded strictly.
+  `groupBindings` (v0.2.8+) converts to the required `spec.access` (TASK-10):
+  a non-empty list becomes `access: {type: Groups, groups: [...]}`, an absent or
+  empty one `access: {type: Unmanaged}`. The `--accept-unmanaged-group-bindings`
+  flag no longer exists (passing it is a "flag provided but not defined" error).
+- JeffResc `AuthentikGroup` (v0.2.8+) converts to an `AuthentikGroup` with
+  `managementPolicy: Adopt`, `deletionPolicy: Retain` and no `members`;
+  reserved and object-valued attributes, `parents` and `roles` stay in Authentik,
+  unmanaged, and the report lists them. On the default connection the identity
+  selector must allow the group's namespace as well as the adoption selector.
 
 ## Known gaps (open follow-ups, not designed here)
-- `AuthentikGroup` (JeffResc v0.2.8+): its `deletionPolicy` defaults to `Delete`,
-  so deleting those CRs while JeffResc runs deletes the groups and cascades away
-  the application bindings. The runbook has no gate for it yet (for example set
-  `Retain` first); the converter only refuses the kind.
+- `AuthentikGroup` (JeffResc v0.2.8+) is closed: it is converted, and runbook
+  step 4a sets `deletionPolicy: Retain` on the JeffResc group before deleting it
+  (JeffResc's default `Delete` would delete the group and cascade away its
+  application bindings).
 - JeffResc v0.2.9+ ownership: v0.2.9 binds ownership to status IDs, so the
   runbook's rollback (re-apply a status-stripped backup) can fail with
   `errNotOwned`. The migration e2e covers JeffResc 0.1.8 only.
