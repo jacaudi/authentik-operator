@@ -168,6 +168,14 @@ func emit(rec events.EventRecorder, obj runtime.Object, eventType, reason, actio
 	rec.Eventf(obj, nil, eventType, reason, action, "%s", truncateNote(fmt.Sprintf(note, args...), maxEventNoteBytes))
 }
 
+// setReady records the Ready condition on conds and reports whether it changed,
+// so Warning events can be emitted once per change instead of on every retry.
+func setReady(conds *[]metav1.Condition, generation int64, status metav1.ConditionStatus, reason, msg string) bool {
+	return meta.SetStatusCondition(conds, metav1.Condition{
+		Type: ConditionReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: generation,
+	})
+}
+
 // ParseNamespaceSelector parses the value of
 // --default-connection-adoption-namespace-selector or
 // --default-connection-identity-namespace-selector. An empty value selects no
