@@ -34,7 +34,6 @@ eslint.config.mjs
 taskfile.yml
 .taskfiles
 Makefile
-renovate.json
 release-please-config.json
 .release-please-manifest.json
 

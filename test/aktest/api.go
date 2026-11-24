@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -195,7 +196,7 @@ func (a *API) CreateOAuthProvider(ctx context.Context, name string, redirects []
 	if err != nil {
 		return nil, err
 	}
-	maps, err := a.ScopeMappingPKs(ctx, "openid", "profile", "email")
+	mappings, err := a.ScopeMappingPKs(ctx, "openid", "profile", "email")
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +210,7 @@ func (a *API) CreateOAuthProvider(ctx context.Context, name string, redirects []
 		"invalidation_flow":          inval,
 		"client_type":                "confidential",
 		"redirect_uris":              uris,
-		"property_mappings":          maps,
+		"property_mappings":          mappings,
 		"include_claims_in_id_token": true,
 		"sub_mode":                   "hashed_user_id",
 		"issuer_mode":                "per_provider",
@@ -295,6 +296,23 @@ func (a *API) DeleteOAuthProviderByNameIfExists(ctx context.Context, name string
 // trusting the operator's own bookkeeping. Filtering and counting happen
 // server side, so the result is not limited by a page size.
 func (a *API) ModelWriteCount(ctx context.Context, app, model string, actions ...string) (int, error) {
+	return a.writeCount(ctx, url.Values{"context_model_app": {app}, "context_model_name": {model}}, actions)
+}
+
+// ObjectWriteCount is ModelWriteCount for one object, by its pk (an integer
+// for providers, the UUID for applications). Writes to other objects of the
+// model, by anything else in the instance, are not counted. An empty pk would
+// count every object of the model, so it is an error.
+func (a *API) ObjectWriteCount(ctx context.Context, app, model, pk string, actions ...string) (int, error) {
+	if pk == "" {
+		return 0, fmt.Errorf("ObjectWriteCount %s.%s: empty pk", app, model)
+	}
+	return a.writeCount(ctx, url.Values{"context_model_app": {app}, "context_model_name": {model},
+		"context_model_pk": {pk}}, actions)
+}
+
+// writeCount sums pagination.count of the audit events matching filter, per action.
+func (a *API) writeCount(ctx context.Context, filter url.Values, actions []string) (int, error) {
 	total := 0
 	for _, act := range actions {
 		var page struct {
@@ -302,8 +320,8 @@ func (a *API) ModelWriteCount(ctx context.Context, app, model string, actions ..
 				Count int `json:"count"`
 			} `json:"pagination"`
 		}
-		q := url.Values{"action": {act}, "context_model_app": {app}, "context_model_name": {model},
-			"page_size": {"1"}}
+		q := url.Values{"action": {act}, "page_size": {"1"}}
+		maps.Copy(q, filter)
 		if err := a.Do(ctx, http.MethodGet, "/api/v3/events/events/?"+q.Encode(), nil, &page); err != nil {
 			return 0, err
 		}
