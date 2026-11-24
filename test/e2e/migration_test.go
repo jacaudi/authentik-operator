@@ -242,12 +242,15 @@ var _ = Describe("migration from JeffResc, following docs/migration-from-jeffres
 	}
 
 	// cleanup removes what an earlier run left; also used afterwards.
+	// The old operator is uninstalled first: while it runs it re-adds its
+	// finalizer on the reconcile the patch itself triggers, and once it is gone
+	// nothing would remove it, so deleting the CRD would wait forever.
 	cleanup := func(ctx context.Context) {
+		_, _ = helm(ctx, "-n", jrNS, "uninstall", jrRelease, "--wait", "--timeout", "2m")
 		_, _ = kubectl(ctx, "-n", appsNS, "patch", jrCRD, jrApp, "--type", "merge",
 			"-p", `{"metadata":{"finalizers":[]}}`)
 		_, _ = kubectl(ctx, "-n", appsNS, "delete", jrCRD, jrApp, "--ignore-not-found", "--wait=false")
-		_, _ = helm(ctx, "-n", jrNS, "uninstall", jrRelease)
-		_, _ = kubectl(ctx, "delete", "crd", jrCRD, "--ignore-not-found")
+		_, _ = kubectl(ctx, "delete", "crd", jrCRD, "--ignore-not-found", "--timeout=2m")
 		_, _ = kubectl(ctx, "-n", appsNS, "delete", "secret", jrSecret, "--ignore-not-found")
 		_, _ = kubectl(ctx, "delete", "namespace", migratedNS, "--ignore-not-found", "--timeout=120s")
 		_, _ = kubectl(ctx, "delete", "authentikcredentialstemplates.authentik.io", "-l",
@@ -454,11 +457,12 @@ stringData:
 			pokeAnnotation+"="+strconv.FormatInt(time.Now().UnixNano(), 10))
 		Expect(err).NotTo(HaveOccurred())
 		pokeAndWait(ctx, &prov, &app)
-		writes := oauthWrites(ctx, Default)
+		writes := objectWrites(ctx, Default, &prov, &app)
 		updates := operatorUpdates(ctx, Default)
 		pokeAndWait(ctx, &prov, &app)
 		Consistently(func(g Gomega) {
-			g.Expect(oauthWrites(ctx, g)).To(Equal(writes), "the operators are writing to each other's objects")
+			g.Expect(objectWrites(ctx, g, &prov, &app)).To(Equal(writes),
+				"the operators are writing to each other's objects")
 		}).WithContext(ctx).WithTimeout(20 * time.Second).WithPolling(4 * time.Second).Should(Succeed())
 		Expect(operatorUpdates(ctx, Default)).To(Equal(updates), "this operator sent a PATCH during the overlap")
 	})
@@ -540,15 +544,15 @@ stringData:
 		Expect(p).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 		Expect(a).To(Equal(authentikiov1alpha1.ProvenanceAdopted))
 
-		writes := oauthWrites(ctx, Default)
-		updates := operatorUpdates(ctx, Default)
 		var prov authentikiov1alpha1.AuthentikOAuthProvider
 		Expect(k8s.Get(ctx, newKey(jrApp), &prov)).To(Succeed())
 		var app authentikiov1alpha1.AuthentikApplication
 		Expect(k8s.Get(ctx, newKey(jrApp), &app)).To(Succeed())
+		writes := objectWrites(ctx, Default, &prov, &app)
+		updates := operatorUpdates(ctx, Default)
 		pokeAndWait(ctx, &prov, &app)
 		Consistently(func(g Gomega) {
-			g.Expect(oauthWrites(ctx, g)).To(Equal(writes), "a reconcile wrote to Authentik")
+			g.Expect(objectWrites(ctx, g, &prov, &app)).To(Equal(writes), "a reconcile wrote to Authentik")
 		}).WithContext(ctx).WithTimeout(10 * time.Second).WithPolling(2 * time.Second).Should(Succeed())
 		Expect(operatorUpdates(ctx, Default)).To(Equal(updates), "the operator sent a PATCH")
 		wantReady(ctx, metav1.ConditionTrue, "Synced")

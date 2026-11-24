@@ -49,6 +49,14 @@ real server.
   - [x] custom CA: the operator's default connection is pointed at an
         nginx TLS terminator with a per-run private CA; refuses without
         `authentik.caBundle` (x509, nothing created), works with it
+  - [x] groups and users (TASK-10, `test/e2e/identity_test.go`): a person enrols from
+        the operator's invitation and is recognised as `Created`, group members
+        (the enrolled person included), a member opens an application bound to the
+        group and a non-member is refused at authorize, deleting a bound group is
+        blocked, and a JeffResc group and its `groupBindings` migrate without
+        touching the bindings. The chart installs with
+        `identity.defaultConnectionNamespaceSelector` for the test namespaces
+        (these specs are not in the local runs reported under "Progress")
   - [x] JeffResc migration end to end (TASK-09): JeffResc 0.1.8 (chart fetched
         at the tag's commit, GPL so not vendored; image by digest) installed in
         `authentik-operator-system`, this operator in `authentik-operator`,
@@ -64,8 +72,8 @@ image archive; Authentik pulled by the cluster):
 
 | Authentik | Result |
 |---|---|
-| 2026.2.3 | 26 specs pass, about 280 s after the images are present |
-| 2026.8.5 | 26 specs pass, about 328 s |
+| 2026.2.3 | 26 specs pass (before the groups and users specs were added), about 280 s after the images are present |
+| 2026.8.5 | 26 specs pass (same), about 328 s |
 
 Operator bugs this suite found against a real 2026.2.3 (both fixed, with unit
 tests built from responses recorded from that server):

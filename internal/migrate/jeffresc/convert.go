@@ -27,7 +27,7 @@ import (
 
 // Options control the conversion.
 type Options struct {
-	// DryRunAdoption sets spec.dryRun on every emitted provider and application.
+	// DryRunAdoption sets spec.dryRun on every emitted provider, application and group.
 	DryRunAdoption bool
 	// Namespace is the namespace of the emitted namespaced objects; empty
 	// keeps each source object's namespace.
@@ -40,11 +40,6 @@ type Options struct {
 	SecretSuffix string
 	// ProviderSuffix is appended to the provider resource names.
 	ProviderSuffix string
-	// AcceptUnmanagedGroupBindings converts objects that list groupBindings.
-	// This operator does not manage group bindings, and Authentik lets every
-	// user in when an application has none, so without it such an object is an
-	// error.
-	AcceptUnmanagedGroupBindings bool
 }
 
 // Input is one YAML file's contents.
@@ -77,25 +72,30 @@ type Result struct {
 // all-or-nothing: if any object cannot be converted faithfully, no files are
 // returned and the error names every offending object.
 func Convert(inputs []Input, opts Options) (*Result, error) {
-	apps, skipped, err := parseInputs(inputs)
+	srcs, skipped, err := parseInputs(inputs)
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(apps, func(a, b source) int {
+	slices.SortFunc(srcs, func(a, b source) int {
 		return cmp.Or(cmp.Compare(a.namespace, b.namespace), cmp.Compare(a.name, b.name), cmp.Compare(a.kind, b.kind))
 	})
 	b := &builder{opts: opts, templates: map[string]*templateGroup{}, files: map[string]File{}}
 	var errs []error
-	for i := range apps {
-		if err := b.add(apps[i]); err != nil {
+	for i := range srcs {
+		add := b.add
+		if srcs[i].group != nil {
+			add = b.addGroup
+		}
+		if err := add(srcs[i]); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
-	if len(apps) == 0 {
-		return nil, errors.New("no AuthentikApplication or AuthentikOAuth2Application (goauthentik.io) found in the input")
+	if len(srcs) == 0 {
+		return nil, errors.New("no AuthentikApplication, AuthentikOAuth2Application or AuthentikGroup (goauthentik.io) " +
+			"found in the input")
 	}
 	if err := b.finish(); err != nil {
 		return nil, err

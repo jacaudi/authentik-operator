@@ -111,6 +111,11 @@ type Resolved struct {
 	// ExternalURL is the browser-facing base URL of this Authentik (no
 	// trailing slash); it equals the API base URL unless configured.
 	ExternalURL string
+	// ExternalURLSet is true when ExternalURL was configured (the default
+	// connection's external URL, or spec.connection.externalURL) rather than
+	// derived from the API base URL. That URL is usually an in-cluster address
+	// a person cannot open, so a link meant for a person needs this.
+	ExternalURLSet bool
 }
 
 // ForRef resolves the client for an API object in namespace with the given
@@ -128,7 +133,8 @@ func (r *Resolver) ForRef(ctx context.Context, namespace string,
 		if err != nil {
 			return nil, err
 		}
-		return &Resolved{Client: c, ExternalURL: externalOrBase(r.DefaultExternalURL, c.BaseURL())}, nil
+		return &Resolved{Client: c, ExternalURL: externalOrBase(r.DefaultExternalURL, c.BaseURL()),
+			ExternalURLSet: r.DefaultExternalURL != ""}, nil
 	}
 
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
@@ -182,7 +188,8 @@ func (r *Resolver) ForDeployment(ctx context.Context, d *authentikiov1alpha1.Aut
 	if err != nil {
 		return nil, err
 	}
-	return &Resolved{Client: c, ExternalURL: externalOrBase(d.Spec.Connection.ExternalURL, c.BaseURL())}, nil
+	return &Resolved{Client: c, ExternalURL: externalOrBase(d.Spec.Connection.ExternalURL, c.BaseURL()),
+		ExternalURLSet: d.Spec.Connection.ExternalURL != ""}, nil
 }
 
 func externalOrBase(external, base string) string {
@@ -210,13 +217,6 @@ func (r *Resolver) LastKnown(namespace string, ref *authentikiov1alpha1.Authenti
 		return nil, false
 	}
 	return &Resolved{Client: c.client}, true
-}
-
-// Forget drops the cached client of a deleted AuthentikDeployment.
-func (r *Resolver) Forget(key types.NamespacedName) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.clients, key.String())
 }
 
 func (r *Resolver) configFor(ctx context.Context,

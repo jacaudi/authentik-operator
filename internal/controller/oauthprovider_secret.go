@@ -305,7 +305,7 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context,
 			return secretWriteError("create", p.Namespace, name, err)
 		}
 		logf.FromContext(ctx).Info("Created credentials Secret", "secret", name)
-		r.event(p, corev1.EventTypeNormal, "SecretCreated", "Create", "Created credentials Secret %q", name)
+		emit(r.Recorder, p, corev1.EventTypeNormal, "SecretCreated", "Create", "Created credentials Secret %q", name)
 		return nil
 	case err != nil:
 		return fmt.Errorf("get Secret %s/%s: %w", p.Namespace, name, err)
@@ -330,7 +330,7 @@ func (r *AuthentikOAuthProviderReconciler) applySecret(ctx context.Context,
 		return secretWriteError("update", p.Namespace, name, err)
 	}
 	logf.FromContext(ctx).Info("Updated credentials Secret", "secret", name)
-	r.event(p, corev1.EventTypeNormal, "SecretUpdated", "Update", "Updated credentials Secret %q", name)
+	emit(r.Recorder, p, corev1.EventTypeNormal, "SecretUpdated", "Update", "Updated credentials Secret %q", name)
 	return nil
 }
 
@@ -363,7 +363,7 @@ func (r *AuthentikOAuthProviderReconciler) stripTemplateMetadata(ctx context.Con
 	if err := r.Update(ctx, &s); err != nil {
 		return false, fmt.Errorf("update Secret %s/%s: %w", p.Namespace, name, err)
 	}
-	r.event(p, corev1.EventTypeNormal, "SecretUpdated", "Update",
+	emit(r.Recorder, p, corev1.EventTypeNormal, "SecretUpdated", "Update",
 		"Removed template labels and annotations from credentials Secret %q", name)
 	return true, nil
 }
@@ -427,7 +427,7 @@ func (r *AuthentikOAuthProviderReconciler) deleteOwnedSecret(ctx context.Context
 	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete Secret %s/%s: %w", p.Namespace, name, err)
 	}
-	r.event(p, corev1.EventTypeNormal, "SecretDeleted", "Delete", "Deleted previous credentials Secret %q", name)
+	emit(r.Recorder, p, corev1.EventTypeNormal, "SecretDeleted", "Delete", "Deleted previous credentials Secret %q", name)
 	return nil
 }
 
@@ -439,6 +439,6 @@ func (r *AuthentikOAuthProviderReconciler) setCredentials(p *authentikiov1alpha1
 		Type: ConditionCredentialsReady, Status: status, Reason: reason, Message: msg, ObservedGeneration: p.Generation,
 	})
 	if changed && warn {
-		r.event(p, corev1.EventTypeWarning, reason, "Render", "%s", msg)
+		emit(r.Recorder, p, corev1.EventTypeWarning, reason, "Render", "%s", msg)
 	}
 }
