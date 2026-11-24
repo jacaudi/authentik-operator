@@ -1,0 +1,19 @@
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikGroup
+metadata: {name: media-users, namespace: media}
+spec:
+  name: media-users
+  isSuperuser: true
+  deletionPolicy: Delete
+  parents: [p]
+  roles: [r]
+  attributes:
+    role: admin
+    settings: {theme: dark}
+    nested: {a: 1}
+    goauthentik.io/x: y
+---
+apiVersion: goauthentik.io/v1alpha1
+kind: AuthentikGroup
+metadata: {name: media-admins, namespace: media}
+spec: {}

@@ -83,13 +83,27 @@ type jeffSpec struct {
 	Secret           jeffSecret   `json:"secret,omitzero"`
 }
 
-// source is one JeffResc application found in the input.
+// jeffGroupSpec is the JeffResc group spec (v0.2.10 AuthentikGroupSpec),
+// decoded strictly so a field the converter does not know is an error.
+type jeffGroupSpec struct {
+	Name        string                     `json:"name,omitempty"`
+	IsSuperuser *bool                      `json:"isSuperuser,omitempty"`
+	Parents     []string                   `json:"parents,omitempty"`
+	Roles       []string                   `json:"roles,omitempty"`
+	Attributes  map[string]json.RawMessage `json:"attributes,omitempty"`
+	// DeletionPolicy is read and ignored: a converted group is always Retain.
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+}
+
+// source is one JeffResc application or group found in the input.
 type source struct {
 	from      string
 	kind      string
 	name      string
 	namespace string
 	spec      jeffSpec
+	// group is set, and spec is zero, for an AuthentikGroup.
+	group *jeffGroupSpec
 }
 
 func (s source) ref() string { return s.kind + " " + s.namespace + "/" + s.name }
@@ -147,7 +161,7 @@ func ReadInputs(paths []string) ([]Input, error) {
 	return out, nil
 }
 
-// parseInputs extracts the JeffResc applications from inputs. Objects of
+// parseInputs extracts the JeffResc applications and groups from inputs. Objects of
 // other groups are skipped (and named in skipped); unsupported or malformed
 // JeffResc objects are errors, all reported together.
 func parseInputs(inputs []Input) (apps []source, skipped []string, err error) {
@@ -204,17 +218,23 @@ func parseEnvelope(from string, env envelope) (apps []source, skipped []string, 
 	case env.Kind == kindSAML:
 		return nil, nil, []error{fmt.Errorf("%s: %s: unsupported: SAML applications have no equivalent "+
 			"(this operator has no SAML provider kind); leave it on the JeffResc operator", from, s.ref())}
-	case env.Kind == kindGroup:
-		return nil, nil, []error{fmt.Errorf("%s: %s: not supported: this operator has no group kind; keep it "+
-			"on JeffResc, or set deletionPolicy Retain on it and then delete it (JeffResc deletes the group in "+
-			"Authentik with the CR by default, which also removes its application bindings)", from, s.ref())}
-	case env.Kind != kindV1 && env.Kind != kindV2:
+	case env.Kind != kindV1 && env.Kind != kindV2 && env.Kind != kindGroup:
 		return nil, nil, []error{fmt.Errorf("%s: %s: unsupported kind %q", from, s.ref(), env.Kind)}
 	case meta.Name == "":
 		return nil, nil, []error{fmt.Errorf("%s: %s has no metadata.name", from, env.Kind)}
 	}
-	if err := yaml.UnmarshalStrict(env.Spec, &s.spec); err != nil {
+	if err := decodeSpec(env.Spec, &s); err != nil {
 		return nil, nil, []error{fmt.Errorf("%s: %s: spec: %w", from, s.ref(), err)}
 	}
 	return []source{s}, nil, nil
+}
+
+// decodeSpec strictly decodes spec into s: s.group for an AuthentikGroup, else
+// s.spec.
+func decodeSpec(spec json.RawMessage, s *source) error {
+	if s.kind == kindGroup {
+		s.group = &jeffGroupSpec{}
+		return yaml.UnmarshalStrict(spec, s.group)
+	}
+	return yaml.UnmarshalStrict(spec, &s.spec)
 }

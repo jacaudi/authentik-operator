@@ -108,7 +108,8 @@ var _ = AfterEach(func(ctx SpecContext) {
 		return
 	}
 	GinkgoWriter.Printf("--- operator logs ---\n%s\n", controllerLogs(ctx))
-	for _, kind := range []string{"authentikoauthproviders", "authentikapplications"} {
+	for _, kind := range []string{"authentikoauthproviders", "authentikapplications", "authentikgroups",
+		"authentikusers"} {
 		out, _ := kubectl(ctx, "get", kind, "-A", "-o", "yaml")
 		GinkgoWriter.Printf("--- %s ---\n%s\n", kind, out)
 	}

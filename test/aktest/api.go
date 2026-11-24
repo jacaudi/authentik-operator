@@ -20,10 +20,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +34,13 @@ import (
 
 // fName is the JSON field Authentik uses for an object's name.
 const fName = "name"
+
+// JSON fields several calls share.
+const (
+	fSlug   = "slug"
+	fTarget = "target"
+	fOrder  = "order"
+)
 
 // Obj is a decoded JSON object. The suite deliberately does not use the
 // operator's generated client: a second, schema-free view of the API is what
@@ -141,7 +151,7 @@ func (a *API) Version(ctx context.Context) (string, error) {
 
 // FlowPK returns the pk of the flow with the given slug.
 func (a *API) FlowPK(ctx context.Context, slug string) (string, error) {
-	rs, err := a.list(ctx, "/api/v3/flows/instances/", url.Values{"slug": {slug}})
+	rs, err := a.list(ctx, "/api/v3/flows/instances/", url.Values{fSlug: {slug}})
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +196,7 @@ func (a *API) CreateOAuthProvider(ctx context.Context, name string, redirects []
 	if err != nil {
 		return nil, err
 	}
-	maps, err := a.ScopeMappingPKs(ctx, "openid", "profile", "email")
+	mappings, err := a.ScopeMappingPKs(ctx, "openid", "profile", "email")
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +210,7 @@ func (a *API) CreateOAuthProvider(ctx context.Context, name string, redirects []
 		"invalidation_flow":          inval,
 		"client_type":                "confidential",
 		"redirect_uris":              uris,
-		"property_mappings":          maps,
+		"property_mappings":          mappings,
 		"include_claims_in_id_token": true,
 		"sub_mode":                   "hashed_user_id",
 		"issuer_mode":                "per_provider",
@@ -245,7 +255,7 @@ func (a *API) PatchOAuthProvider(ctx context.Context, pk int, fields Obj) error 
 func (a *API) CreateApplication(ctx context.Context, name, slug string, providerPK int) (Obj, error) {
 	var out Obj
 	err := a.Do(ctx, http.MethodPost, "/api/v3/core/applications/",
-		Obj{fName: name, "slug": slug, "provider": providerPK}, &out)
+		Obj{fName: name, fSlug: slug, "provider": providerPK}, &out)
 	return out, err
 }
 
@@ -286,6 +296,23 @@ func (a *API) DeleteOAuthProviderByNameIfExists(ctx context.Context, name string
 // trusting the operator's own bookkeeping. Filtering and counting happen
 // server side, so the result is not limited by a page size.
 func (a *API) ModelWriteCount(ctx context.Context, app, model string, actions ...string) (int, error) {
+	return a.writeCount(ctx, url.Values{"context_model_app": {app}, "context_model_name": {model}}, actions)
+}
+
+// ObjectWriteCount is ModelWriteCount for one object, by its pk (an integer
+// for providers, the UUID for applications). Writes to other objects of the
+// model, by anything else in the instance, are not counted. An empty pk would
+// count every object of the model, so it is an error.
+func (a *API) ObjectWriteCount(ctx context.Context, app, model, pk string, actions ...string) (int, error) {
+	if pk == "" {
+		return 0, fmt.Errorf("ObjectWriteCount %s.%s: empty pk", app, model)
+	}
+	return a.writeCount(ctx, url.Values{"context_model_app": {app}, "context_model_name": {model},
+		"context_model_pk": {pk}}, actions)
+}
+
+// writeCount sums pagination.count of the audit events matching filter, per action.
+func (a *API) writeCount(ctx context.Context, filter url.Values, actions []string) (int, error) {
 	total := 0
 	for _, act := range actions {
 		var page struct {
@@ -293,14 +320,120 @@ func (a *API) ModelWriteCount(ctx context.Context, app, model string, actions ..
 				Count int `json:"count"`
 			} `json:"pagination"`
 		}
-		q := url.Values{"action": {act}, "context_model_app": {app}, "context_model_name": {model},
-			"page_size": {"1"}}
+		q := url.Values{"action": {act}, "page_size": {"1"}}
+		maps.Copy(q, filter)
 		if err := a.Do(ctx, http.MethodGet, "/api/v3/events/events/?"+q.Encode(), nil, &page); err != nil {
 			return 0, err
 		}
 		total += page.Pagination.Count
 	}
 	return total, nil
+}
+
+// post creates an object at path and returns its pk.
+func (a *API) post(ctx context.Context, path string, in Obj) (string, error) {
+	var out Obj
+	if err := a.Do(ctx, http.MethodPost, path, in, &out); err != nil {
+		return "", err
+	}
+	return Str(out, "pk"), nil
+}
+
+// CreateUserWithPassword creates an internal user that can sign in with
+// password, and returns its pk.
+func (a *API) CreateUserWithPassword(ctx context.Context, username, password string) (int, error) {
+	raw, err := a.post(ctx, "/api/v3/core/users/", Obj{"username": username, fName: username, "path": "users"})
+	if err != nil {
+		return 0, err
+	}
+	pk, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("user %q: pk %q is not a number", username, raw)
+	}
+	err = a.Do(ctx, http.MethodPost, fmt.Sprintf("/api/v3/core/users/%d/set_password/", pk),
+		Obj{"password": password}, nil)
+	return pk, err
+}
+
+// CreateGroup creates a group and returns its pk.
+func (a *API) CreateGroup(ctx context.Context, name string) (string, error) {
+	return a.post(ctx, "/api/v3/core/groups/", Obj{fName: name})
+}
+
+// CreateGroupBinding binds a group to an application, the way an
+// administrator would in the UI, and returns the binding's pk.
+func (a *API) CreateGroupBinding(ctx context.Context, groupPK, appPK string, order int) (string, error) {
+	return a.post(ctx, "/api/v3/policies/bindings/", Obj{"group": groupPK, fTarget: appPK, fOrder: order})
+}
+
+// BindingPKs returns the sorted pks of the policy bindings of an application.
+// An empty appPK is an error: the query would list every binding.
+func (a *API) BindingPKs(ctx context.Context, appPK string) ([]string, error) {
+	if appPK == "" {
+		return nil, errors.New("aktest: listing bindings needs an application pk")
+	}
+	rs, err := a.list(ctx, "/api/v3/policies/bindings/", url.Values{fTarget: {appPK}, "page_size": {"100"}})
+	if err != nil {
+		return nil, err
+	}
+	pks := make([]string, 0, len(rs))
+	for _, r := range rs {
+		pks = append(pks, Str(r, "pk"))
+	}
+	slices.Sort(pks)
+	return pks, nil
+}
+
+// EnsureEnrolmentFlow creates, unless a flow with this slug exists, a
+// test-only copy of the owner's enrolment flow without the passkey stage:
+// invitation, a read-only username prompt, user write, user login. The
+// operator's contract ends at "invitation -> account carrying the ownership
+// proof"; enrolling a passkey is Authentik's and is not re-tested here.
+func (a *API) EnsureEnrolmentFlow(ctx context.Context, slug string) error {
+	have, err := a.list(ctx, "/api/v3/flows/instances/", url.Values{fSlug: {slug}})
+	if err != nil || len(have) > 0 {
+		return err
+	}
+	flow, err := a.post(ctx, "/api/v3/flows/instances/", Obj{fName: slug, fSlug: slug,
+		"title": "Create your account", "designation": "enrollment", "authentication": "require_unauthenticated"})
+	if err != nil {
+		return err
+	}
+	invitation, err := a.post(ctx, "/api/v3/stages/invitation/stages/",
+		Obj{fName: slug + "-invitation", "continue_flow_without_invitation": false})
+	if err != nil {
+		return err
+	}
+	username, err := a.post(ctx, "/api/v3/stages/prompt/prompts/", Obj{fName: slug + "-username",
+		"field_key": "username", "label": "Username", "type": "text_read_only", "required": true,
+		"placeholder": "Username", fOrder: 0})
+	if err != nil {
+		return err
+	}
+	prompt, err := a.post(ctx, "/api/v3/stages/prompt/stages/",
+		Obj{fName: slug + "-prompt", "fields": []string{username}})
+	if err != nil {
+		return err
+	}
+	write, err := a.post(ctx, "/api/v3/stages/user_write/",
+		Obj{fName: slug + "-write", "user_creation_mode": "always_create", "user_type": "internal"})
+	if err != nil {
+		return err
+	}
+	login, err := a.post(ctx, "/api/v3/stages/user_login/", Obj{fName: slug + "-login"})
+	if err != nil {
+		return err
+	}
+	for _, b := range []struct {
+		stage string
+		order int
+	}{{invitation, 5}, {prompt, 10}, {write, 20}, {login, 100}} {
+		if _, err := a.post(ctx, "/api/v3/flows/bindings/",
+			Obj{fTarget: flow, "stage": b.stage, fOrder: b.order}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Str returns o[k] as a string, or "".

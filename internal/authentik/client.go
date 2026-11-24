@@ -152,10 +152,6 @@ func New(cfg Config) (*Client, error) {
 	return &Client{api: api.NewAPIClient(apiCfg), baseURL: base}, nil
 }
 
-// API exposes the underlying generated client. Callers must pass returned
-// errors through Check so that 404s become ErrNotFound.
-func (c *Client) API() *api.APIClient { return c.api }
-
 // BaseURL returns the normalized Authentik base URL (without /api/v3).
 func (c *Client) BaseURL() string { return c.baseURL }
 

@@ -1,0 +1,64 @@
+{
+  "pagination": {
+    "next": 0,
+    "previous": 0,
+    "count": 1,
+    "current": 1,
+    "total_pages": 1,
+    "start_index": 1,
+    "end_index": 1
+  },
+  "results": [
+    {
+      "pk": "25824374-c06c-4dbd-a434-a599bf18bbfa",
+      "name": "rec-invitation",
+      "expires": "2026-11-25T07:41:56Z",
+      "fixed_data": {
+        "username": "rec-invitee",
+        "attributes": {
+          "authentik_operator": {
+            "owner_uid": "rec-uid-2"
+          }
+        }
+      },
+      "created_by": {
+        "pk": 4,
+        "username": "akadmin",
+        "name": "authentik Default Admin",
+        "is_active": true,
+        "last_login": null,
+        "email": "rec@example.invalid",
+        "attributes": {},
+        "uid": "9c36cc32ff06fb1403d0a3949e388f41b172aa86b92545d2d0fd0f73b7902d37"
+      },
+      "single_use": true,
+      "flow": "09f6afce-08da-4be1-8479-2ad2c54ee9e2",
+      "flow_obj": {
+        "pk": "09f6afce-08da-4be1-8479-2ad2c54ee9e2",
+        "policybindingmodel_ptr_id": "b3b28bae-b65c-4268-b67f-2afd25230e4e",
+        "name": "Welcome to authentik!",
+        "slug": "default-authentication-flow",
+        "title": "Welcome to authentik!",
+        "designation": "authentication",
+        "background": "",
+        "background_url": "/static/dist/assets/images/flow_background.jpg",
+        "background_themed_urls": null,
+        "stages": [
+          "d980ab9f-a98b-427b-84e0-68580369a1e0",
+          "ea3caf87-0665-4711-912d-3ecf7eecb2e5",
+          "a77e2dd0-c3e6-4655-a080-ea32d585ba3f",
+          "fa6407b5-ed70-431e-bad5-2c9904d13763"
+        ],
+        "policies": [],
+        "cache_count": 0,
+        "policy_engine_mode": "any",
+        "compatibility_mode": false,
+        "export_url": "/api/v3/flows/instances/default-authentication-flow/export/",
+        "layout": "stacked",
+        "denied_action": "message_continue",
+        "authentication": "none"
+      }
+    }
+  ],
+  "autocomplete": {}
+}
