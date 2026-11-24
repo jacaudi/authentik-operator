@@ -15,6 +15,14 @@
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)\\s*\\n\\s*[A-Z_]+:\\s*['\"]?(?<currentValue>[^'\"\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?['\"]?"
       ]
+    },
+    {
+      "customType": "regex",
+      "description": "Tool pins annotated `# renovate: datasource=... depName=...` in the devcontainer post-install script (shell NAME=value form)",
+      "managerFilePatterns": ["/^\\.devcontainer/post-install\\.sh$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>[a-z-]+?)\\s+depName=(?<depName>[^\\s]+?)\\s*\\n\\s*[A-Z_]+=['\"]?(?<currentValue>[^'\"\\s@]+)['\"]?"
+      ]
     }
   ],
   "packageRules": [

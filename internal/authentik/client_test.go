@@ -170,7 +170,7 @@ func TestListAllFollowsPages(t *testing.T) {
 		writeJSON(t, w, 200, page([]map[string]any{flow(fmt.Sprintf("f%d", p))}, p, next, 3))
 	})
 	flows, err := ListAll(func(p int32) ([]api.Flow, api.Pagination, *http.Response, error) {
-		res, resp, err := c.API().FlowsAPI.FlowsInstancesList(t.Context()).Page(p).PageSize(PageSize).Execute()
+		res, resp, err := c.api.FlowsAPI.FlowsInstancesList(t.Context()).Page(p).PageSize(PageSize).Execute()
 		if res == nil {
 			return nil, api.Pagination{}, resp, err
 		}
@@ -254,7 +254,7 @@ func TestRetry(t *testing.T) {
 				body = strings.NewReader(`{"name":"replayed"}`)
 			}
 			req, _ := http.NewRequestWithContext(t.Context(), tc.method, c.BaseURL()+"/api/v3/x/", body)
-			resp, err := c.API().GetConfig().HTTPClient.Do(req)
+			resp, err := c.api.GetConfig().HTTPClient.Do(req)
 			if err != nil {
 				t.Fatalf("Do: %v", err)
 			}
@@ -323,7 +323,7 @@ func TestRateLimit(t *testing.T) {
 	start := time.Now()
 	for range 5 {
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, c.BaseURL()+"/api/v3/x/", http.NoBody)
-		resp, err := c.API().GetConfig().HTTPClient.Do(req)
+		resp, err := c.api.GetConfig().HTTPClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}

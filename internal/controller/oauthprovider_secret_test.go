@@ -302,6 +302,7 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 		app := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: "sec-crs-app", Namespace: namespace},
 			Spec: authentikiov1alpha1.AuthentikApplicationSpec{Name: "CRs",
+				Access:      &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged},
 				ProviderRef: &authentikiov1alpha1.ProviderRef{Name: "sec-crs"}},
 		}
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
@@ -454,7 +455,8 @@ var _ = Describe("AuthentikOAuthProvider credentials Secret", func() {
 	It("maps an application to the provider it references", func() {
 		app := &authentikiov1alpha1.AuthentikApplication{
 			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: namespace},
-			Spec:       authentikiov1alpha1.AuthentikApplicationSpec{ProviderRef: &authentikiov1alpha1.ProviderRef{Name: "p"}},
+			Spec: authentikiov1alpha1.AuthentikApplicationSpec{ProviderRef: &authentikiov1alpha1.ProviderRef{Name: "p"},
+				Access: &authentikiov1alpha1.ApplicationAccess{Type: authentikiov1alpha1.AccessTypeUnmanaged}},
 		}
 		Expect(providerForApplication(ctx, app)).To(HaveExactElements(
 			reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: "p"}}))
