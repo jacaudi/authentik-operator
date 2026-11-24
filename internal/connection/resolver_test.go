@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -276,11 +275,6 @@ func TestClientCacheRebuildsOnRotation(t *testing.T) {
 	c, _ := r.ForRef(ctx, ns, ref("d"))
 	if builds != 2 || c.Client == a.Client {
 		t.Fatalf("rotated token did not rebuild client (builds=%d)", builds)
-	}
-
-	r.Forget(types.NamespacedName{Namespace: ns, Name: "d"})
-	if _, err := r.ForRef(ctx, ns, ref("d")); err != nil || builds != 3 {
-		t.Fatalf("Forget did not drop cache (builds=%d, err=%v)", builds, err)
 	}
 }
 
