@@ -38,8 +38,8 @@ spec:
     spec:
       containers:
         - name: nginx
-          # renovate: datasource=docker depName=public.ecr.aws/docker/library/nginx
-          image: public.ecr.aws/docker/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+          # renovate: datasource=docker depName=mirror.gcr.io/library/nginx
+          image: mirror.gcr.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
           ports:
             - containerPort: 8443
           readinessProbe:
