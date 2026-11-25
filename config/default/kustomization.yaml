@@ -18,7 +18,7 @@ namePrefix: authentik-operator-
 images:
 - name: controller
   newName: ghcr.io/jacaudi/authentik-operator
-  newTag: v0.0.0 # x-release-please-version
+  newTag: v0.1.0 # x-release-please-version
 
 # Labels to add to all resources and selectors.
 #labels:
