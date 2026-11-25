@@ -154,7 +154,7 @@ curl -sSfL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/ta
   | tar xz -C /usr/local/bin task
 
 # renovate: datasource=github-releases depName=helm/helm
-HELM_VERSION=v4.3.1
+HELM_VERSION=v4.3.2
 curl -sSfL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
   | tar xz --strip-components=1 -C /usr/local/bin "linux-${ARCH}/helm"
 
