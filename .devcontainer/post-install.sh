@@ -173,7 +173,7 @@ curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLAN
   | tar xz --strip-components=1 -C /usr/local/bin "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}/golangci-lint"
 
 # renovate: datasource=go depName=golang.org/x/vuln
-GOVULNCHECK_VERSION=v1.9.0
+GOVULNCHECK_VERSION=v1.10.0
 GOBIN=/usr/local/bin go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
 # renovate: datasource=github-releases depName=hadolint/hadolint
