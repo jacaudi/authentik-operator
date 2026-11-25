@@ -154,7 +154,7 @@ curl -sSfL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/ta
   | tar xz -C /usr/local/bin task
 
 # renovate: datasource=github-releases depName=helm/helm
-HELM_VERSION=v4.3.1
+HELM_VERSION=v4.3.2
 curl -sSfL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
   | tar xz --strip-components=1 -C /usr/local/bin "linux-${ARCH}/helm"
 
@@ -173,7 +173,7 @@ curl -sSfL "https://github.com/golangci/golangci-lint/releases/download/v${GOLAN
   | tar xz --strip-components=1 -C /usr/local/bin "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${ARCH}/golangci-lint"
 
 # renovate: datasource=go depName=golang.org/x/vuln
-GOVULNCHECK_VERSION=v1.9.0
+GOVULNCHECK_VERSION=v1.10.0
 GOBIN=/usr/local/bin go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
 # renovate: datasource=github-releases depName=hadolint/hadolint
