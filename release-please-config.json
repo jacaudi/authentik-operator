@@ -5,6 +5,7 @@
     { "type": "fix", "section": "Bug Fixes" },
     { "type": "perf", "section": "Performance" },
     { "type": "revert", "section": "Reverts" },
+    { "type": "deps", "section": "Dependencies" },
     { "type": "docs", "section": "Documentation" },
     { "type": "chore", "section": "Dependencies and Maintenance" },
     { "type": "refactor", "section": "Refactoring", "hidden": true },

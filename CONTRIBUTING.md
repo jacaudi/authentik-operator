@@ -37,7 +37,8 @@ fails otherwise.
   follow [Conventional Commits](https://www.conventionalcommits.org/):
   `type(scope): description`, e.g. `feat(application): add metaHide`.
   Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`,
-  `perf`, `revert`. Mark breaking changes with `!` (`feat(api)!: ...`).
+  `perf`, `revert`, `deps` (Renovate's `deps(renovate): ...`). Mark breaking
+  changes with `!` (`feat(api)!: ...`).
   Release notes and version numbers are generated from these titles.
 - Include tests for behaviour changes; reconcilers must stay idempotent
   (a second reconcile must not write to Authentik).

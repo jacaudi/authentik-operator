@@ -31,4 +31,5 @@ jobs:
             build
             perf
             revert
+            deps
           requireScope: false
